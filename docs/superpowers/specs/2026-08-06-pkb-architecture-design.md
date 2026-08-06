@@ -23,16 +23,17 @@ layers can be specified and built independently.
 
 ## 2. Decisions
 
-| # | Decision | Rationale |
-|---|----------|-----------|
-| D1 | Harness is [`langchain-ai/deepagents`](https://github.com/langchain-ai/deepagents) | Native support for subagents, skills with progressive disclosure and override resolution, pluggable filesystem backends, declarative filesystem permissions, and HITL interrupts — most of Part 2 of the README maps to existing features. |
-| D2 | Daemon + thin clients, not embedded library | Required by D3. Also gives Telegram uptime independent of the terminal, and one writer to the KB. |
-| D3 | Threads are shared across channels | Start a conversation in the TUI, continue it from Telegram. Requires a durable shared checkpointer and thread discovery in every client. |
-| D4 | Custom daemon on the MIT LangGraph core — **not** LangGraph Platform | `langgraph-api` (the runtime behind `langgraph dev`) is Elastic License 2.0, requires `LANGGRAPH_CLOUD_LICENSE_KEY`, Postgres, and Redis. `langgraph`, `langgraph-checkpoint`, and `langgraph-checkpoint-sqlite` are MIT and provide everything needed: compiled graphs, durable threads, streaming, and `Command(resume=...)`. |
-| D5 | HTTP + SSE for human channels; MCP for programmatic agents | Two different audiences. ACP is a client↔agent protocol (editors, streaming, permission prompts); MCP is an agent↔capability protocol. External Project Manager agents want the PKB as a capability. |
-| D6 | KB tree is a git repository; the daemon commits | Free undo, an audit trail separating what agents wrote from what the human approved, and a backup path. |
-| D7 | Skills use `skills/<name>/SKILL.md`, amending README §2.4 | deepagents' native format. Buys progressive disclosure and name-collision override resolution with no custom code. |
-| D8 | Each topic is its own compiled graph, registered with the Librarian as a `CompiledSubAgent` | Dict-subagents are one-shot; README §1.6 requires multi-turn approval dialog. One artifact serves both direct connection and Librarian routing. |
+| #   | Decision | Rationale |
+|-----|----------|-----------|
+| D1  | Harness is [`langchain-ai/deepagents`](https://github.com/langchain-ai/deepagents) | Native support for subagents, skills with progressive disclosure and override resolution, pluggable filesystem backends, declarative filesystem permissions, and HITL interrupts — most of Part 2 of the README maps to existing features. |
+| D2  | Daemon + thin clients, not embedded library | Required by D3. Also gives Telegram uptime independent of the terminal, and one writer to the KB. |
+| D3  | Threads are shared across channels | Start a conversation in the TUI, continue it from Telegram. Requires a durable shared checkpointer and thread discovery in every client. |
+| D4  | Custom daemon on the MIT LangGraph core — **not** LangGraph Platform | `langgraph-api` (the runtime behind `langgraph dev`) is Elastic License 2.0, requires `LANGGRAPH_CLOUD_LICENSE_KEY`, Postgres, and Redis. `langgraph`, `langgraph-checkpoint`, and `langgraph-checkpoint-sqlite` are MIT and provide everything needed: compiled graphs, durable threads, streaming, and `Command(resume=...)`. |
+| D5  | HTTP + SSE for human channels; MCP for programmatic agents | Two different audiences. ACP is a client↔agent protocol (editors, streaming, permission prompts); MCP is an agent↔capability protocol. External Project Manager agents want the PKB as a capability. |
+| D6  | KB tree is **plain markdown files** — no version control in the first draft | Keeps Layer 1 to a single responsibility (structure) and removes commit-policy questions (when, what message, what on failure) from the first build. Git is additive later: it observes the tree rather than changing how anything writes to it. See §10. |
+| D9  | The Telegram adapter is **hosted inside the daemon process**, calling `PkbService` directly | The bot's required lifetime *is* the daemon's lifetime. Hosting it in the TUI would tie it to a foreground terminal; hosting it standalone adds a third process and an auth boundary for no gain. It is enabled by config and supervised as a background task. |
+| D7  | Skills use `skills/<name>/SKILL.md`, amending README §2.4 | deepagents' native format. Buys progressive disclosure and name-collision override resolution with no custom code. |
+| D8  | Each topic is its own compiled graph, registered with the Librarian as a `CompiledSubAgent` | Dict-subagents are one-shot; README §1.6 requires multi-turn approval dialog. One artifact serves both direct connection and Librarian routing. |
 
 ### Rejected alternatives
 
@@ -45,21 +46,27 @@ layers can be specified and built independently.
   awkward. Viable later as an *additional* adapter (see §10).
 - **MCP for everything, including the TUI** — MCP has no stateful conversation thread, no assistant
   token streaming, and maps interrupt/approve/edit/reject badly onto tool calls.
+- **Telegram inside the TUI process** — the TUI is a foreground process that exits with the terminal;
+  Telegram exists precisely to reach the PKB when you are away from the terminal. Opposite lifetimes.
+  What the two channels *should* share is approval rendering, which is a client-side helper (§6), not
+  a process. See D9.
 
 ---
 
 ## 3. Layers and seams
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  CLIENTS   Textual TUI  │  Telegram bot  │  external agents   │
-└──────────────────────────────────────────────────────────────┘
+        ┌─────────────────┐            ┌──────────────────┐
+        │   Textual TUI   │            │  external agents │
+        └─────────────────┘            └──────────────────┘
               │ REST + SSE                    │ MCP (streamable HTTP)
 ┌──────────────────────────────────────────────────────────────┐
-│  LAYER 3 — TRANSPORT            pkb.server                   │
-│  FastAPI: /agents /threads /runs /interrupt  + mounted MCP   │
+│  LAYER 3 — TRANSPORT            pkb.server        ┌────────┐ │
+│  FastAPI: /agents /threads /runs /interrupt       │Telegram│ │
+│           + mounted MCP                           │ bot    │ │
+│                                                   └───┬────┘ │
 └──────────────────────────────────────────────────────────────┘
-              │  PkbService  (in-process Python interface)
+              │  PkbService  (in-process Python interface)  ◄──┘
 ┌──────────────────────────────────────────────────────────────┐
 │  LAYER 2 — AGENTS               pkb.agents                   │
 │  AgentRegistry · Librarian graph · one expert graph / topic  │
@@ -69,11 +76,14 @@ layers can be specified and built independently.
 ┌──────────────────────────────────────────────────────────────┐
 │  LAYER 1 — KB CORE              pkb.core                     │
 │  frontmatter schema · validator · index/tags generators ·    │
-│  topic scaffolder · git commit policy                        │
+│  topic scaffolder                                            │
 └──────────────────────────────────────────────────────────────┘
                               │
-                    KnowledgeBase/  (git repo on disk)
+              KnowledgeBase/  (plain markdown tree on disk)
 ```
+
+The Telegram bot runs *inside* the daemon and calls `PkbService` directly rather than looping back
+through HTTP (D9). It is still a Layer 3 component and still bound by invariant I2.
 
 Three invariants define the seams. Each is mechanically checkable and each should be enforced by a
 lint rule or test.
@@ -114,8 +124,7 @@ pkb/
 │   ├── frontmatter.py      # schema + parse/serialize
 │   ├── validation.py       # required fields, tag syntax/depth, naming, location consistency
 │   ├── generators/         # topic index.md, root index.md, root tags.md
-│   ├── scaffold.py         # new topic / sub-topic structure
-│   └── repo.py             # git commit policy
+│   └── scaffold.py         # new topic / sub-topic structure
 ├── agents/          # Layer 2
 │   ├── registry.py         # AgentRegistry: catalog, lazy graph construction, invalidation
 │   ├── librarian.py        # root routing agent
@@ -124,12 +133,13 @@ pkb/
 │   └── runtime.py          # shared checkpointer, store, backend
 ├── service.py       # PkbService protocol + implementation
 ├── server/          # Layer 3
-│   ├── app.py              # FastAPI
+│   ├── app.py              # FastAPI; owns the daemon lifecycle
 │   ├── routes.py
-│   └── mcp.py              # mounted MCP server
-├── tui/             # Textual client
-└── channels/
-    └── telegram.py
+│   ├── mcp.py              # mounted MCP server
+│   └── telegram.py         # daemon-hosted bot task (D9), optional via config
+├── clients/         # shared client-side helpers
+│   └── approval.py         # interrupt event → decision, used by TUI and Telegram
+└── tui/             # Textual client (separate process, HTTP + SSE)
 ```
 
 ---
@@ -254,13 +264,27 @@ README §1.6 calls the breadth files "a compact approval surface"; this is where
 Transport is `httpx` plus an SSE client. The TUI imports `pkb.service` types only, never
 `pkb.agents`.
 
-### Telegram
+### Telegram (daemon-hosted)
+
+Runs as a supervised background task inside the daemon process and calls `PkbService` directly — no
+HTTP round trip, no second process, no auth boundary (D9). Enabled by config; absent config, the
+daemon starts without it.
 
 One bot. Default target is the Librarian; `/agents` lists, `/connect cooking` switches — direct
 expert access without a bot per topic. Approvals arrive as inline keyboard buttons.
 
 `edit` is impractical on a phone, so the Telegram adapter narrows `allowed_decisions` to
 approve/reject and directs the human to the TUI for anything needing an edit.
+
+Because the bot shares a process with the daemon, its task is supervised: an unhandled exception
+restarts the bot task and is logged, but never terminates the daemon.
+
+### Shared approval helper
+
+Both human channels must turn an `interrupt` event into a `Decision` consistently — same action
+parsing, same validation of which decisions are allowed. That logic lives once in
+`pkb.clients.approval` and is imported by the TUI and the Telegram adapter. Only the *rendering*
+differs: a diff modal in the TUI, inline keyboard buttons in Telegram.
 
 ### MCP
 
@@ -284,7 +308,7 @@ Two behaviours are requirements from the README, not enhancements:
 
 ---
 
-## 7. Layer 1 enforcement, git, and the scan queue
+## 7. Layer 1 enforcement and the scan queue
 
 Two middleware, split because validation and regeneration want opposite timing.
 
@@ -317,27 +341,13 @@ Flushes once per turn:
 4. Update `updated` timestamps.
 5. Flag broken links and orphaned files.
 6. Enqueue conflict scans covering changed files.
-7. Commit.
 
 `wrap_tool_call` records touched paths in middleware state; `after_agent` consumes and clears them.
 Per-write regeneration would rewrite `tags.md` several times in one turn for no benefit.
 
-### Git commit policy
-
-The commit happens in `after_agent` *after* regeneration, so every commit is a consistent tree with
-content and derived files together. One commit per run that changed files:
-
-```
-pkb(cooking): add note "Grill performance in windy conditions"
-
-Agent: topic/cooking
-Thread: 01J8X...
-```
-
-Human approvals happen *inside* the run via interrupt→resume, so an approved change and its commit
-are one unit. On run failure the daemon still regenerates and commits rather than rolling back — a
-tree with stale derived files is worse than a recorded bad state, and `git revert` is a better undo
-than anything hand-rolled.
+The flush runs on both success and failure. A run that errors midway may have already written files,
+and leaving the tree with stale derived files is worse than the partial write itself — regeneration
+is idempotent, so running it is always safe.
 
 ### Conflict scan queue
 
@@ -361,7 +371,8 @@ same thread return `409`.
 | Frontmatter validation fails | Error `ToolMessage`, agent retries. Bounded to 3 attempts per file per run, then escalates to the human. |
 | Model or provider error | `run.error` event; thread remains resumable. |
 | Client disconnects mid-approval | Interrupt persists in the checkpoint, appears as pending on `list_threads`, and **any** client can resolve it later. |
-| Git commit fails (e.g. external edit conflict) | Run completes, commit logged as failed, flagged in `/health`. The tree is never corrupted. |
+| Telegram bot task crashes | Supervised restart; logged and surfaced in `/health`. The daemon and in-flight runs are unaffected (D9). |
+| Run errors after partial writes | The `after_agent` flush still runs, so derived files match the tree. Without version control there is no rollback — see the caveat in §10. |
 
 The abandoned-approval case is a direct benefit of the daemon model: approve from a phone something
 the TUI asked about hours earlier. The thread list should be designed around it.
@@ -389,12 +400,19 @@ Invariants I1 and I2 are enforced by an import-linter rule in CI, not by convent
 
 Deferred deliberately, not overlooked:
 
+- **Version control of the KB (D6).** The first draft writes plain markdown. The consequence is
+  real and worth stating: there is **no undo**. If an agent writes something wrong and the human
+  approves it, the previous content is gone. Two things make this survivable in a first draft — the
+  approval gate means nothing lands unreviewed, and Layer 1's regeneration is idempotent, so derived
+  files can always be rebuilt from content. Adding git later is purely additive: it observes the tree
+  after each flush and changes no write path. Until then, back up the KB directory.
 - **ACP adapter.** Would expose the PKB to Zed and other ACP editors. Additive once `PkbService`
   exists — a fourth adapter, no core changes.
 - **Multi-user.** The PKB is personal. `StoreBackend` namespacing and auth are unnecessary; the
   daemon binds to localhost.
 - **Remote deployment topology.** The daemon is host-agnostic. Where it runs, and how the TUI reaches
-  it when it is not local, is a deployment question for when Telegram lands.
+  it when it is not local, is a deployment question for when Telegram lands. Note that D9 ties the
+  bot to the daemon's host, and the daemon's host is where the KB lives.
 - **Sandboxing.** `FilesystemBackend(virtual_mode=True)` confines agents to the KB root. No shell
   access is granted, so `LocalShellBackend` and sandbox backends are not used.
 
@@ -404,13 +422,13 @@ Deferred deliberately, not overlooked:
 
 Bottom-up, one spec and plan per layer:
 
-1. **`pkb.core`** — schema, validator, generators, scaffolder, git policy. No LLM, no agents, fully
-   TDD-able. Every guarantee above rests on it.
+1. **`pkb.core`** — schema, validator, generators, scaffolder. No LLM, no agents, fully TDD-able.
+   Every guarantee above rests on it.
 2. **`pkb.agents`** — runtime, registry, expert factory, Librarian, the two middleware, default
    skills.
 3. **`pkb.service` + `pkb.server`** — the protocol, its implementation, HTTP routes, SSE, MCP mount.
-4. **`pkb.tui`** — Textual client, including the approval diff modal.
-5. **`pkb.channels.telegram`** — bot adapter.
+4. **`pkb.tui`** + **`pkb.clients.approval`** — Textual client, including the approval diff modal.
+5. **`pkb.server.telegram`** — daemon-hosted bot task, reusing the approval helper from step 4.
 
 ---
 
