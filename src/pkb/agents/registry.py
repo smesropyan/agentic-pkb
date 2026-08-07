@@ -1,0 +1,508 @@
+"""The agent catalog and the lazy graph cache — ``RG-1`` … ``RG-22``.
+
+Two kinds of agent exist and no more: one Librarian and one Topic Expert per topic root, at every
+depth (RG-1, RG-12). This module is the only place that knows which agents exist, what they are
+called, which model each runs on, and when a compiled graph has gone stale.
+
+**One scan, no walk of our own** (RG-2). The catalog is a projection of a single
+:func:`pkb.core.scan.scan` call. ``KbSnapshot.topics`` already carries ``path``, ``agent_id``,
+``tag``, ``parent``, ``children``, ``has_expert`` and ``meta``, so nothing here re-derives an id, a
+slug or a parent chain — Layer 1 owns all of it (RG-11), and a second implementation would drift the
+first time a folder name grows a character Layer 1 slugifies differently.
+
+**Nothing is compiled until it is used** (RG-3, RG-4). Building the registry compiles zero graphs;
+so does listing the agents, and so does compiling the Librarian (RG-8) — fifty topics must not mean
+fifty graphs at boot. The Librarian's subagent list is fifty :class:`LazyAgentProxy` objects, each of
+which calls :meth:`AgentRegistry.get` the first time deepagents actually delegates to it.
+
+**One graph per topic, two ways in** (RG-6). ``get(agent_id)`` and the proxy inside ``subagents()``
+resolve to the same cache entry, so a direct conversation with an expert and work the Librarian
+delegates to it can never run different configuration.
+
+**RG-18 — invalidation cannot reach a running thread.** deepagents' ``SkillsMiddleware`` loads the
+skill set once per thread and stores it in checkpointed state; its ``before_agent`` returns early
+whenever ``skills_metadata`` is already present. So a skill added mid-session is invisible to every
+thread that has already taken a turn, no matter how many times :meth:`AgentRegistry.invalidate` is
+called: the stale value lives in the *checkpoint*, not in this cache. A fresh skill set needs a new
+thread (or a state key this layer deliberately does not reach into). This is a harness property, not
+a defect here — do not "fix" it by eagerly rebuilding graphs, which changes nothing observable and
+costs the laziness RG-4 exists for.
+"""
+
+from __future__ import annotations
+
+import threading
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Final, Protocol, cast
+
+from deepagents import CompiledSubAgent
+from langchain_core.runnables import Runnable
+from langchain_core.runnables.config import merge_configs
+from langgraph.graph.state import CompiledStateGraph
+
+from pkb.agents.expert import GraphRuntime, build_expert
+from pkb.agents.librarian import build_librarian
+from pkb.contracts import AgentDescriptor, UnknownAgentError
+from pkb.core.errors import NotATopicRootError
+from pkb.core.generators import base as render
+from pkb.core.models import KbSnapshot, TopicRecord
+from pkb.core.paths import LIBRARIAN_AGENT_ID, topic_path_for_agent_id
+from pkb.core.scan import scan
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from pathlib import Path
+
+    from langchain_core.runnables import RunnableConfig
+    from langchain_core.tools import BaseTool
+
+__all__ = [
+    "DEFAULT_MODEL",
+    "LIBRARIAN_DESCRIPTION",
+    "LIBRARIAN_TITLE",
+    "AgentGraph",
+    "AgentRegistry",
+    "ExpertFactory",
+    "LazyAgentProxy",
+    "LibrarianFactory",
+]
+
+
+type AgentGraph = CompiledStateGraph[Any, Any, Any, Any]
+"""What a factory returns. Layer-2-internal: no type Layer 3 imports mentions it (RG-14)."""
+
+
+DEFAULT_MODEL: Final = "anthropic:claude-sonnet-5"
+"""The model every agent runs on unless ``models`` names a different one (RG-21).
+
+Deliberately not deepagents' own fallback (``claude-sonnet-4-6``): ``model=None`` is deprecated and
+silently shadows whatever default the deployment configured, so the registry always passes a string.
+"""
+
+LIBRARIAN_TITLE: Final = "Librarian"
+"""Display title of the root agent. Fixed, because the Librarian prompt is KB-independent (LB-3)."""
+
+LIBRARIAN_DESCRIPTION: Final = (
+    "Routes each item to the right Topic Expert, merges multi-topic answers, "
+    "and proposes a new topic when an item fits none."
+)
+"""The root agent's one-line gloss — its four responsibilities in the order LB-2 fixes them."""
+
+ToolFactory = Callable[[str], Sequence["BaseTool"]]
+"""Builds the extra tools one agent carries, given its agent id.
+
+The Librarian's gated ``create_topic`` (LB-7) and an expert's scope-limited ``create_subtopic``
+(EX-12) are both *per-agent*: the expert's may create sub-topics only under its own root, so one
+shared instance cannot serve every topic. The registry is the only place that knows which agent is
+being built, so it is where the hook belongs — but constructing the tools is not its business, which
+is why this is an injected callable and not an import of ``pkb.agents.tools``.
+"""
+
+
+class ExpertFactory(Protocol):
+    """The call ``pkb.agents.expert.build_expert`` must answer (EX-1, RG-1).
+
+    Deliberately narrower than the real function in two places, which is what makes the real one
+    assignable here — parameters are contravariant, so a factory that accepts *more* still answers
+    this call. ``model`` is a ``str`` because the registry resolves it (RG-21) and never hands over
+    a model object, and ``registry`` is this class because the registry passes itself, where
+    ``build_expert`` only asks for something it can ``invalidate()``.
+    """
+
+    def __call__(
+        self,
+        kb_root: Path,
+        topic_path: str,
+        runtime: GraphRuntime,
+        *,
+        model: str,
+        registry: AgentRegistry,
+        tools: Sequence[BaseTool],
+    ) -> AgentGraph: ...
+
+
+class LibrarianFactory(Protocol):
+    """The call ``pkb.agents.librarian.build_librarian`` must answer (LB-1, RG-1).
+
+    ``subagents`` is required rather than defaulted: a Librarian compiled without the roster is a
+    Librarian that can route to nothing, and RG-16 depends on the list being handed over fresh on
+    every rebuild.
+    """
+
+    def __call__(
+        self,
+        kb_root: Path,
+        runtime: GraphRuntime,
+        *,
+        model: str,
+        subagents: Sequence[CompiledSubAgent],
+        registry: AgentRegistry,
+        tools: Sequence[BaseTool],
+    ) -> AgentGraph: ...
+
+
+_EXPERT_MATCHES: ExpertFactory = build_expert
+_LIBRARIAN_MATCHES: LibrarianFactory = build_librarian
+"""Static proof that the two factories still answer the calls above.
+
+These bindings exist for the type checker alone: a rename or a signature change in ``expert.py`` or
+``librarian.py`` fails ``mypy`` here rather than at runtime on the first delegation.
+"""
+
+
+class LazyAgentProxy(Runnable[Any, Any]):
+    """A ``CompiledSubAgent.runnable`` that compiles its expert on first delegation (RG-8).
+
+    RG-4 wants laziness and RG-7 wants pre-compiled subagents; those two collide because deepagents
+    materializes the ``subagents=`` list while the *parent* graph is being compiled. The proxy
+    reconciles them: deepagents only ever calls ``.invoke``/``.ainvoke`` on a compiled subagent's
+    runnable, so nothing else has to exist until the first ``task()`` call actually arrives.
+
+    It holds **no** cached graph. Resolution goes through :meth:`AgentRegistry.get` on every call,
+    which is what makes RG-6 structural — an already-compiled Librarian handed out before an
+    :meth:`AgentRegistry.invalidate` still routes to the *current* expert graph rather than to the
+    one that was current when it was compiled.
+
+    ``with_config`` is overridden rather than inherited, and that is load-bearing. deepagents stamps
+    ``{"metadata": {"lc_agent_name": <agent id>}, "run_name": <agent id>}`` onto every compiled
+    subagent's runnable (``subagents.py:437-441``); that metadata is the *only* label the delegate's
+    streamed messages carry, and ``events.py`` reads it to attribute a delegated write to the expert
+    instead of to the Librarian (RT-44). ``Runnable.with_config`` would wrap this proxy in a
+    ``RunnableBinding``, and the binding's config never reaches the inner graph's own stream —
+    executed on the pin: ``lc_agent_name`` came back ``None`` for every delegated message. Applying
+    the config to the *resolved graph* (``Pregel.with_config``, which merges into the graph itself)
+    reproduces the un-proxied behaviour exactly, while keeping the graph unbuilt until it is needed.
+    """
+
+    def __init__(
+        self,
+        registry: AgentRegistry,
+        agent_id: str,
+        config: RunnableConfig | None = None,
+    ) -> None:
+        self.agent_id = agent_id
+        self._registry = registry
+        self._config = config
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}({self.agent_id!r})"
+
+    def with_config(
+        self, config: RunnableConfig | None = None, **kwargs: Any
+    ) -> Runnable[Any, Any]:
+        """Remember the config; apply it to the graph at resolve time. See the class docstring."""
+        merged = merge_configs(self._config, config, cast("RunnableConfig", kwargs))
+        return LazyAgentProxy(self._registry, self.agent_id, merged)
+
+    def resolve(self) -> AgentGraph:
+        """The expert's compiled graph, built on demand and cached by the registry (RG-6, RG-8)."""
+        graph = self._registry.get(self.agent_id)
+        return graph.with_config(self._config) if self._config else graph
+
+    def invoke(self, input: Any, config: RunnableConfig | None = None, **kwargs: Any) -> Any:
+        return self.resolve().invoke(input, config, **kwargs)
+
+    async def ainvoke(
+        self,
+        input: Any,
+        config: RunnableConfig | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        return await self.resolve().ainvoke(input, config, **kwargs)
+
+
+@dataclass(frozen=True, slots=True)
+class _Catalog:
+    """One scan, projected (RG-2). Rebuilt wholesale by :meth:`AgentRegistry.invalidate`."""
+
+    snapshot: KbSnapshot
+    descriptors: tuple[AgentDescriptor, ...]
+    """Librarian first, then topics in snapshot order — the root index's own order (RG-15)."""
+
+    topics: Mapping[str, TopicRecord]
+    """Topic records keyed by agent id. First wins on the id collision Layer 1 already reports."""
+
+
+class AgentRegistry:
+    """The catalog of agents and the cache of their compiled graphs (RG-1 … RG-22).
+
+    Public surface is exactly :meth:`list_agents`, :meth:`get`, :meth:`subagents` and
+    :meth:`invalidate` (RG-20). No method takes or returns a ``thread_id`` or a ``run_id``: threads
+    are Layer 3's bookkeeping and delegated work is not separately resumable (LB-9), so a registry
+    that knew about either would invite a table that cannot be kept true.
+
+    The registry is **read-only over the tree** (RG-19): it scans, it reads, and it never scaffolds,
+    flushes, writes a derived file or touches frontmatter. ``invalidate`` re-scans — that is a read.
+    """
+
+    def __init__(
+        self,
+        kb_root: Path,
+        runtime: GraphRuntime,
+        *,
+        default_model: str = DEFAULT_MODEL,
+        models: Mapping[str, str] | None = None,
+        tool_factory: ToolFactory | None = None,
+        expert_factory: ExpertFactory = build_expert,
+        librarian_factory: LibrarianFactory = build_librarian,
+    ) -> None:
+        """Wire the registry to one knowledge base.
+
+        Args:
+            kb_root: The knowledge base on disk. Scanned once per catalog build (RG-2).
+            runtime: The shared singletons every graph is handed — one checkpointer, one store, one
+                backend, one write lock (RT-1). Required, not optional: a registry that could build
+                a graph without them would let a delegated expert and the same expert reached
+                directly keep different durable histories.
+            default_model: The model every agent runs unless ``models`` overrides it (RG-21).
+            models: Per-agent-id model overrides. The model is a *registry* concern: no transport,
+                route or channel picks one, and it is never read from KB content — a ``model:`` key
+                in ``topic.md`` is an ``UNKNOWN_FIELD`` warning (VA-32), and putting deployment
+                configuration in the tree would drag it through the human-approval workflow.
+            tool_factory: Builds the extra tools for one agent id — ``create_topic`` for the
+                Librarian (LB-7), ``create_subtopic`` for an expert (EX-12). ``None`` means the
+                agents carry only the built-ins.
+            expert_factory: Injection point for :func:`pkb.agents.expert.build_expert`, which is
+                the default. Only a test replaces it; RG-1 allows the registry exactly these two.
+            librarian_factory: Injection point for :func:`pkb.agents.librarian.build_librarian`.
+        """
+        self.kb_root = kb_root
+        self.default_model = default_model
+        self.models: Mapping[str, str] = dict(models or {})
+        self._runtime = runtime
+        self._tool_factory = tool_factory
+        self._expert_factory = expert_factory
+        self._librarian_factory = librarian_factory
+        # RLock, not Lock: `get` holds it across the build, and `build_librarian` calls back into
+        # `subagents()` -> `_catalog()`, which takes it again on the same thread.
+        self._lock = threading.RLock()
+        self._cached_catalog: _Catalog | None = None
+        self._graphs: Mapping[str, AgentGraph] = {}
+
+    # -- catalog ------------------------------------------------------------------------
+
+    def list_agents(self) -> list[AgentDescriptor]:
+        """Every addressable agent: the Librarian, then the topics in snapshot order (RG-1, RG-15).
+
+        Snapshot order is depth-first pre-order, parent before child (PA-5) — the same order root
+        ``index.md`` renders, so a TUI listing this and a human reading the catalog see one tree.
+        Sub-topics are first-class entries at every depth (RG-12); ids are opaque strings that may
+        contain ``/`` and are returned verbatim.
+        """
+        return list(self._catalog().descriptors)
+
+    def subagents(self) -> list[CompiledSubAgent]:
+        """The expert roster to hand ``build_librarian`` as ``subagents=`` (RG-7 … RG-10).
+
+        Every entry is a :class:`~deepagents.CompiledSubAgent` — exactly ``name``, ``description``
+        and ``runnable``, never a declarative ``SubAgent`` dict, which deepagents recompiles per
+        invocation and which therefore cannot hold the multi-turn approval dialog README §1.6 needs.
+
+        ``name`` is the agent id verbatim (RG-9): root ``index.md`` renders those ids in backticks
+        and the Librarian reads that file, so the string it sees and the ``subagent_type`` the
+        ``task`` tool accepts must be the same string. ``description`` is the catalog's own rendered
+        description (RG-10) — deepagents interpolates it into the ``task`` tool description, so
+        routing selection and the routing view are driven by one string, not two.
+
+        The list is rebuilt from the current catalog on every call; an empty knowledge base yields
+        ``[]``, which is a working Librarian (LB-6).
+        """
+        return [
+            CompiledSubAgent(
+                name=descriptor.agent_id,
+                description=descriptor.description,
+                runnable=LazyAgentProxy(self, descriptor.agent_id),
+            )
+            for descriptor in self._catalog().descriptors
+            if descriptor.agent_id != LIBRARIAN_AGENT_ID
+        ]
+
+    # -- graphs -------------------------------------------------------------------------
+
+    def get(self, agent_id: str) -> AgentGraph:
+        """The compiled graph for ``agent_id``, built on first use and cached (RG-4, RG-5).
+
+        Concurrency-safe by double-checked caching: the fast path reads a mapping that is only ever
+        *replaced*, never mutated in place, so it needs no lock; the slow path holds the lock across
+        the whole build, so ten simultaneous first-uses of one id compile exactly one graph and all
+        ten callers receive it. A lock is genuinely required — the daemon streams runs concurrently
+        and Layer 2 also compiles from worker threads, so an unguarded check-then-build races.
+
+        Raises:
+            UnknownAgentError: No agent answers to that id (RG-13). Layer 3 maps this to 404, which
+                is why Layer 1's :class:`~pkb.core.errors.NotATopicRootError` is translated rather
+                than allowed to escape as a 500.
+        """
+        cached = self._graphs.get(agent_id)
+        if cached is not None:
+            return cached
+        with self._lock:
+            cached = self._graphs.get(agent_id)
+            if cached is not None:
+                return cached
+            graph = self._compile(agent_id)
+            self._graphs = {**self._graphs, agent_id: graph}
+            return graph
+
+    def invalidate(self, agent_id: str | None = None) -> None:
+        """Re-scan the tree and drop the graphs the scan makes wrong (RG-16, RG-17).
+
+        Always a re-scan, never an mtime staleness check: mtime granularity is a second on the
+        network and sync filesystems a personal knowledge base lives on, and a missed invalidation
+        is silent.
+
+        Three things happen every time, whatever ``agent_id`` says:
+
+        * the catalog is rebuilt, so a topic created mid-session appears in :meth:`list_agents`;
+        * ids no longer in the catalog are **evicted** — a renamed or removed topic must never hand
+          out a stale graph;
+        * the Librarian's graph is dropped. Its subagent list and the ``task`` tool description are
+          a snapshot taken at compile time (``subagents.py:457-462``), so without this a new topic
+          is listed but unroutable.
+
+        Args:
+            agent_id: ``None`` drops every cached graph — the safe default, and what
+                ``KbMaintenanceMiddleware`` calls (MW-30). A topic id additionally drops that
+                topic's own graph **and its descendants'**: an ``expert.md`` appearing or vanishing
+                changes the prompt source for the whole subtree beneath it (RG-17, PA-13).
+                Descendants come from ``TopicRecord.children``, never from splitting the id — ids
+                are opaque (RG-12).
+        """
+        with self._lock:
+            catalog = self._build_catalog()
+            self._cached_catalog = catalog
+            if agent_id is None:
+                self._graphs = {}
+                return
+            dropped = {agent_id} | self._descendant_ids(catalog, agent_id)
+            # `in catalog.topics` does double duty and both halves are load-bearing: it evicts ids
+            # the re-scan no longer knows, and — because the Librarian is not a topic — it is also
+            # what drops the Librarian unconditionally. Relaxing it to "keep anything not dropped"
+            # leaves a Librarian whose `task` tool cannot reach the topic just created.
+            self._graphs = {
+                cached_id: graph
+                for cached_id, graph in self._graphs.items()
+                if cached_id in catalog.topics and cached_id not in dropped
+            }
+
+    # -- internals ----------------------------------------------------------------------
+
+    def _catalog(self) -> _Catalog:
+        with self._lock:
+            if self._cached_catalog is None:
+                self._cached_catalog = self._build_catalog()
+            return self._cached_catalog
+
+    def _build_catalog(self) -> _Catalog:
+        """Project one :func:`pkb.core.scan.scan` into descriptors (RG-2, RG-3).
+
+        Reads no ``expert.md``, no ``SKILL.md`` as a prompt and compiles nothing: prompt source
+        selection is ``resolve_expert``'s job at *build* time, and paying for it here would make
+        boot cost proportional to the tree.
+        """
+        snapshot = scan(self.kb_root)
+        topics: dict[str, TopicRecord] = {}
+        for record in snapshot.topics.values():
+            # setdefault, not assignment: two topic folders whose every segment slugifies away
+            # share the fallback id, and Layer 1 has already reported UNADDRESSABLE_TOPIC_ROOT for
+            # both. First wins here; neither is dropped from `descriptors`.
+            topics.setdefault(record.agent_id, record)
+        descriptors = (
+            self._librarian_descriptor(),
+            *(self._topic_descriptor(record) for record in snapshot.topics.values()),
+        )
+        return _Catalog(snapshot=snapshot, descriptors=descriptors, topics=topics)
+
+    def _librarian_descriptor(self) -> AgentDescriptor:
+        return AgentDescriptor(
+            agent_id=LIBRARIAN_AGENT_ID,
+            title=LIBRARIAN_TITLE,
+            description=LIBRARIAN_DESCRIPTION,
+            has_custom_expert=False,
+            model_id=self._model_for(LIBRARIAN_AGENT_ID),
+        )
+
+    def _topic_descriptor(self, record: TopicRecord) -> AgentDescriptor:
+        """One catalog row (RG-14). A degraded ``topic.md`` degrades the row, never drops it."""
+        return AgentDescriptor(
+            agent_id=record.agent_id,
+            title=record.title,
+            description=_catalog_description(record),
+            has_custom_expert=record.has_expert,
+            model_id=self._model_for(record.agent_id),
+        )
+
+    def _model_for(self, agent_id: str) -> str:
+        """The model this agent runs on (RG-21). Private: RG-20 pins the public method set."""
+        return self.models.get(agent_id, self.default_model)
+
+    def _compile(self, agent_id: str) -> AgentGraph:
+        """Call exactly one of the two factories (RG-1, RG-22).
+
+        The lock is held throughout; ``_catalog`` and ``subagents`` re-enter it on this thread,
+        which is why it is an :class:`~threading.RLock`.
+        """
+        model = self._model_for(agent_id)
+        tools = self._tool_factory(agent_id) if self._tool_factory is not None else ()
+        if agent_id == LIBRARIAN_AGENT_ID:
+            return self._librarian_factory(
+                self.kb_root,
+                self._runtime,
+                model=model,
+                subagents=self.subagents(),
+                registry=self,
+                tools=tools,
+            )
+        catalog = self._catalog()
+        record = catalog.topics.get(agent_id)
+        if record is None:
+            raise UnknownAgentError(f"no agent is registered under the id {agent_id!r}")
+        # Called for its refusal, not its return value: it is Layer 1's sanctioned inverse of
+        # `agent_id_for` (RG-11), and the `NotATopicRootError` it raises is exactly RG-13's signal
+        # that the catalog is stale — the topic was renamed or removed since the scan. The path
+        # handed to the factory is `TopicRecord.path`, Layer 1's own KB-relative string (EX-1).
+        try:
+            topic_path_for_agent_id(self.kb_root, agent_id)
+        except NotATopicRootError as exc:
+            raise UnknownAgentError(f"no agent is registered under the id {agent_id!r}") from exc
+        return self._expert_factory(
+            self.kb_root,
+            record.path,
+            self._runtime,
+            model=model,
+            registry=self,
+            tools=tools,
+        )
+
+    @staticmethod
+    def _descendant_ids(catalog: _Catalog, agent_id: str) -> set[str]:
+        """Agent ids beneath ``agent_id``, read off ``TopicRecord.children`` (RG-12, RG-17)."""
+        record = catalog.topics.get(agent_id)
+        if record is None:
+            return set()
+        found: set[str] = set()
+        pending = list(record.children)
+        while pending:
+            child = catalog.snapshot.topics.get(pending.pop())
+            if child is None or child.agent_id in found:
+                continue
+            found.add(child.agent_id)
+            pending.extend(child.children)
+        return found
+
+
+def _catalog_description(record: TopicRecord) -> str:
+    """The description the root catalog renders for this topic (RG-10, GE-25).
+
+    One string serves three consumers — the root ``index.md`` line, ``AgentDescriptor.description``
+    in a transport's agent list, and ``CompiledSubAgent.description``, which deepagents interpolates
+    into the ``task`` tool description the Librarian routes on. Composed out of Layer 1's own
+    rendering pieces (:func:`pkb.core.generators.base.inline` and its two degradation placeholders)
+    rather than re-escaped here, so a description containing brackets or a newline reaches the
+    routing prompt in exactly the form the human reads in the catalog.
+    """
+    if record.meta is None:
+        return render.MISSING_TOPIC_METADATA
+    if not record.meta.description:
+        return render.NO_DESCRIPTION
+    return render.inline(record.meta.description)
