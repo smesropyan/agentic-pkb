@@ -372,8 +372,11 @@ Runs as a supervised background task inside the daemon process and calls `PkbSer
 HTTP round trip, no second process, no auth boundary (D9). Enabled by config; absent config, the
 daemon starts without it.
 
-One bot. Default target is the Librarian; `/agents` lists, `/connect cooking` switches — direct
-expert access without a bot per topic. Approvals arrive as inline keyboard buttons.
+**Amended 2026-08-07: a channel per expert.** One bot, but the *chat* selects the agent — a Cooking
+channel talks to the Cooking expert, a Librarian channel routes. The daemon holds a `chat_id` →
+`agent_id` mapping; `/connect` is gone, and with it the "which expert am I talking to?" ambiguity
+that made a mis-sent note land in the wrong topic. A message from an unmapped chat is answered with
+instructions rather than routed to a default. Approvals arrive as inline keyboard buttons.
 
 `edit` is impractical on a phone, so the Telegram adapter narrows `allowed_decisions` to
 approve/reject and directs the human to the TUI for anything needing an edit.
