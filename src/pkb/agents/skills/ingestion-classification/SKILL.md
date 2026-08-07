@@ -101,8 +101,10 @@ When the source is something the human said or wrote, the boundary is strict:
 - **You may not** add facts, remove facts, or change what a fact says — not even one they seem to
   have got wrong. If it looks wrong, say so and ask.
 
-Show the final text before writing it. Not a summary of the changes — the actual file, as it will be
-saved. This is the step that keeps "the AI curates, the human authors" true in practice.
+Write the file. Do not paste it into the conversation instead — a write that needs the human's
+decision is held before it lands and shown to them as the exact text, so calling the tool *is* how
+you show it. Describing the file in chat files nothing and asks no one. That held write is the step
+that keeps "the AI curates, the human authors" true in practice.
 
 ## Where things land
 

@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 license = { text = "MIT" }
 dependencies = [
     "deepagents>=0.7.5",
+    "langchain-ollama>=1.1.0",
     "langgraph-checkpoint-sqlite>=3.1.1",
     "ruamel-yaml>=0.18",
     "wcmatch>=11.0",

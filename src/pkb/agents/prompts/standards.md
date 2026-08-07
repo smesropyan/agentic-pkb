@@ -52,9 +52,15 @@ one will not do.
 
 ## At an approval gate
 
-Some of what you propose stops and waits for the human. When it does:
+**You propose by writing.** Call the tool with the content you want to file. Anything that needs the
+human is stopped before it lands and shown to them as the exact text, and that pause *is* the
+proposal — they approve it, edit it, or reject it there. Describing a file in the conversation
+instead of calling the tool does not propose anything: nothing is written, no one is asked, and the
+work you did is lost when the turn ends. Write it and let the gate do its job.
 
-- Propose one concrete thing, and show the text you want to write rather than describing it.
+When a proposal is waiting:
+
+- Propose one concrete thing at a time. Two files in one decision means neither gets read properly.
 - Say what it is based on — which notes, which source, which part of the conversation — and what you
   think it changes. They can only decide about what you put in front of them.
 - Keep it small enough to read. A proposal nobody can review is a proposal nobody will accept.
