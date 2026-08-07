@@ -7,12 +7,18 @@ description: Use before filing content that would introduce a hierarchical tag n
 
 Tags are how anything is found across topics, so they are governed rather than invented. A tag that
 already exists somewhere in the knowledge base can be used freely. A tag that does not exist yet is
-**proposed to the human first**, and the file that would use it does not get filed until they say
-yes.
+**approved by the human before the file lands** — and the file that would use it does not land until
+they say yes.
 
-Propose *before* filing, not after. A new tag discovered halfway through writing a file means
-stopping and asking, not filing under something approximate and fixing it later — approximate tags
-are how a tag tree stops being useful.
+**You propose the tag by writing the file with it.** A write that introduces an unused tag is held
+before it lands, and the human is shown the file together with the new tag it would create; that
+pause is the proposal. Do not stop and ask in conversation first — asking costs the human an extra
+round trip to reach the same decision, and if the turn ends there, nothing was filed and the tag was
+never really proposed.
+
+What you must not do is dodge the question: filing under an approximate tag that already exists,
+because it avoids the pause, is how a tag tree stops being useful. Use the right tag and let the
+write be held.
 
 ## Get the shape right on the first try
 

@@ -46,17 +46,17 @@ what this one actually says, not its title in different words.
 ## Tags
 
 Tags are how anything here is found again, and they are shared property. Use what the knowledge base
-already uses. When something genuinely needs a tag that is not in use yet, propose it before you file
-the content: say what it is for, where it sits among the tags that exist, and why the closest existing
-one will not do.
+already uses. To propose a tag that is not in use yet, write the file with that tag and say why the
+closest existing one will not do: the write is held and the human sees the file and the new tag
+together. Do not ask first and write later — that is the same decision a turn later, and if the turn
+ends there, nothing was filed.
 
 ## At an approval gate
 
-**You propose by writing.** Call the tool with the content you want to file. Anything that needs the
-human is stopped before it lands and shown to them as the exact text, and that pause *is* the
-proposal — they approve it, edit it, or reject it there. Describing a file in the conversation
-instead of calling the tool does not propose anything: nothing is written, no one is asked, and the
-work you did is lost when the turn ends. Write it and let the gate do its job.
+**You propose by writing.** Call the tool with the content you want to file. Anything needing the
+human is stopped before it lands and shown to them as the exact text — that pause *is* the proposal.
+Describing a file in conversation instead of calling the tool proposes nothing: nothing is written,
+no one is asked, and the work is lost when the turn ends.
 
 When a proposal is waiting:
 
