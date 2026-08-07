@@ -31,23 +31,43 @@ Two consequences follow, and they are the whole design:
 
 ```
 references/radical-candor/
-├── radical-candor.md        # the source map — thesis, provenance, what is here, what was skipped
-├── parts/
-│   ├── care-personally-and-challenge-directly.md
-│   └── praise-in-public-criticise-in-private.md
+├── radical-candor.md        # ONE file: thesis, provenance, one section per argument, what was skipped
 └── radical-candor.pdf
 ```
 
-The source-level file stops being a compression of the source and becomes a **map** of it, carrying
-the thesis, the provenance, an index of the parts, and — load-bearing — an honest record of what was
-*not* extracted. A part is a first-class file: its own frontmatter, its own `description`, its own
-tags, listed in the topic index, reachable by tag, selectable into an implementation pack.
+**One physical file per source, with the arguments as sections inside it** — not one file per
+argument. This is the existing Layer 1 shape (`references/<source>/<source>.md`), unchanged, which is
+the first thing to like about it: no new file role, no index-rendering change, no new validation
+rules, nothing for Layer 1 to learn.
 
-**Parts are argument-scoped, not chapter-scoped** (ruling 2). Chapters are convenient and arbitrary:
-some carry three ideas and some carry none. The unit is the claim the source is making. This is
-harder to make deterministic than counting chapters, and that cost is accepted deliberately.
+The file carries the thesis, the provenance, one section per argument the source actually makes, and
+an honest record of what was not extracted. **Arguments are argument-scoped, not chapter-scoped**
+(LS-2): a chapter carrying three arguments becomes three sections, one carrying none becomes zero.
 
----
+### Why this beats a file per argument
+
+A file per argument sounds better and is worse here, because it makes *identity* the hard problem.
+Argument boundaries are a judgement, so a second reading re-phrases a claim, the filename derives
+from the claim, and the old file is orphaned rather than updated. Layer 1 never deletes, so the tree
+slowly fills with near-identical parts under slightly different names — and nobody notices, because
+each one looks fine on its own. Reconciliation would have to match arguments across passes by
+meaning, with no stable key to match on.
+
+With one file, there is nothing to match. Two versions of one document are compared, and identity is
+a non-question.
+
+### What this trades away, stated plainly
+
+**Retrieval granularity.** An argument cannot carry its own tags, so the file carries the union of
+its arguments' tags and a search for `topic.cooking.grilling` returns the whole book because one
+section mentioned grilling. A pack asking "what do I know about feedback" gets the entire source file
+rather than the three relevant sections.
+
+That cost is accepted for the first draft, on the judgement that a well-structured document is more
+usable to a reasoning agent than twenty fragments — context survives — and that this is reversible:
+promoting a section to its own file later is additive, while un-splitting a tree full of orphaned
+parts is not. If retrieval proves too coarse in use, the fix is pack-side slicing of the source file
+before it is per-argument storage.
 
 ## Rulings of 2026-08-07
 
@@ -55,7 +75,7 @@ harder to make deterministic than counting chapters, and that cost is accepted d
 |---|--------|-------------|
 | **LS-1** | **The source file is copied into each topic that gainfully ingests it.** | The copy follows the *extraction*, not the routing: an expert that reads the source and files nothing does not get a copy. A topic folder stays self-contained and portable, at the cost of storing a large binary more than once — the deliberate trade. |
 | **LS-2** | **Parts are argument-scoped, not chapter-scoped.** | Segmentation is a judgement the extraction skill makes, not a mechanical split. A chapter carrying three arguments becomes three parts; a chapter carrying none becomes zero. |
-| **LS-3** | **A part carries the tags relevant to it — its own, inherited from the source, or both.** | Inheritance is not automatic and not forbidden. What matters is that a part is findable on its own terms; a part tagged only with the source's topic tag is as unreachable as no part at all. |
+| **LS-3** | **The source file carries the tags relevant to the arguments it holds** — the union of what its sections are about. | With one file per source there is one place for tags, so the file is findable by any argument in it. The cost is coarseness, stated above and accepted. |
 | **LS-4** | **Every expert ingests every part, and may ignore the ones its topic does not care about.** | *Not* a split of the parts between experts. Both the Management and the Parenting expert read the whole of a management book; each files what its lens sees, and the same argument may be extracted twice with different framings. That is the multi-expert ingestion ruling (README §2.2, Layer 2 LB-*) applied at part granularity, not a new rule. |
 | **LS-5** | **A source may be re-ingested as often as it is worth re-ingesting**, and each pass **reconciles** with what is already there rather than replacing it. | Topics change and experts get better; the second reading of a book is expected to be a better one. Reconciliation is specified below — it is the part of this design with the most ways to go quietly wrong. |
 | **LS-6** | **"Gainfully ingested" means at least one insight was derived.** | Hand a cooking book to the Trading expert and it yields nothing: no reference folder, no stub file, no copy of the source. Zero insights leaves **no trace at all** in that topic, rather than an empty folder implying the source was considered and is somehow relevant. |
@@ -97,11 +117,9 @@ distillation of what the topic knows and points at the parts.
 
 ## What each layer has to change
 
-**Layer 1 (`pkb.core`)** — a `REFERENCE_PART` file role for `references/<source>/parts/*.md`;
-location-consistency rules for it (a part is `type.reference`, `source_type: reference`, and belongs
-to the topic that owns the folder); topic-index rendering that lists parts under their source rather
-than flat, so a twenty-part book does not swamp the index; and a validation rule that a `parts/`
-directory implies a source map file beside it.
+**Layer 1 (`pkb.core`)** — **nothing.** One file per source is the shape Layer 1 already
+implements and validates. That is the strongest argument for this design: the layer with no undo and
+603 tests behind it does not have to change at all.
 
 **Layer 2 (`pkb.agents`)** — the `ingest-paper` and `ingest-book` skills; and the chunked ingestion
 workflow, which is the hard part. It must: segment the source, extract part by part with a bounded
@@ -117,37 +135,47 @@ routing (an expert parks on its own thread) directly relevant.
 
 ## Reconciliation — what a second pass does (LS-5)
 
-Re-ingestion is a first-class flow, not a repair operation, so the interesting question is not "may
-we re-run it" but "what happens to what the last pass wrote". Four cases, and the machinery for the
-hard one already exists.
+Re-ingestion is a first-class flow. A second pass produces a fresh extraction, and the two documents
+are compared: **what is new, what is better said, what now disagrees.**
 
-| The new pass finds | What happens |
+| The comparison finds | What happens |
 |---|---|
-| **An argument with no existing part** | File it. This is the ordinary case and needs nothing new. |
-| **A better version of an existing part** | An **edit of existing content**, proposed rather than applied. The first write of a part is frictionless (RT-31 — capture must not nag); overwriting a part the human may already have read and relied on is not the same act, and the gate table must stop treating them as one. See the amendment below. |
-| **Something that contradicts an existing part** | This is a **conflict**, and §1.7's machinery already handles it: flag the affected file with `status.conflict-review` and a one-line `review_note`, change nothing, let the human settle it. No new mechanism — a second reading disagreeing with the first is exactly the case conflict detection was built for. |
-| **Nothing where a part exists** | Keep the part. Layer 1 never deletes, and an argument the newer pass missed is not thereby wrong. The **source map** records that this pass did not cover it, so the omission is visible rather than silent. |
+| **An argument the old file does not have** | Added as a new section. |
+| **A better statement of an argument already there** | An **edit of existing content**, proposed rather than applied — the human may have read and relied on the old wording. |
+| **An argument that contradicts one already there** | A **conflict**: flag with `status.conflict-review` and a one-line `review_note`, change nothing, let the human settle it. §1.7's machinery, unchanged — a second reading disagreeing with the first is the case it was built for. |
+| **Nothing where the old file has an argument** | Keep it. Layer 1 never deletes, and an argument this pass missed is not thereby wrong. The map records that this pass did not cover it. |
+
+**Compare per argument, not per document.** The storage is one file; the *comparison* walks section
+by section. Handing an LLM two long documents and asking "is anything new?" reproduces the exact
+failure this design exists to prevent — a bounded reader, an unbounded input, and a confident answer
+about the part it managed to read. Section-wise comparison keeps each judgement small enough to be
+trustworthy, and makes "it found nothing new in section 9" a statement someone can check.
+
+**One proposal, not twenty.** The pass ends with a single proposed version of the file and a summary
+of what changed, so the human makes one decision about one document instead of twenty about
+fragments. That is the approval surface §1.6 asks for.
+
+**The map is a record of the readings, not of the source.** Each pass appends what it covered, what
+it skipped and why, and when. A book read three times carries three readings' worth of provenance,
+which is what makes "the expert got smarter" checkable rather than asserted.
 
 **Amendment this forces to the gate table.** RT-31 puts no gate on reference depth files, which was
-right when a reference was written once and never touched again. With re-ingestion, an un-gated write
-can overwrite a previous extraction the human has already read. So: **the first write of a part stays
-un-gated; an overwrite of an existing part is gated or routed through conflict detection.** Without
-that split, "human content wins" holds for notes and quietly fails for everything derived from a
-source — and derived material is most of what a knowledge base accumulates.
-
-**The source map is the record of the reading, not of the source.** Each pass updates it with what it
-covered, what it skipped and why, and when. A book read three times has three readings' worth of
-provenance, which is what makes "the expert got smarter" checkable rather than asserted.
+right when a reference was written once and never touched again. Under re-ingestion an un-gated write
+overwrites an extraction the human has already read. So: **the first write of a source file stays
+un-gated; a re-ingestion that rewrites one is gated.** Without that split, "human content wins" holds
+for notes and quietly fails for everything derived from a source — which is most of what a knowledge
+base accumulates.
 
 ## Open items
 
-- **Segmentation stability across passes.** Argument-scoped parts (LS-2) are not repeatable the way
-  chapters are, so the second pass must *match* its arguments against existing parts before it can
-  reconcile. Matching on the claim rather than the filename is the only thing that can work, and
-  nothing here specifies how. This is the single hardest piece of the design.
-- **Part naming.** A filename derived from a claim moves when the claim is re-phrased. Since Layer 1
-  never deletes, a renamed part becomes two parts unless the match above is solid.
-- **Progress visibility.** A twenty-part ingestion is minutes of work; the human should see it
+- **Section identity within the file.** Matching is a smaller problem than it was, but not zero: the
+  comparison still has to line up "the same argument, said differently" across two versions. It is
+  now bounded by one document rather than a directory, and a stable section anchor would make it
+  cheaper still.
+- **Progress visibility.** A twenty-argument ingestion is minutes of work; the human should see it
   progress and be able to stop it. Layer 3/4, once the loop exists.
 - **Very large sources.** Nothing bounds the size. A 900-page reference work may want the "consult,
-  do not read" treatment rather than full extraction.
+  do not read" treatment rather than full extraction — and a source file with 200 sections is its own
+  kind of unusable.
+- **When granularity stops being enough.** If packs routinely pull whole books for one argument,
+  revisit — pack-side slicing first, per-argument files only if that fails.
