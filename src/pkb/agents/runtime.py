@@ -31,6 +31,16 @@ tool call never happened — the write is simply never performed and the approva
 :meth:`PkbRuntime.run` reads ``aget_state(config).interrupts`` first and raises
 :class:`~pkb.contracts.ApprovalPendingError` rather than forwarding.
 
+**3a. The Librarian's turn is a workflow, not a graph run (LB-12 … LB-19).**
+Routing used to be a tool the Librarian's model could decline to call, and measured against a real
+model it declined. So :meth:`PkbRuntime.run` on the Librarian drives four steps — classify (the one
+model call), fan out to every applicable expert, merge their answers by attribution, offer the
+threads they ran on — of which only the first is a graph run. The other three are ordinary Python
+here and in :mod:`pkb.agents.routing`, which is what makes the fan-out unskippable. Every expert in
+the fan-out goes through the *same* :meth:`PkbRuntime._stream` a direct conversation uses, on its own
+derived thread, so it inherits the active-run registry, the pending-approval refusal, the write lock
+and the flush guard without a second implementation of any of them.
+
 **4. The knowledge-base write lock (D-7, RT-51 … RT-53).**
 One per process, reentrancy-safe by construction, held **only** around ``flush`` and
 ``scaffold_topic`` — never across a model call, a tool call or an interrupt. Approvals are designed
@@ -64,7 +74,7 @@ from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.backends.state import StateBackend
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.store.base import BaseStore
@@ -93,6 +103,19 @@ from pkb.agents.registry import (
     AgentGraph,
     AgentRegistry,
 )
+from pkb.agents.routing import (
+    RETRY_INSTRUCTION as ROUTE_RETRY,
+)
+from pkb.agents.routing import (
+    TOPIC_GAP_INSTRUCTION,
+    FanOut,
+    expert_thread_id,
+    librarian_thread_id,
+    merge_reply,
+    read_decision,
+    resolve_targets,
+    routing_menu,
+)
 from pkb.agents.scans import SqliteScanQueue, run_scan
 from pkb.agents.skills import packaged_skills_root
 from pkb.agents.tools.topics import TopicToolEnv, topic_tools
@@ -105,6 +128,7 @@ from pkb.contracts import (
     Decision,
     FlushReport,
     InterruptEvent,
+    MessageComplete,
     MessageView,
     PendingProposal,
     RunEnd,
@@ -115,6 +139,7 @@ from pkb.contracts import (
     ThreadBusyError,
 )
 from pkb.core import regenerate_all
+from pkb.core.paths import LIBRARIAN_AGENT_ID
 from pkb.core.scan import scan
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -128,6 +153,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 __all__ = [
     "DEFAULT_DURABILITY",
+    "DEFAULT_FANOUT_LIMIT",
     "EVENT_BUFFER_SIZE",
     "Durability",
     "PkbRuntime",
@@ -154,6 +180,17 @@ EVENT_BUFFER_SIZE: Final = 64
 
 Bounded rather than unlimited so a slow consumer applies backpressure to the run instead of letting
 a long generation accumulate in memory; large enough that no ordinary turn ever blocks on it.
+"""
+
+DEFAULT_FANOUT_LIMIT: Final = 3
+"""How many experts a Librarian turn may run at once (LB-15).
+
+Three, because the deployment is an Ollama Pro plan whose stated allowance is **three concurrent
+cloud models** (Q6). A five-topic question that fired five concurrent runs would have two of them
+answered with a ``429``, and the merged reply would report a knowledge-base failure that is really a
+plan limit. The cap is configuration rather than a constant in the fan-out because the plan is the
+thing that varies: a deployment running everything locally can raise it, and one metered harder can
+drop it to 1 without any code understanding why.
 """
 
 ProposalSink = Callable[[PendingProposal], None]
@@ -419,6 +456,9 @@ class RuntimeConfig:
 
     durability: Durability = DEFAULT_DURABILITY
     """Checkpoint durability for every run. See :data:`DEFAULT_DURABILITY`."""
+
+    fanout_limit: int = DEFAULT_FANOUT_LIMIT
+    """How many experts one Librarian turn may run concurrently (LB-15). See the default."""
 
     clock: Callable[[], date] = date.today
     """Injected ``today`` for the ``updated`` stamp (MW-20), so a date boundary is testable."""
@@ -687,11 +727,24 @@ class PkbRuntime:
                 rather than forwarded, because the harness would silently discard the interrupt and
                 run the turn as if the gated call had never happened (D-16).
         """
+        rid = run_id or _new_run_id()
+        if agent_id == LIBRARIAN_AGENT_ID:
+            # Four steps, not one graph run (LB-12). See `_librarian_turn`.
+            async for event in self._librarian_turn(
+                thread_id,
+                _payload_factory(message),
+                message=message,
+                run_id=rid,
+                approval_mode=approval_mode,
+                refuse_when_pending=True,
+            ):
+                yield event
+            return
         async for event in self._stream(
             agent_id,
             thread_id,
             _payload_factory(message),
-            run_id=run_id or _new_run_id(),
+            run_id=rid,
             approval_mode=approval_mode,
             refuse_when_pending=True,
         ):
@@ -714,9 +767,12 @@ class PkbRuntime:
         and an unmatched interrupt id degrades into a confusing message about hanging tool calls
         that never names the id.
 
-        Approvals are routed **by thread, never by agent** (LB-10): an interrupt raised inside a
-        delegated expert propagates to the parent's thread and is resolved there with the parent's
-        id, so ``agent_id`` is the id of the run that was interrupted.
+        Approvals are routed **by thread, never by agent** (LB-10): the interrupt is resolved on the
+        thread that raised it, with that thread's agent id. Since the fan-out gives every expert its
+        own derived thread (LB-14), an expert's approval is answered as
+        ``resume("topic/cooking", "<librarian-thread>::topic/cooking", …)`` — which is exactly what
+        the merged reply told the human, and what makes step 4's offer a real link rather than a
+        suggestion.
 
         Raises:
             StaleInterruptError: Nothing is pending, or ``interrupt_id`` names a different interrupt.
@@ -725,11 +781,27 @@ class PkbRuntime:
         """
         pending = await self.pending_approval(agent_id, thread_id)
         command = _resume_payload(pending, decisions, interrupt_id=interrupt_id)
+        rid = run_id or _new_run_id()
+        if agent_id == LIBRARIAN_AGENT_ID:
+            # A resumed Librarian turn is normally the topic-creation gate completing, which routes
+            # nowhere. It goes through the same workflow anyway so that the one case where it *does*
+            # carry a decision — a model that batched `route` with a gated call — still fans out
+            # rather than silently dropping the classification it already made (LB-12).
+            async for event in self._librarian_turn(
+                thread_id,
+                lambda: command,
+                message=None,
+                run_id=rid,
+                approval_mode="interactive",
+                refuse_when_pending=False,
+            ):
+                yield event
+            return
         async for event in self._stream(
             agent_id,
             thread_id,
             lambda: command,
-            run_id=run_id or _new_run_id(),
+            run_id=rid,
             approval_mode="interactive",
             refuse_when_pending=False,
         ):
@@ -744,10 +816,15 @@ class PkbRuntime:
         before the cancellation is on disk — and the cancelled task still flushes on its way out
         (MW-26). Unknown or already-finished run ids are a no-op, so a client racing the end of a
         run does not get an error for winning.
+
+        A Librarian turn drives several graphs under one run id — the classification, then one run
+        per expert in the fan-out — so the bookkeeping key is ``<run_id>`` or
+        ``<run_id>::<agent_id>`` and cancelling the turn cancels the whole family. Anything narrower
+        would leave expert runs alive after the human cancelled the question that started them.
         """
-        task = self._tasks.get(run_id)
-        if task is not None:
-            task.cancel()
+        for key, task in list(self._tasks.items()):
+            if key == run_id or key.startswith(f"{run_id}{_TASK_KEY_SEPARATOR}"):
+                task.cancel()
 
     # ----------------------------------------------------------------------------------
     # Approvals, history, threads (RT-38, RT-48, RT-49)
@@ -785,15 +862,33 @@ class PkbRuntime:
         return [view for view in (_message_view(message) for message in messages) if view]
 
     async def delete_thread(self, thread_id: str) -> None:
-        """Erase a thread's checkpoints and writes (RT-48).
+        """Erase a thread's checkpoints and writes, and those of the experts it routed to (RT-48).
 
-        Exposed here because Layer 3 may not import langgraph (I2). Delegated sub-runs share the
-        parent's ``thread_id`` in a nested ``checkpoint_ns`` (D-6), so this removes their rows too.
+        Exposed here because Layer 3 may not import langgraph (I2).
+
+        **The derived threads are the part that is easy to get wrong.** Before the routing workflow,
+        delegated work checkpointed under the parent's own ``thread_id`` in a nested
+        ``checkpoint_ns`` (D-6), so one ``adelete_thread`` took it all. Now every expert in a
+        fan-out runs on ``<thread_id>::<agent_id>`` (LB-14) — addressable, which was the point, and
+        therefore *not* removed by deleting the parent. A "delete this conversation" that left the
+        expert's copy of the material behind would be the worst kind of lie in a system with no
+        version control and no undo (D6), so the derived ids are enumerated from the catalog and
+        deleted too. Deleting a thread that never existed is a no-op, which is what makes
+        enumerating the whole catalog cheaper than remembering who ran.
         """
         if not isinstance(self.checkpointer, BaseCheckpointSaver):
             msg = "the runtime is closed; open it with PkbRuntime.open(...)"
             raise RuntimeError(msg)
         await self.checkpointer.adelete_thread(thread_id)
+        if librarian_thread_id(thread_id) is not None:
+            # Already a derived thread: deleting an expert's conversation must not reach sideways
+            # into its siblings or upwards into the Librarian's.
+            return
+        for descriptor in self._registry.list_agents():
+            if descriptor.agent_id != LIBRARIAN_AGENT_ID:
+                await self.checkpointer.adelete_thread(
+                    expert_thread_id(thread_id, descriptor.agent_id)
+                )
 
     def pending_proposals(self) -> list[PendingProposal]:
         """Propose-only actions awaiting a human, in the order they were recorded (RT-42).
@@ -871,6 +966,211 @@ class PkbRuntime:
         return topic_tools(env, agent_id)
 
     # ----------------------------------------------------------------------------------
+    # The Librarian's routing workflow (LB-12 … LB-19)
+    # ----------------------------------------------------------------------------------
+
+    @property
+    def fanout_limit(self) -> int:
+        """How many experts one turn may run at once — :class:`~pkb.agents.routing.FanOutHost`."""
+        return self.config.fanout_limit
+
+    def expert_stream(
+        self,
+        agent_id: str,
+        thread_id: str,
+        message: str,
+        *,
+        run_id: str,
+        approval_mode: ApprovalMode,
+    ) -> AsyncIterator[AgentEvent]:
+        """One expert's run inside a fan-out — :class:`~pkb.agents.routing.FanOutHost` (LB-15).
+
+        It is deliberately :meth:`_stream`, the same call a direct conversation with that expert
+        makes, differing only in the thread it runs on. That is what preserves "you are changing who
+        decides to call the expert, not what an expert is": the expert's own prompt, skills chain,
+        breadth middleware, validation and maintenance middleware and topic-scoped permissions all
+        come from its compiled graph, and every runtime guarantee — the active-run registry (RT-45),
+        the pending-approval refusal (RT-39), the write lock (RT-51) and the flush on both paths
+        (MW-26) — comes from this method. A fan-out that reached into the graph directly would have
+        needed its own copy of all eight, and the copy is where they rot.
+
+        ``task_key`` scopes the run's cancellation bookkeeping to ``<run_id>::<agent_id>`` so several
+        experts sharing one turn's run id do not evict each other from :attr:`_tasks` (see
+        :meth:`cancel`). Events still carry the turn's ``run_id``: a client is watching one turn.
+        """
+        return self._stream(
+            agent_id,
+            thread_id,
+            _payload_factory(message),
+            run_id=run_id,
+            approval_mode=approval_mode,
+            refuse_when_pending=True,
+            task_key=f"{run_id}{_TASK_KEY_SEPARATOR}{agent_id}",
+        )
+
+    async def _librarian_turn(
+        self,
+        thread_id: str,
+        payload: Callable[[], Any],
+        *,
+        message: str | None,
+        run_id: str,
+        approval_mode: ApprovalMode,
+        refuse_when_pending: bool,
+    ) -> AsyncIterator[AgentEvent]:
+        """Classify, fan out, merge, offer — one Librarian turn (LB-12 … LB-19).
+
+        The slot for ``(librarian, thread_id)`` is held across all four steps rather than for the
+        classification alone (RT-45). A second turn arriving while the fan-out is still running would
+        otherwise be admitted, classify against a thread whose reply has not been written yet, and
+        route the same item twice.
+
+        Step 1 is the only graph run on this thread, and three of its endings are not routing:
+
+        * it **raised** — one ``run.error`` was already emitted (RT-47); nothing is fanned out,
+          because a classification that failed named no topics;
+        * it **parked on a gate** — the model proposed ``create_topic`` for a topic gap and the
+          human's decision is pending on this thread (LB-7). The turn ends there and RT-39 refuses
+          the next message until it is answered, which is correct: the item is waiting on a topic;
+        * it **answered in prose** even after :class:`~pkb.agents.routing.RouteMiddleware` forced its
+          one retry — the human gets the menu (LB-19), never a guess.
+        """
+        key = (LIBRARIAN_AGENT_ID, thread_id)
+        if key in self._active:
+            raise ThreadBusyError(
+                f"a run is already active on thread {thread_id!r} for the librarian"
+            )
+        self._active[key] = run_id
+        try:
+            graph = self._registry.get(LIBRARIAN_AGENT_ID)
+            config = self.thread_config(thread_id)
+            ended: RunEnd | None = None
+            failed = False
+            async for event in self._stream(
+                LIBRARIAN_AGENT_ID,
+                thread_id,
+                payload,
+                run_id=run_id,
+                approval_mode=approval_mode,
+                refuse_when_pending=refuse_when_pending,
+                claim=False,
+            ):
+                if isinstance(event, RunEnd):
+                    ended = event
+                    continue
+                failed = failed or isinstance(event, RunError)
+                yield event
+            if failed or ended is None:
+                return
+            state = await graph.aget_state(config)
+            if state.interrupts:
+                yield ended
+                return
+            async for event in self._route(
+                graph,
+                config,
+                thread_id,
+                message=message,
+                classification=ended,
+                run_id=run_id,
+                approval_mode=approval_mode,
+            ):
+                yield event
+        finally:
+            self._release_slot(key, run_id)
+
+    async def _route(
+        self,
+        graph: AgentGraph,
+        config: RunnableConfig,
+        thread_id: str,
+        *,
+        message: str | None,
+        classification: RunEnd,
+        run_id: str,
+        approval_mode: ApprovalMode,
+    ) -> AsyncIterator[AgentEvent]:
+        """Steps 2 to 4, in code, over whatever step 1 decided (LB-15 … LB-19)."""
+        state = await graph.aget_state(config)
+        catalog = [
+            descriptor
+            for descriptor in self._registry.list_agents()
+            if descriptor.agent_id != LIBRARIAN_AGENT_ID
+        ]
+        decision = read_decision(state.values)
+        targets, unknown = resolve_targets(decision, catalog)
+
+        if not targets:
+            if not catalog:
+                # A topic gap with nothing to choose from — the bootstrapping case (LB-6). A menu of
+                # no experts is not a choice, so the turn goes back to the Librarian for the one
+                # thing it can do about a gap: propose a topic, gated, for the human (LB-7).
+                async for event in self._topic_gap(thread_id, run_id, approval_mode):
+                    yield event
+                return
+            reply = routing_menu(catalog, prose=classification.final_text)
+            async for event in self._deliver(graph, config, reply, run_id=run_id):
+                yield event
+            return
+
+        fan = FanOut(
+            self,
+            targets,
+            _forwarded_message(message, state.values),
+            thread_id=thread_id,
+            run_id=run_id,
+            approval_mode=approval_mode,
+            reason=decision.reason if decision is not None else "",
+        )
+        async for event in fan.stream():
+            yield event
+        async for event in self._deliver(
+            graph, config, merge_reply(fan.outcomes, unknown=unknown), run_id=run_id
+        ):
+            yield event
+
+    async def _topic_gap(
+        self, thread_id: str, run_id: str, approval_mode: ApprovalMode
+    ) -> AsyncIterator[AgentEvent]:
+        """Hand an unroutable item back to the Librarian to propose a topic (LB-6, LB-7).
+
+        A second turn on the same thread rather than a branch inside the first, because what happens
+        next is a *conversation*: the model proposes, the ``create_topic`` gate fires, the human
+        approves, edits the name or declines, and the thread carries all of it. Its events —
+        including that interrupt and its own terminal event — are forwarded unchanged, so this path
+        looks to a client exactly like the topic-creation flow it is.
+        """
+        async for event in self._stream(
+            LIBRARIAN_AGENT_ID,
+            thread_id,
+            _payload_factory(TOPIC_GAP_INSTRUCTION),
+            run_id=run_id,
+            approval_mode=approval_mode,
+            refuse_when_pending=False,
+            claim=False,
+        ):
+            yield event
+
+    async def _deliver(
+        self, graph: AgentGraph, config: RunnableConfig, reply: str, *, run_id: str
+    ) -> AsyncIterator[AgentEvent]:
+        """Record the turn's answer on the Librarian's thread and end the turn with it (LB-18).
+
+        The reply is appended to the thread's messages because it *is* the Librarian's turn: without
+        it ``history`` would show a routing tool call and nothing else, and the next turn's
+        classification would have no idea what was already said. It is written with
+        ``aupdate_state`` rather than by a graph node because no model produced it — that is the
+        guarantee, not an implementation detail.
+
+        A failed append is swallowed. The human has the answer either way, and replacing a delivered
+        reply with a bookkeeping error would be the worse of the two failures.
+        """
+        with contextlib.suppress(Exception):
+            await graph.aupdate_state(config, {"messages": [AIMessage(content=reply)]})
+        yield MessageComplete(run_id=run_id, agent_id=LIBRARIAN_AGENT_ID, text=reply)
+        yield RunEnd(run_id=run_id, final_text=reply)
+
+    # ----------------------------------------------------------------------------------
     # Internals
     # ----------------------------------------------------------------------------------
 
@@ -883,6 +1183,8 @@ class PkbRuntime:
         run_id: str,
         approval_mode: ApprovalMode,
         refuse_when_pending: bool,
+        claim: bool = True,
+        task_key: str | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Register the run, drive it in a task, and forward its events.
 
@@ -902,16 +1204,23 @@ class PkbRuntime:
 
         The busy check and the registration happen before the first ``await`` in this coroutine, so
         two runs started concurrently on one thread cannot both see a free slot (RT-45).
+
+        ``claim=False`` is for the one caller that already holds the slot: a Librarian turn takes
+        ``(librarian, thread)`` for its whole four-step workflow and drives the classification
+        through here, so re-taking it would refuse the turn against itself and releasing it at the
+        end of step 1 would let a second turn in while the fan-out is still running.
         """
         graph = self._registry.get(agent_id)
         key = (agent_id, thread_id)
-        if key in self._active:
-            raise ThreadBusyError(
-                f"a run is already active on thread {thread_id!r} for agent {agent_id!r}"
-            )
-        self._active[key] = run_id
+        if claim:
+            if key in self._active:
+                raise ThreadBusyError(
+                    f"a run is already active on thread {thread_id!r} for agent {agent_id!r}"
+                )
+            self._active[key] = run_id
         queue: asyncio.Queue[AgentEvent | None] = asyncio.Queue(maxsize=EVENT_BUFFER_SIZE)
         task: asyncio.Task[None] | None = None
+        bookkeeping = task_key or run_id
         try:
             if refuse_when_pending:
                 await self._refuse_when_pending(graph, thread_id)
@@ -924,9 +1233,10 @@ class PkbRuntime:
                     thread_id=thread_id,
                     run_id=run_id,
                     approval_mode=approval_mode,
+                    release_slot=claim,
                 )
             )
-            self._tasks[run_id] = task
+            self._tasks[bookkeeping] = task
             while True:
                 event = await queue.get()
                 if event is None:
@@ -938,12 +1248,13 @@ class PkbRuntime:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
         finally:
-            self._tasks.pop(run_id, None)
+            self._tasks.pop(bookkeeping, None)
             if task is not None and not task.done():
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
-            self._release_slot(key, run_id)
+            if claim:
+                self._release_slot(key, run_id)
 
     async def _drive(
         self,
@@ -955,6 +1266,7 @@ class PkbRuntime:
         thread_id: str,
         run_id: str,
         approval_mode: ApprovalMode,
+        release_slot: bool = True,
     ) -> None:
         """Execute the graph and push normalized events into *queue* (RT-42, RT-43, RT-45, MW-26).
 
@@ -1004,7 +1316,8 @@ class PkbRuntime:
                 finally:
                     await queue.put(None)
             finally:
-                self._release_slot((agent_id, thread_id), run_id)
+                if release_slot:
+                    self._release_slot((agent_id, thread_id), run_id)
 
     def _release_slot(self, key: tuple[str, str], run_id: str) -> None:
         """Free the active-run slot, but only if *run_id* still owns it (RT-45).
@@ -1191,6 +1504,38 @@ def _resume_payload(
 def _new_run_id() -> str:
     """A fresh run id. Never a thread id — those are Layer 3's to mint (RT-36)."""
     return str(uuid4())
+
+
+_TASK_KEY_SEPARATOR: Final = "::"
+"""Separates a turn's run id from the agent whose sub-run a cancellation task belongs to.
+
+Only :attr:`PkbRuntime._tasks` and :meth:`PkbRuntime.cancel` know this string; it is not an id a
+caller ever sees, and it is *not* the thread derivation (that one is
+:func:`pkb.agents.routing.expert_thread_id`, which happens to spell its join the same way for the
+same reason — a thread id minted by Layer 3 cannot contain it by accident).
+"""
+
+
+def _forwarded_message(message: str | None, values: Mapping[str, Any]) -> str:
+    """What the experts are actually sent: the human's item, verbatim (LB-15).
+
+    Never a paraphrase and never the Librarian's summary of it — an expert that ingests a summary
+    files a summary, and the whole point of routing to several experts is that each one reads the
+    *source* through its own lens.
+
+    On a resumed turn there is no message argument, so it is recovered from the thread. The last
+    ``HumanMessage`` is the right one except in one case that must be excluded:
+    :data:`~pkb.agents.routing.RETRY_INSTRUCTION` is delivered as a ``HumanMessage`` so the human can
+    see why the turn cost two model calls (LB-13), and forwarding *that* to four experts would route
+    the harness's own nagging instead of the item.
+    """
+    if message is not None:
+        return message
+    for entry in reversed(list(values.get("messages") or ())):
+        text = getattr(entry, "text", "")
+        if getattr(entry, "type", "") == "human" and text and text != ROUTE_RETRY:
+            return str(text)
+    return ""
 
 
 _ROLES: Final[Mapping[str, str]] = {"human": "human", "ai": "assistant", "tool": "tool"}

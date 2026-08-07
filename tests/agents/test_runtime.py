@@ -138,14 +138,11 @@ def _librarian_factory(model: ScriptedChatModel) -> Any:
         kb_root: Path,
         runtime: Any,
         *,
-        subagents: Sequence[Any] = (),
         registry: Any = None,
         tools: Sequence[Any] = (),
         **_ignored: Any,
     ) -> Any:
-        return build_librarian(
-            kb_root, runtime, model=model, subagents=subagents, registry=registry, tools=tools
-        )
+        return build_librarian(kb_root, runtime, model=model, registry=registry, tools=tools)
 
     return factory
 
@@ -570,35 +567,37 @@ async def test_a_provider_error_is_one_normalized_event_rt47(kb: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_delete_thread_removes_every_namespace_rt48(kb: Path) -> None:
-    """Delegated sub-runs share the parent's thread id (D-6), so their rows go too.
+async def test_delete_thread_removes_the_experts_derived_threads_rt48(kb: Path) -> None:
+    """A Librarian conversation is erased together with the expert threads it spawned.
 
-    The delegation is the test. `checkpoint_ns` is not a second key dimension: a delegated expert
-    checkpoints under the *Librarian's* `thread_id` in a nested `tools:<uuid>` namespace, and those
-    rows are the only copy of the delegated exchange — Layer 3's "delete this conversation" is their
-    only eraser. A run that never delegates produces the root namespace alone and would pass
-    identically against a `delete_thread` that removed only that one, which is what this test used
-    to be. The `writes` table is asserted too: that is where the delegated content actually sits.
+    This rule changed shape when routing became a workflow, and the change is the whole reason the
+    test is interesting. Delegated work used to checkpoint under the *Librarian's* own `thread_id` in
+    a nested `tools:<uuid>` namespace (D-6), so one `adelete_thread` swept it up for free. Now the
+    fan-out gives every expert its own addressable thread, `<thread>::<agent id>` (LB-14) — which was
+    the point, because "continue with the Cooking expert" has to resolve to something a client can
+    open — and an addressable thread does not vanish with its parent.
+
+    A "delete this conversation" that left the expert's copy of the material behind would be the
+    worst kind of lie in a system with no version control and no undo (D6), so `delete_thread`
+    enumerates the catalog and deletes the derived ids too. The `writes` table is asserted as well:
+    that is where the expert's exchange actually sits.
     """
     db = kb.parent / "pkb.sqlite"
     model = scripted(
-        calls(call("task", {"description": "file the steak note", "subagent_type": COOKING}, "d1")),
+        calls(call("route", {"topic_ids": [COOKING], "reason": "steak"}, "r1")),
         says("filed it"),
-        says("the expert has filed it"),
     )
     async with opened(kb, model, db=db) as rt:
         await drain(rt, LIBRARIAN, "T-gone", "file this for me")
 
-        namespaces = {
+        threads = {
             row[0]
-            for row in sqlite3.connect(db).execute(
-                "SELECT DISTINCT checkpoint_ns FROM checkpoints WHERE thread_id = 'T-gone'"
-            )
+            for row in sqlite3.connect(db).execute("SELECT DISTINCT thread_id FROM checkpoints")
         }
-        assert "" in namespaces
-        assert any(namespace.startswith("tools:") for namespace in namespaces)
+        assert "T-gone" in threads
+        assert f"T-gone::{COOKING}" in threads, "the expert ran on its own addressable thread"
         assert _rows(db, "checkpoints") > 0
-        assert _rows(db, "writes") > 0, "the delegated exchange is in `writes`, not only in state"
+        assert _rows(db, "writes") > 0, "the expert's exchange is in `writes`, not only in state"
 
         await rt.delete_thread("T-gone")
 
@@ -607,12 +606,13 @@ async def test_delete_thread_removes_every_namespace_rt48(kb: Path) -> None:
 
 
 def _rows(db: Path, table: str) -> int:
-    """Rows the thread `T-gone` owns in *table* — `checkpoints` or `writes` (RT-48)."""
+    """Rows `T-gone` and its derived expert threads own in *table* (RT-48, LB-14)."""
     connection = sqlite3.connect(db)
     try:
         return int(
             connection.execute(
-                f"SELECT count(*) FROM {table} WHERE thread_id = 'T-gone'"
+                f"SELECT count(*) FROM {table} WHERE thread_id = 'T-gone' OR thread_id LIKE"
+                " 'T-gone::%'"
             ).fetchone()[0]
         )
     finally:

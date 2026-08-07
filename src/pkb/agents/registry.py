@@ -10,14 +10,16 @@ called, which model each runs on, and when a compiled graph has gone stale.
 slug or a parent chain — Layer 1 owns all of it (RG-11), and a second implementation would drift the
 first time a folder name grows a character Layer 1 slugifies differently.
 
-**Nothing is compiled until it is used** (RG-3, RG-4). Building the registry compiles zero graphs;
-so does listing the agents, and so does compiling the Librarian (RG-8) — fifty topics must not mean
-fifty graphs at boot. The Librarian's subagent list is fifty :class:`LazyAgentProxy` objects, each of
-which calls :meth:`AgentRegistry.get` the first time deepagents actually delegates to it.
+**Nothing is compiled until it is used** (RG-3, RG-4, RG-8). Building the registry compiles zero
+graphs; so does listing the agents, and so does compiling the Librarian — fifty topics must not mean
+fifty graphs at boot. That used to need a lazy ``Runnable`` proxy, because the Librarian's
+``subagents=`` list was materialized while the *parent* graph compiled. With the roster gone (LB-12)
+there is nothing to reconcile: the Librarian's graph names no topic at all, and the routing workflow
+calls :meth:`AgentRegistry.get` for exactly the experts it routed to, when it routes to them.
 
-**One graph per topic, two ways in** (RG-6). ``get(agent_id)`` and the proxy inside ``subagents()``
-resolve to the same cache entry, so a direct conversation with an expert and work the Librarian
-delegates to it can never run different configuration.
+**One graph per topic, one way in** (RG-6). Every access path — a direct conversation with an expert,
+a run the Librarian's fan-out starts, a conflict scan — resolves through :meth:`AgentRegistry.get`,
+so an expert's ``expert.md``, skills and model configuration cannot differ between them.
 
 **RG-18 — invalidation cannot reach a running thread.** deepagents' ``SkillsMiddleware`` loads the
 skill set once per thread and stores it in checkpointed state; its ``before_agent`` returns early
@@ -34,12 +36,9 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Final, Protocol, cast
+from typing import TYPE_CHECKING, Any, Final, Protocol
 
-from deepagents import CompiledSubAgent
 from langchain_core.language_models import BaseChatModel
-from langchain_core.runnables import Runnable
-from langchain_core.runnables.config import merge_configs
 from langgraph.graph.state import CompiledStateGraph
 
 from pkb.agents.expert import GraphRuntime, build_expert
@@ -55,7 +54,6 @@ from pkb.core.scan import scan
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from pathlib import Path
 
-    from langchain_core.runnables import RunnableConfig
     from langchain_core.tools import BaseTool
 
 __all__ = [
@@ -66,7 +64,6 @@ __all__ = [
     "AgentGraph",
     "AgentRegistry",
     "ExpertFactory",
-    "LazyAgentProxy",
     "LibrarianFactory",
 ]
 
@@ -153,9 +150,17 @@ class ExpertFactory(Protocol):
 class LibrarianFactory(Protocol):
     """The call ``pkb.agents.librarian.build_librarian`` must answer (LB-1, RG-1).
 
-    ``subagents`` is required rather than defaulted: a Librarian compiled without the roster is a
-    Librarian that can route to nothing, and RG-16 depends on the list being handed over fresh on
-    every rebuild.
+    **There is no ``subagents`` parameter, and its absence is the point** (LB-12). Handing the
+    Librarian the expert roster is what made delegation a choice the model could decline, and the
+    human ruled that choice out on 2026-08-07: the fan-out is code in
+    :class:`~pkb.agents.routing.FanOut`, driven by the runtime over :meth:`AgentRegistry.get`, and it
+    runs whether the model would have called ``task`` or not. A Librarian that still carried the
+    roster would carry the bypass with it.
+
+    A pleasant consequence: the compiled Librarian no longer depends on the catalog at all, so a
+    topic created mid-session is routable without recompiling it. RG-16 still drops it — the cost is
+    one recompile of one graph, and depending on that independence is a promise this layer does not
+    need to make.
     """
 
     def __call__(
@@ -164,7 +169,6 @@ class LibrarianFactory(Protocol):
         runtime: GraphRuntime,
         *,
         model: str | BaseChatModel,
-        subagents: Sequence[CompiledSubAgent],
         registry: AgentRegistry,
         tools: Sequence[BaseTool],
     ) -> AgentGraph: ...
@@ -177,67 +181,6 @@ _LIBRARIAN_MATCHES: LibrarianFactory = build_librarian
 These bindings exist for the type checker alone: a rename or a signature change in ``expert.py`` or
 ``librarian.py`` fails ``mypy`` here rather than at runtime on the first delegation.
 """
-
-
-class LazyAgentProxy(Runnable[Any, Any]):
-    """A ``CompiledSubAgent.runnable`` that compiles its expert on first delegation (RG-8).
-
-    RG-4 wants laziness and RG-7 wants pre-compiled subagents; those two collide because deepagents
-    materializes the ``subagents=`` list while the *parent* graph is being compiled. The proxy
-    reconciles them: deepagents only ever calls ``.invoke``/``.ainvoke`` on a compiled subagent's
-    runnable, so nothing else has to exist until the first ``task()`` call actually arrives.
-
-    It holds **no** cached graph. Resolution goes through :meth:`AgentRegistry.get` on every call,
-    which is what makes RG-6 structural — an already-compiled Librarian handed out before an
-    :meth:`AgentRegistry.invalidate` still routes to the *current* expert graph rather than to the
-    one that was current when it was compiled.
-
-    ``with_config`` is overridden rather than inherited, and that is load-bearing. deepagents stamps
-    ``{"metadata": {"lc_agent_name": <agent id>}, "run_name": <agent id>}`` onto every compiled
-    subagent's runnable (``subagents.py:437-441``); that metadata is the *only* label the delegate's
-    streamed messages carry, and ``events.py`` reads it to attribute a delegated write to the expert
-    instead of to the Librarian (RT-44). ``Runnable.with_config`` would wrap this proxy in a
-    ``RunnableBinding``, and the binding's config never reaches the inner graph's own stream —
-    executed on the pin: ``lc_agent_name`` came back ``None`` for every delegated message. Applying
-    the config to the *resolved graph* (``Pregel.with_config``, which merges into the graph itself)
-    reproduces the un-proxied behaviour exactly, while keeping the graph unbuilt until it is needed.
-    """
-
-    def __init__(
-        self,
-        registry: AgentRegistry,
-        agent_id: str,
-        config: RunnableConfig | None = None,
-    ) -> None:
-        self.agent_id = agent_id
-        self._registry = registry
-        self._config = config
-
-    def __repr__(self) -> str:
-        return f"{type(self).__name__}({self.agent_id!r})"
-
-    def with_config(
-        self, config: RunnableConfig | None = None, **kwargs: Any
-    ) -> Runnable[Any, Any]:
-        """Remember the config; apply it to the graph at resolve time. See the class docstring."""
-        merged = merge_configs(self._config, config, cast("RunnableConfig", kwargs))
-        return LazyAgentProxy(self._registry, self.agent_id, merged)
-
-    def resolve(self) -> AgentGraph:
-        """The expert's compiled graph, built on demand and cached by the registry (RG-6, RG-8)."""
-        graph = self._registry.get(self.agent_id)
-        return graph.with_config(self._config) if self._config else graph
-
-    def invoke(self, input: Any, config: RunnableConfig | None = None, **kwargs: Any) -> Any:
-        return self.resolve().invoke(input, config, **kwargs)
-
-    async def ainvoke(
-        self,
-        input: Any,
-        config: RunnableConfig | None = None,
-        **kwargs: Any,
-    ) -> Any:
-        return await self.resolve().ainvoke(input, config, **kwargs)
 
 
 @dataclass(frozen=True, slots=True)
@@ -328,32 +271,6 @@ class AgentRegistry:
         contain ``/`` and are returned verbatim.
         """
         return list(self._catalog().descriptors)
-
-    def subagents(self) -> list[CompiledSubAgent]:
-        """The expert roster to hand ``build_librarian`` as ``subagents=`` (RG-7 … RG-10).
-
-        Every entry is a :class:`~deepagents.CompiledSubAgent` — exactly ``name``, ``description``
-        and ``runnable``, never a declarative ``SubAgent`` dict, which deepagents recompiles per
-        invocation and which therefore cannot hold the multi-turn approval dialog README §1.6 needs.
-
-        ``name`` is the agent id verbatim (RG-9): root ``index.md`` renders those ids in backticks
-        and the Librarian reads that file, so the string it sees and the ``subagent_type`` the
-        ``task`` tool accepts must be the same string. ``description`` is the catalog's own rendered
-        description (RG-10) — deepagents interpolates it into the ``task`` tool description, so
-        routing selection and the routing view are driven by one string, not two.
-
-        The list is rebuilt from the current catalog on every call; an empty knowledge base yields
-        ``[]``, which is a working Librarian (LB-6).
-        """
-        return [
-            CompiledSubAgent(
-                name=descriptor.agent_id,
-                description=descriptor.description,
-                runnable=LazyAgentProxy(self, descriptor.agent_id),
-            )
-            for descriptor in self._catalog().descriptors
-            if descriptor.agent_id != LIBRARIAN_AGENT_ID
-        ]
 
     # -- graphs -------------------------------------------------------------------------
 
@@ -508,7 +425,6 @@ class AgentRegistry:
                 self.kb_root,
                 self._runtime,
                 model=model,
-                subagents=self.subagents(),
                 registry=self,
                 tools=tools,
             )

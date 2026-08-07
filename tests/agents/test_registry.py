@@ -44,7 +44,6 @@ from pkb.agents.registry import (
     DEFAULT_FALLBACK_MODEL,
     DEFAULT_MODEL,
     AgentRegistry,
-    LazyAgentProxy,
 )
 from pkb.agents.skills import packaged_skills_root
 from pkb.contracts import AgentDescriptor, UnknownAgentError
@@ -233,15 +232,15 @@ class RecordingFactories:
         *,
         model: str | BaseChatModel,
         registry: AgentRegistry,
-        subagents: Sequence[Any] = (),
         tools: Sequence[Any] = (),
     ) -> Any:
+        # No `subagents` parameter, deliberately (LB-12): the signature is the assertion, because a
+        # roster the Librarian cannot be given is a bypass that cannot be reintroduced by accident.
         self.librarian_calls.append(
             {
                 "kb_root": kb_root,
                 "runtime": runtime,
                 "model": model,
-                "subagents": list(subagents),
                 "registry": registry,
                 "tools": list(tools),
             }
@@ -328,10 +327,9 @@ def test_exactly_one_librarian_and_one_expert_per_topic_root_rg1(kb: Path) -> No
 def test_the_real_factories_are_the_defaults_rg1(kb: Path) -> None:
     """No injection: the registry drives the real `build_expert`/`build_librarian` (RG-1, RG-22).
 
-    This is the seam. It compiles a genuine Librarian over the genuine expert roster and delegates
-    to one of them, which is the only way to know that the registry's keyword call, the
-    `TopicRecord.path` it hands over and the `subagents=` list it builds all still match what the
-    factories expect.
+    This is the seam. It compiles a genuine Librarian and a genuine expert through the real
+    factories, which is the only way to know that the registry's keyword call and the
+    `TopicRecord.path` it hands over still match what those factories expect.
     """
     defaults = inspect.signature(AgentRegistry.__init__).parameters
     assert defaults["expert_factory"].default is build_expert
@@ -372,7 +370,6 @@ def test_the_catalog_is_one_scan_and_no_walk_of_our_own_rg2(
 
     registry.list_agents()
     registry.list_agents()
-    registry.subagents()
     assert len(seen) == 1, "the catalog is built once and cached"
 
     registry.invalidate()
@@ -405,7 +402,6 @@ def test_building_the_catalog_compiles_nothing_rg3(
 
     registry, factories = registry_for(kb)
     registry.list_agents()
-    registry.subagents()
     registry.invalidate()
     registry.list_agents()
 
@@ -467,86 +463,64 @@ def test_concurrent_first_uses_are_serialized_under_a_barrier_rg5(kb: Path) -> N
     assert all(result is results[0] for result in results)
 
 
-def test_one_graph_serves_both_access_paths_rg6(kb: Path) -> None:
+def test_get_is_the_only_way_to_reach_an_expert_rg6(kb: Path) -> None:
+    """RG-6: one compiled graph per topic, and now exactly one door to it.
+
+    A direct conversation, the Librarian's fan-out and a conflict scan all call `get`, so the two
+    access paths cannot diverge in configuration by construction rather than by a proxy identity
+    check. Invalidation therefore moves every path at once, because there is only one.
+    """
     registry, factories = registry_for(kb)
 
-    proxy = next(sub for sub in registry.subagents() if sub["name"] == COOKING)["runnable"]
-    assert isinstance(proxy, LazyAgentProxy)
-    assert proxy.resolve() is registry.get(COOKING)
+    first = registry.get(COOKING)
+    assert registry.get(COOKING) is first
     assert len(factories.expert_calls) == 1
 
-    # After invalidation both paths must move together — a proxy that cached its own graph would
-    # keep handing the old configuration to the delegation path only.
     registry.invalidate()
     rebuilt = registry.get(COOKING)
-    assert proxy.resolve() is rebuilt
+
+    assert rebuilt is not first
+    assert registry.get(COOKING) is rebuilt
     assert len(factories.expert_calls) == 2
 
 
-def test_experts_are_registered_as_compiled_subagents_rg7(kb: Path) -> None:
+def test_no_expert_is_registered_with_the_librarian_rg7(kb: Path) -> None:
+    """RG-7, retired 2026-08-07 (decision F): there is no roster and no `subagents()` accessor.
+
+    Handing the Librarian a `CompiledSubAgent` list is what made delegation a decision the model
+    could decline, and measured against a real model it declined: it answered from `grep` output and
+    then claimed an expert had checked. The fan-out is code in `pkb.agents.routing` now, resolving
+    each expert through `get`, so there is no roster to decline — and no argument through which one
+    could be reintroduced by a caller who thinks they are being helpful.
+
+    The reasoning behind the retired rule survives and is why *expert* graphs are compiled objects
+    rather than declarative specs: a dict-subagent is recompiled per invocation and cannot hold the
+    multi-turn approval dialog README §1.6 requires.
+    """
     registry, factories = registry_for(kb)
 
-    entries = registry.subagents()
-
-    assert entries, "a populated KB registers its experts"
-    for entry in entries:
-        assert set(entry) == {"name", "description", "runnable"}
-    assert LIBRARIAN_AGENT_ID not in {entry["name"] for entry in entries}
-
-    # And the roster the Librarian is compiled with is that same list, not a declarative spec.
+    assert not hasattr(registry, "subagents")
     registry.get(LIBRARIAN_AGENT_ID)
-    handed = factories.librarian_calls[0]["subagents"]
-    assert [entry["name"] for entry in handed] == [entry["name"] for entry in entries]
-    for entry in handed:
-        assert set(entry) == {"name", "description", "runnable"}
+    assert "subagents" not in factories.librarian_calls[0]
+    assert "CompiledSubAgent" not in identifiers(REGISTRY_PATH)
 
 
 def test_compiling_the_librarian_builds_zero_experts_rg8(big_kb: Path) -> None:
-    registry, factories = registry_for(big_kb, real=True)
-    model = scripted(
-        calls(call("task", {"description": "file it", "subagent_type": "topic/topic07"}, "d1")),
-        says("done"),
-    )
+    """RG-8, retired: the lazy proxy is gone, and the property it protected is unchanged.
 
-    librarian = create_deep_agent(
-        model=model, system_prompt="librarian", tools=[], subagents=registry.subagents()
-    )
-    assert factories.builds == 0, "compiling the Librarian must not compile fifty experts"
-
-    librarian.invoke({"messages": [HumanMessage(content="hello")]})
-
-    assert [c["topic_path"] for c in factories.expert_calls] == ["Topic07"]
-
-
-@pytest.mark.asyncio
-async def test_the_proxy_keeps_the_delegate_named_in_the_stream_rg8(kb: Path) -> None:
-    """The proxy must not cost `events.py` the delegate's name (RT-44).
-
-    deepagents stamps `lc_agent_name` onto a compiled subagent's runnable with `with_config`. The
-    inherited `Runnable.with_config` wraps the proxy in a `RunnableBinding` whose config never
-    reaches the inner graph's stream — executed on this pin, every delegated message came back
-    unlabelled and the expert's work would have been reported as the Librarian's.
+    The proxy existed to reconcile `CompiledSubAgent` registration with RG-4's laziness. With no
+    registration there is nothing to reconcile — fifty topics still mean zero graphs at boot, and a
+    fan-out compiles exactly the experts it routed to.
     """
-    registry, _ = registry_for(kb, real=True)
-    model = scripted(
-        calls(call("task", {"description": "file it", "subagent_type": COOKING}, "d1")),
-        says("done"),
-    )
-    librarian = create_deep_agent(
-        model=model, system_prompt="librarian", tools=[], subagents=registry.subagents()
-    )
+    registry, factories = registry_for(big_kb, real=True)
 
-    names = set()
-    async for _namespace, mode, chunk in librarian.astream(
-        {"messages": [HumanMessage(content="hello")]},
-        {"configurable": {"thread_id": "T"}},
-        stream_mode=["updates", "messages"],
-        subgraphs=True,
-    ):
-        if mode == "messages":
-            names.add(chunk[1].get("lc_agent_name"))
+    registry.get(LIBRARIAN_AGENT_ID)
+    assert factories.expert_calls == [], "compiling the Librarian must not compile fifty experts"
 
-    assert COOKING in names
+    registry.get("topic/topic07")
+    registry.get("topic/topic19")
+
+    assert [c["topic_path"] for c in factories.expert_calls] == ["Topic07", "Topic19"]
 
 
 # --------------------------------------------------------------------------------------
@@ -557,7 +531,7 @@ async def test_the_proxy_keeps_the_delegate_named_in_the_stream_rg8(kb: Path) ->
 def test_every_backticked_id_in_the_root_index_is_a_subagent_key_rg9(kb: Path) -> None:
     registry, _ = registry_for(kb)
 
-    keys = {entry["name"] for entry in registry.subagents()}
+    keys = {d.agent_id for d in registry.list_agents() if d.agent_id != LIBRARIAN_AGENT_ID}
 
     rendered = index_ids(kb)
     assert rendered, "the generated catalog renders the ids the Librarian routes on"
@@ -571,13 +545,12 @@ def test_the_subagent_description_is_the_catalog_line_rg10(kb: Path) -> None:
     registry, _ = registry_for(kb)
 
     lines = index_lines(kb)
-    for entry in registry.subagents():
-        assert entry["description"] in lines[entry["name"]]
-
-    descriptors = {d.agent_id: d for d in registry.list_agents()}
-    for entry in registry.subagents():
-        assert descriptors[entry["name"]].description == entry["description"]
-    assert descriptors[BBQ].description == r"Smokers, fuel \[charcoal\] and long cooks"
+    descriptors = [d for d in registry.list_agents() if d.agent_id != LIBRARIAN_AGENT_ID]
+    for entry in descriptors:
+        assert entry.description in lines[entry.agent_id]
+    assert {d.agent_id: d for d in descriptors}[
+        BBQ
+    ].description == r"Smokers, fuel \[charcoal\] and long cooks"
 
 
 def test_agent_ids_come_only_from_layer_one_rg11(tmp_path: Path) -> None:
@@ -607,7 +580,6 @@ def test_sub_topics_are_addressable_at_every_depth_rg12(kb: Path) -> None:
     registry, factories = registry_for(kb)
 
     assert GRILLING in {d.agent_id for d in registry.list_agents()}
-    assert GRILLING in {entry["name"] for entry in registry.subagents()}
     registry.get(GRILLING)
     assert factories.expert_calls[0]["topic_path"] == "Cooking/sub-topics/Grilling"
 
@@ -675,29 +647,22 @@ def test_list_agents_is_the_librarian_then_root_index_order_rg15(kb: Path) -> No
 
 def test_a_new_topic_is_listed_and_routable_after_invalidate_rg16(kb: Path) -> None:
     registry, factories = registry_for(kb, real=True)
-    model = scripted(
-        calls(call("task", {"description": "file it", "subagent_type": "topic/physics"}, "d1")),
-        says("done"),
-    )
     registry.get(LIBRARIAN_AGENT_ID)
 
     scaffold_topic(kb, "Physics", title="Physics", description="Mechanics", today=TODAY)
     registry.invalidate()
 
     assert "topic/physics" in {d.agent_id for d in registry.list_agents()}
-    # The Librarian's subagent list is a compile-time snapshot, so its graph must have been dropped.
+    # The Librarian's graph is dropped unconditionally. Since LB-12 took the expert roster off it,
+    # nothing in that graph names a topic any more and the drop is cheap insurance rather than a
+    # correctness requirement — but a rule that says "always" is one nobody has to reason about.
     assert len(factories.librarian_calls) == 1
     registry.get(LIBRARIAN_AGENT_ID)
     assert len(factories.librarian_calls) == 2
-    assert "topic/physics" in {e["name"] for e in factories.librarian_calls[1]["subagents"]}
-
-    librarian = create_deep_agent(
-        model=model, system_prompt="librarian", tools=[], subagents=registry.subagents()
-    )
-    result = librarian.invoke({"messages": [HumanMessage(content="hello")]})
-
+    # And it is reachable: the fan-out resolves every id it routes to through `get`, so a topic
+    # created mid-session is routable the moment the catalog regenerates.
+    assert registry.get("topic/physics") is not None
     assert [c["topic_path"] for c in factories.expert_calls] == ["Physics"]
-    assert result["messages"][-1].content == "done"
 
 
 def test_a_renamed_topic_never_hands_out_its_stale_graph_rg16(kb: Path) -> None:
@@ -734,12 +699,12 @@ def test_an_expert_md_invalidates_the_whole_subtree_rg17(kb: Path) -> None:
 
 def test_a_topic_description_edit_reaches_the_routing_view_rg17(kb: Path) -> None:
     registry, _ = registry_for(kb)
-    before = {e["name"]: e["description"] for e in registry.subagents()}
+    before = {d.agent_id: d.description for d in registry.list_agents()}
 
     write_topic(kb, "BBQ", description="Offset smokers, lump charcoal, and long cooks")
     registry.invalidate()
 
-    after = {e["name"]: e["description"] for e in registry.subagents()}
+    after = {d.agent_id: d.description for d in registry.list_agents()}
     assert after[BBQ] != before[BBQ]
     assert after[BBQ] == "Offset smokers, lump charcoal, and long cooks"
     assert after[BBQ] in index_lines(kb)[BBQ]
@@ -825,7 +790,6 @@ def test_the_registry_never_writes_to_the_tree_rg19(kb: Path) -> None:
     )
     for descriptor in registry.list_agents():
         registry.get(descriptor.agent_id)
-    registry.subagents()
     registry.invalidate()
     registry.list_agents()
 
@@ -849,7 +813,7 @@ def test_the_public_surface_is_thread_free_and_delegation_free_rg20() -> None:
         if not name.startswith("_")
     }
 
-    assert public == {"list_agents", "get", "subagents", "invalidate"}
+    assert public == {"list_agents", "get", "invalidate"}  # `subagents` retired: RG-7
     for name in public:
         parameters = set(inspect.signature(getattr(AgentRegistry, name)).parameters)
         assert not parameters & {"thread_id", "run_id"}
@@ -963,7 +927,6 @@ def test_an_empty_knowledge_base_registers_only_the_librarian_lb6(empty_kb: Path
     registry, factories = registry_for(empty_kb)
 
     assert [d.agent_id for d in registry.list_agents()] == [LIBRARIAN_AGENT_ID]
-    assert registry.subagents() == []
     registry.get(LIBRARIAN_AGENT_ID)
     assert len(factories.librarian_calls) == 1
-    assert factories.librarian_calls[0]["subagents"] == []
+    assert "subagents" not in factories.librarian_calls[0]  # LB-12
