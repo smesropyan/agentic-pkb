@@ -114,6 +114,55 @@ this design's strongest argument.
 
 ---
 
+---
+
+## Rulings of 2026-08-07 (second round)
+
+**LS-10 — the file is organised by the source's own structure.** Ideas stay argument-scoped (LS-2),
+but they are **grouped under the chapter or section that introduced them**, with a final section for
+the ideas that span the whole source:
+
+```markdown
+## Chapter 2 — Challenge directly
+- <argument>
+- <argument>
+
+## Chapter 3 — …
+
+## Across the book
+- <the ideas no single chapter owns>
+```
+
+This replaces the stable-id proposal, and it is better. A chapter is **intrinsic to the source**:
+chapter 3 is chapter 3 on every re-reading, so reconciliation gets a stable key for free without
+putting machine ids in a file the human reads. A paper generalises the same way — its own sections
+(method, results) are the anchor; an article has one claim and needs no grouping.
+
+**LS-11 — ingestion is explicit, and a repeat is offered rather than assumed.** The human says
+"ingest this". If the source is already in the tree, the agent **says so and asks** whether to
+re-ingest, rather than silently re-reading a book (expensive) or silently skipping it (surprising).
+Whether the loop windows the source is not a user-facing choice — it depends on length, and the
+system can see the length.
+
+**LS-12 — ingest first, mark for review; but only what is non-destructive.** For the
+AI-generated / human-curated classes, content lands **immediately with a review marker** rather than
+blocking on an interrupt: capture stays frictionless and the human reviews a queue instead of
+answering a modal mid-turn.
+
+The line that keeps this safe is destructiveness, and it falls exactly where the reconciliation table
+already put it:
+
+| | Lands immediately, marked for review | Flagged, not applied |
+|---|---|---|
+| **New file** | ✅ nothing is lost | — |
+| **New argument or chapter section in an existing file** | ✅ pure addition | — |
+| **A reworded argument** | — | ⚠️ replaces text the human may have approved |
+| **A contradiction** | — | ⚠️ `status.conflict-review`, §1.7 unchanged |
+
+There is no undo (arch D6), so a write that *replaces* human-approved text is the one thing that
+cannot be walked back after the fact — which is why it is the one thing still held. Everything
+additive lands.
+
 ## Extraction shapes, per kind of source
 
 Different sources have different skeletons, and the skeleton is what makes an extraction useful
