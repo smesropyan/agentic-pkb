@@ -10,18 +10,28 @@ mechanical structure enforced in code and the meaning curated in dialog with the
 | `README.md` | *What* the PKB is: tree structure, frontmatter, tags, conflict handling, agent roles. The human's design spec. |
 | `docs/superpowers/specs/2026-08-06-pkb-architecture-design.md` | *How the system is built*: three layers, their seams, invariants I1–I3, build order. Approved. |
 | `docs/superpowers/specs/2026-08-06-pkb-core-layer1-rules.md` | Every Layer 1 rule with a stable id (`FM-1`, `PA-3`, `VA-12`, `GE-4`, `MA-3`, `SC-9`). The contract `pkb.core` is tested against. |
+| `docs/superpowers/specs/2026-08-06-pkb-agents-layer2-rules.md` | Every Layer 2 rule (`RT-*`, `RG-*`, `MW-*`, `LB-*`, `PR-*`, `SK-*`): runtime, registry, permissions, gates, middleware, the routing workflow, the shipped prompts and skills. The contract `pkb.agents` is tested against. |
+| `docs/superpowers/specs/2026-08-07-pkb-service-server-layer3-rules.md` | Every Layer 3 rule (`SV-*`, `RO-*`, `SS-*`, `AP-*`, `ST-*`, `MC-*`, `PK-*`): the service protocol, HTTP routes, SSE, approvals, packs, the MCP mount and the Telegram wiring. Designed, not built. |
+| `docs/superpowers/specs/2026-08-07-large-source-ingestion.md` | Sources that do not fit a turn: one file per source with the arguments as sections, `.inbox` staging, re-ingestion and reconciliation. Crosses all three layers. Designed, not built. |
 | `docs/reference/deepagents-0.7.5-api-recon.md` | Verified signatures of the harness Layer 2 will use. |
 
 ## Build order (architecture §11)
 
 1. `pkb.core` — schema, validator, generators, scaffolder. **Built.** See §7 "As built" in the
    Layer 1 rules for what diverged, and `src/pkb/core/__init__.py` for the surface Layer 2 imports.
-2. `pkb.agents` — runtime, registry, expert factory, Librarian, middleware, default skills.
-   **Built.** See §2 of the Layer 2 rules for where the harness diverges from the architecture doc,
+2. `pkb.agents` — runtime, registry, expert factory, Librarian, middleware, default skills, and the
+   Librarian's routing workflow (`routing.py`: classify, fan out, attributed merge). **Built and
+   merged.** See §2 of the Layer 2 rules for where the harness diverges from the architecture doc,
    and `docs/reference/deepagents-0.7.5-harness-grounding.md` for the executed evidence.
-3. `pkb.service` + `pkb.server` — the protocol, HTTP routes, SSE, MCP mount. **← next**
+3. `pkb.service` + `pkb.server` — the protocol, HTTP routes, SSE, approvals, MCP mount. Specced in
+   the Layer 3 rules, not built. **← next**
 4. `pkb.tui` + `pkb.clients.approval`.
-5. `pkb.server.telegram`.
+5. `pkb.server.telegram` — hosted in the daemon, one Telegram channel per expert.
+
+Large-source ingestion has its own spec and is not built. It changes **nothing** in `pkb.core`: one
+physical file per source with the arguments as sections inside it is the shape Layer 1 already
+implements. What it adds is in `pkb.agents` — per-kind extraction skills and a resumable, chunked
+workflow that walks a source through a windowed reader rather than a whole-file `read_file`.
 
 ## Models
 
@@ -73,6 +83,19 @@ cloud model was unreachable.
 - **Derived output carries no timestamps or counts.** Byte-idempotence is what keeps a flush from
   churning the tree on every turn.
 - Layer 1 flags; it never repairs. Nothing moves or deletes human content — there is no undo (D6).
+- **The shipped skills are mounted, not seeded.** They live in package data
+  (`src/pkb/agents/skills/`) and are mounted read-only ahead of the knowledge base's own `skills/`,
+  which stays empty until the human adopts one. Adoption is a permanent fork: the copy shadows the
+  shipped default and later improvements stop reaching it. `skills/**` is a third file class —
+  exempt from PKB frontmatter and from every index and tag artifact.
+- **Inbound sources stage in `<kb>/.inbox/`.** Dot-prefixed, so Layer 1's walk already skips it —
+  verified: nothing from it is recorded, validated, indexed or tagged. A *path* comes in rather than
+  a paste; anything binary is extracted to text and **both are kept**, the extraction being what the
+  ingestion loop reads and the original being what a topic gets a copy of. The tool stages the file
+  and the agent only reads it — an expert's writes are confined to its own topic subtree (RT-15).
+- **A topic gets a copy of a source only by ingesting it gainfully** — at least one insight. Zero
+  insights leaves no folder, no stub and no copy: no trace at all, rather than an empty folder
+  implying the source was considered and is somehow relevant.
 
 ## Commands
 

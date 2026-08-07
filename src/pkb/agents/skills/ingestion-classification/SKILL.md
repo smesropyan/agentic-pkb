@@ -17,6 +17,11 @@ transcript. That is a **reference**. It goes in `references/`, in its own folder
 source, with the main file named after the folder: `references/<source-name>/<source-name>.md`. Any
 files that came with it live in the same folder.
 
+A source too large to read in one turn is the one that goes quietly wrong. Write what you actually
+extracted, and say in the file which parts you did not open. A confident write-up of the part that
+fit in front of you reads as finished, so nobody ever goes back to it — whereas an obviously partial
+file invites the second pass it needs.
+
 **Is it the human's own experience?** — something they observed, concluded, decided, or feel
 strongly about. That is a **note**. It goes in `notes/`, one file per note. If it has no media, it
 is a single file: `notes/<note-title>.md`. If it carries images, screenshots, or recordings, give it
@@ -82,15 +87,23 @@ carries a **textual description of every medium it embeds** — what the screens
 diagram means, what was said in the recording. Agents read the text instead of opening binaries, so
 an undescribed image is, for most purposes, not in the knowledge base at all.
 
-## One topic, no copies
+## One topic for a solution note; several lenses on one source
 
-A solution note lives in exactly one topic: the most relevant one. There are no copies anywhere,
-ever. If it seems to belong to two topics, pick the one whose expert would maintain it, and connect
-it to the other through `related_topics` and tags. Reach across topics is a routing problem, and
-routing is handled for you.
+A **solution note** lives in exactly one topic: the most relevant one, with no second copy of it
+anywhere. If it seems to belong to two topics, pick the one whose expert would maintain it, and
+connect it to the other through `related_topics` and tags. Two copies of one solution are two things
+that will disagree with each other within a month, and nobody will know which one was maintained.
 
-If the content does not fit this topic at all, say so and hand it back rather than filing it
-approximately. A misfiled note is harder to find than one that was never filed.
+A **source is different.** The same document is routinely handed to several topics at once, and each
+one files its own topic's facet of it. That is not duplication and the results are not copies: two
+experts pointing two different lenses at one book, with different skills and different concerns,
+write two files that say different things. Extract what *this* topic cares about, and leave the rest
+to the topic that cares about it. Reach across topics is a routing problem, and routing is handled
+for you.
+
+If the material holds nothing for this topic at all, say so in one line and file nothing. Declining
+is a correct answer and a complete one — a near-miss note filed to look useful is harder to find than
+one that was never filed, and it leaves the topic looking as though it knows something it does not.
 
 ## Filing the human's own words
 
@@ -110,9 +123,11 @@ that keeps "the AI curates, the human authors" true in practice.
 
 Anything you authored lands as `status.draft`: it is a proposal until the human has looked at it.
 Reference depth files are the exception — they are yours to generate on ingestion, they land
-`status.approved`, and there is no per-file dialog for them. The human curates references at the
-summary level instead, which is where their judgement actually adds something. Twenty ingested
-documents should not produce twenty approval requests.
+`status.approved`, and the first write of one takes no per-file dialog. The human curates references
+at the summary level instead, which is where their judgement actually adds something. Twenty ingested
+documents should not produce twenty approval requests. Reading a source a second time is a different
+act: the file you would rewrite is one the human has already read and relied on, so a rewrite is
+theirs to accept.
 
 ## The approval gate
 
