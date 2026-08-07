@@ -57,6 +57,8 @@ harder to make deterministic than counting chapters, and that cost is accepted d
 | **LS-2** | **Parts are argument-scoped, not chapter-scoped.** | Segmentation is a judgement the extraction skill makes, not a mechanical split. A chapter carrying three arguments becomes three parts; a chapter carrying none becomes zero. |
 | **LS-3** | **A part carries the tags relevant to it — its own, inherited from the source, or both.** | Inheritance is not automatic and not forbidden. What matters is that a part is findable on its own terms; a part tagged only with the source's topic tag is as unreachable as no part at all. |
 | **LS-4** | **Every expert ingests every part, and may ignore the ones its topic does not care about.** | *Not* a split of the parts between experts. Both the Management and the Parenting expert read the whole of a management book; each files what its lens sees, and the same argument may be extracted twice with different framings. That is the multi-expert ingestion ruling (README §2.2, Layer 2 LB-*) applied at part granularity, not a new rule. |
+| **LS-5** | **A source may be re-ingested as often as it is worth re-ingesting**, and each pass **reconciles** with what is already there rather than replacing it. | Topics change and experts get better; the second reading of a book is expected to be a better one. Reconciliation is specified below — it is the part of this design with the most ways to go quietly wrong. |
+| **LS-6** | **"Gainfully ingested" means at least one insight was derived.** | Hand a cooking book to the Trading expert and it yields nothing: no reference folder, no stub file, no copy of the source. Zero insights leaves **no trace at all** in that topic, rather than an empty folder implying the source was considered and is somehow relevant. |
 
 ---
 
@@ -113,14 +115,39 @@ routing (an expert parks on its own thread) directly relevant.
 
 ---
 
+## Reconciliation — what a second pass does (LS-5)
+
+Re-ingestion is a first-class flow, not a repair operation, so the interesting question is not "may
+we re-run it" but "what happens to what the last pass wrote". Four cases, and the machinery for the
+hard one already exists.
+
+| The new pass finds | What happens |
+|---|---|
+| **An argument with no existing part** | File it. This is the ordinary case and needs nothing new. |
+| **A better version of an existing part** | An **edit of existing content**, proposed rather than applied. The first write of a part is frictionless (RT-31 — capture must not nag); overwriting a part the human may already have read and relied on is not the same act, and the gate table must stop treating them as one. See the amendment below. |
+| **Something that contradicts an existing part** | This is a **conflict**, and §1.7's machinery already handles it: flag the affected file with `status.conflict-review` and a one-line `review_note`, change nothing, let the human settle it. No new mechanism — a second reading disagreeing with the first is exactly the case conflict detection was built for. |
+| **Nothing where a part exists** | Keep the part. Layer 1 never deletes, and an argument the newer pass missed is not thereby wrong. The **source map** records that this pass did not cover it, so the omission is visible rather than silent. |
+
+**Amendment this forces to the gate table.** RT-31 puts no gate on reference depth files, which was
+right when a reference was written once and never touched again. With re-ingestion, an un-gated write
+can overwrite a previous extraction the human has already read. So: **the first write of a part stays
+un-gated; an overwrite of an existing part is gated or routed through conflict detection.** Without
+that split, "human content wins" holds for notes and quietly fails for everything derived from a
+source — and derived material is most of what a knowledge base accumulates.
+
+**The source map is the record of the reading, not of the source.** Each pass updates it with what it
+covered, what it skipped and why, and when. A book read three times has three readings' worth of
+provenance, which is what makes "the expert got smarter" checkable rather than asserted.
+
 ## Open items
 
-- **Segmentation determinism.** Argument-scoped parts are better and less repeatable than chapters.
-  Re-ingesting the same source may produce different part boundaries, and there is no rule yet for
-  what happens then — a second ingestion of a source that already has parts is undefined.
-- **Part naming and stability.** A part's filename is derived from its claim, so a re-extraction can
-  orphan the old file. Layer 1 never deletes, so this needs an answer before re-ingestion is allowed.
-- **Progress visibility.** A twenty-part ingestion is minutes of work. The human should be able to
-  see it progressing and stop it, which is a Layer 3/4 concern once the loop exists.
-- **Very large sources.** Nothing here bounds the size. A 900-page reference work may need the
-  "consult, do not read" treatment rather than full extraction.
+- **Segmentation stability across passes.** Argument-scoped parts (LS-2) are not repeatable the way
+  chapters are, so the second pass must *match* its arguments against existing parts before it can
+  reconcile. Matching on the claim rather than the filename is the only thing that can work, and
+  nothing here specifies how. This is the single hardest piece of the design.
+- **Part naming.** A filename derived from a claim moves when the claim is re-phrased. Since Layer 1
+  never deletes, a renamed part becomes two parts unless the match above is solid.
+- **Progress visibility.** A twenty-part ingestion is minutes of work; the human should see it
+  progress and be able to stop it. Layer 3/4, once the loop exists.
+- **Very large sources.** Nothing bounds the size. A 900-page reference work may want the "consult,
+  do not read" treatment rather than full extraction.
