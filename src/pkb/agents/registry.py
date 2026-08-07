@@ -37,12 +37,14 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, Protocol, cast
 
 from deepagents import CompiledSubAgent
+from langchain_core.language_models import BaseChatModel
 from langchain_core.runnables import Runnable
 from langchain_core.runnables.config import merge_configs
 from langgraph.graph.state import CompiledStateGraph
 
 from pkb.agents.expert import GraphRuntime, build_expert
 from pkb.agents.librarian import build_librarian
+from pkb.agents.models import model_id_of, with_fallback
 from pkb.contracts import AgentDescriptor, UnknownAgentError
 from pkb.core.errors import NotATopicRootError
 from pkb.core.generators import base as render
@@ -57,6 +59,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from langchain_core.tools import BaseTool
 
 __all__ = [
+    "DEFAULT_FALLBACK_MODEL",
     "DEFAULT_MODEL",
     "LIBRARIAN_DESCRIPTION",
     "LIBRARIAN_TITLE",
@@ -72,11 +75,33 @@ type AgentGraph = CompiledStateGraph[Any, Any, Any, Any]
 """What a factory returns. Layer-2-internal: no type Layer 3 imports mentions it (RG-14)."""
 
 
-DEFAULT_MODEL: Final = "anthropic:claude-sonnet-5"
+DEFAULT_MODEL: Final = "ollama:deepseek-v4-flash:cloud"
 """The model every agent runs on unless ``models`` names a different one (RG-21).
 
-Deliberately not deepagents' own fallback (``claude-sonnet-4-6``): ``model=None`` is deprecated and
-silently shadows whatever default the deployment configured, so the registry always passes a string.
+Chosen on measured evidence rather than on reputation: 5/5 on a five-task live evaluation of this
+workload, ~16s per filing turn, and cheap. The deployment is an Ollama Pro plan — three concurrent
+cloud models, usage weighted per model, quota resetting on 5-hour and weekly windows — so the ceiling
+this default runs into is a ``429``, not a bad answer, which is exactly what
+:data:`DEFAULT_FALLBACK_MODEL` exists to absorb.
+
+``init_chat_model`` splits the spec on its first colon only, so the ``:cloud`` tag survives into
+``ChatOllama(model="deepseek-v4-flash:cloud")`` (verified on the pin). Deliberately not deepagents'
+own fallback (``claude-sonnet-4-6``): ``model=None`` is deprecated and silently shadows whatever
+default the deployment configured, so the registry always passes a model explicitly.
+"""
+
+DEFAULT_FALLBACK_MODEL: Final = "ollama:gemma4:31b"
+"""The model that answers when :data:`DEFAULT_MODEL` cannot (RG-21).
+
+The **local** tag — no ``-cloud`` suffix — and that is the entire point: running it locally is never
+metered, so it keeps the knowledge base working precisely in the situation the default cannot, when
+the cloud quota is exhausted or the endpoint is down. It also scored 5/5 on the same evaluation, so
+a failover degrades cost and latency rather than judgement.
+
+It is **not pulled on this machine** and nothing here pulls it — a ~20GB download must not happen as
+a side effect of compiling a graph. So it is constructed lazily (see
+:func:`pkb.agents.models.with_fallback`) and an absent local model costs nothing until the day it is
+needed, at which point :class:`~pkb.agents.models.ModelNotInstalledError` names ``ollama pull``.
 """
 
 LIBRARIAN_TITLE: Final = "Librarian"
@@ -102,11 +127,15 @@ is why this is an injected callable and not an import of ``pkb.agents.tools``.
 class ExpertFactory(Protocol):
     """The call ``pkb.agents.expert.build_expert`` must answer (EX-1, RG-1).
 
-    Deliberately narrower than the real function in two places, which is what makes the real one
+    Deliberately narrower than the real function in one place, which is what makes the real one
     assignable here — parameters are contravariant, so a factory that accepts *more* still answers
-    this call. ``model`` is a ``str`` because the registry resolves it (RG-21) and never hands over
-    a model object, and ``registry`` is this class because the registry passes itself, where
-    ``build_expert`` only asks for something it can ``invalidate()``.
+    this call: ``registry`` is this class because the registry passes itself, where ``build_expert``
+    only asks for something it can ``invalidate()``.
+
+    ``model`` is ``str | BaseChatModel`` because the registry resolves the *choice* (RG-21) and then
+    may hand over an object: a configured fallback makes the resolved model a
+    :class:`~pkb.agents.models.FallbackChatModel` instance rather than a spec string. The choice is
+    still the registry's; only its representation changed.
     """
 
     def __call__(
@@ -115,7 +144,7 @@ class ExpertFactory(Protocol):
         topic_path: str,
         runtime: GraphRuntime,
         *,
-        model: str,
+        model: str | BaseChatModel,
         registry: AgentRegistry,
         tools: Sequence[BaseTool],
     ) -> AgentGraph: ...
@@ -134,7 +163,7 @@ class LibrarianFactory(Protocol):
         kb_root: Path,
         runtime: GraphRuntime,
         *,
-        model: str,
+        model: str | BaseChatModel,
         subagents: Sequence[CompiledSubAgent],
         registry: AgentRegistry,
         tools: Sequence[BaseTool],
@@ -240,8 +269,9 @@ class AgentRegistry:
         kb_root: Path,
         runtime: GraphRuntime,
         *,
-        default_model: str = DEFAULT_MODEL,
-        models: Mapping[str, str] | None = None,
+        default_model: str | BaseChatModel = DEFAULT_MODEL,
+        models: Mapping[str, str | BaseChatModel] | None = None,
+        fallback_model: str | BaseChatModel | None = DEFAULT_FALLBACK_MODEL,
         tool_factory: ToolFactory | None = None,
         expert_factory: ExpertFactory = build_expert,
         librarian_factory: LibrarianFactory = build_librarian,
@@ -259,6 +289,13 @@ class AgentRegistry:
                 route or channel picks one, and it is never read from KB content — a ``model:`` key
                 in ``topic.md`` is an ``UNKNOWN_FIELD`` warning (VA-32), and putting deployment
                 configuration in the tree would drag it through the human-approval workflow.
+            fallback_model: The model that answers when the chosen one hits quota, concurrency or an
+                unreachable endpoint (:func:`pkb.agents.models.with_fallback`). One setting for the
+                whole registry rather than a second per-agent table: the fallback's job is to be the
+                thing that always works, and a per-agent safety net is a per-agent way to not have
+                one. ``None`` disables it and passes the chosen model through untouched — which is
+                also what makes a registry configured that way byte-identical to one with no
+                failover code at all.
             tool_factory: Builds the extra tools for one agent id — ``create_topic`` for the
                 Librarian (LB-7), ``create_subtopic`` for an expert (EX-12). ``None`` means the
                 agents carry only the built-ins.
@@ -268,7 +305,8 @@ class AgentRegistry:
         """
         self.kb_root = kb_root
         self.default_model = default_model
-        self.models: Mapping[str, str] = dict(models or {})
+        self.models: Mapping[str, str | BaseChatModel] = dict(models or {})
+        self.fallback_model = fallback_model
         self._runtime = runtime
         self._tool_factory = tool_factory
         self._expert_factory = expert_factory
@@ -419,7 +457,7 @@ class AgentRegistry:
             title=LIBRARIAN_TITLE,
             description=LIBRARIAN_DESCRIPTION,
             has_custom_expert=False,
-            model_id=self._model_for(LIBRARIAN_AGENT_ID),
+            model_id=self._model_id_for(LIBRARIAN_AGENT_ID),
         )
 
     def _topic_descriptor(self, record: TopicRecord) -> AgentDescriptor:
@@ -429,12 +467,33 @@ class AgentRegistry:
             title=record.title,
             description=_catalog_description(record),
             has_custom_expert=record.has_expert,
-            model_id=self._model_for(record.agent_id),
+            model_id=self._model_id_for(record.agent_id),
         )
 
-    def _model_for(self, agent_id: str) -> str:
-        """The model this agent runs on (RG-21). Private: RG-20 pins the public method set."""
+    def _model_for(self, agent_id: str) -> str | BaseChatModel:
+        """The model this agent runs on, as configured (RG-21). Private: RG-20 pins the surface."""
         return self.models.get(agent_id, self.default_model)
+
+    def _model_id_for(self, agent_id: str) -> str:
+        """The id a catalog row carries (RG-14). Always the **primary** — a descriptor describes the
+        deployment's choice, and a failover is a runtime event, not a different configuration."""
+        return model_id_of(self._model_for(agent_id))
+
+    def _chat_model_for(self, agent_id: str) -> str | BaseChatModel:
+        """What a factory is handed: the configured model, wrapped in its fallback (RG-21).
+
+        Wrapping is what makes the failover a *registry* property. Doing it here rather than in
+        ``expert.py``/``librarian.py`` is the same argument RG-21 already makes about the model
+        itself — there are two factories and both would have to remember, and a graph compiled
+        without the wrapper is one whose quota exhaustion is a hard failure with no signal.
+
+        With :attr:`fallback_model` set to ``None`` the configured value is passed through
+        unchanged, so ``create_deep_agent`` resolves it exactly as it always did.
+        """
+        model = self._model_for(agent_id)
+        if self.fallback_model is None:
+            return model
+        return with_fallback(model, self.fallback_model)
 
     def _compile(self, agent_id: str) -> AgentGraph:
         """Call exactly one of the two factories (RG-1, RG-22).
@@ -442,7 +501,7 @@ class AgentRegistry:
         The lock is held throughout; ``_catalog`` and ``subagents`` re-enter it on this thread,
         which is why it is an :class:`~threading.RLock`.
         """
-        model = self._model_for(agent_id)
+        model = self._chat_model_for(agent_id)
         tools = self._tool_factory(agent_id) if self._tool_factory is not None else ()
         if agent_id == LIBRARIAN_AGENT_ID:
             return self._librarian_factory(

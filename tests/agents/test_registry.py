@@ -31,14 +31,21 @@ from typing import Any
 import pytest
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
 from pkb.agents.expert import build_expert
 from pkb.agents.librarian import build_librarian
 from pkb.agents.middleware.maintenance import NULL_WRITE_LOCK
+from pkb.agents.models import FallbackChatModel
 from pkb.agents.paths import KB_MOUNT, SKILLS_MOUNT
-from pkb.agents.registry import DEFAULT_MODEL, AgentRegistry, LazyAgentProxy
+from pkb.agents.registry import (
+    DEFAULT_FALLBACK_MODEL,
+    DEFAULT_MODEL,
+    AgentRegistry,
+    LazyAgentProxy,
+)
 from pkb.agents.skills import packaged_skills_root
 from pkb.contracts import AgentDescriptor, UnknownAgentError
 from pkb.core import agent_id_for, regenerate_all, resolve_expert, resolve_skills, scaffold_topic
@@ -50,6 +57,10 @@ from tests.agents.conftest import TODAY, call, calls, says, scripted
 
 SRC = Path(__file__).resolve().parents[2] / "src" / "pkb"
 REGISTRY_PATH = SRC / "agents" / "registry.py"
+
+OVERRIDE_MODEL = "ollama:qwen4:32b-thinking"
+"""A per-agent override. An Ollama spec on purpose: it resolves with no credentials, so a test
+that does reach the resolver stays offline."""
 
 COOKING = "topic/cooking"
 GRILLING = "topic/cooking/grilling"
@@ -199,7 +210,7 @@ class RecordingFactories:
         topic_path: str,
         runtime: Any,
         *,
-        model: str,
+        model: str | BaseChatModel,
         registry: AgentRegistry,
         tools: Sequence[Any] = (),
     ) -> Any:
@@ -220,7 +231,7 @@ class RecordingFactories:
         kb_root: Path,
         runtime: Any,
         *,
-        model: str,
+        model: str | BaseChatModel,
         registry: AgentRegistry,
         subagents: Sequence[Any] = (),
         tools: Sequence[Any] = (),
@@ -848,22 +859,24 @@ def test_the_public_surface_is_thread_free_and_delegation_free_rg20() -> None:
 
 def test_the_model_is_a_registry_concern_rg21(kb: Path) -> None:
     registry, factories = registry_for(
-        kb, models={COOKING: "anthropic:claude-opus-5"}, default_model=DEFAULT_MODEL
+        kb, models={COOKING: OVERRIDE_MODEL}, default_model=DEFAULT_MODEL
     )
 
     descriptors = {d.agent_id: d for d in registry.list_agents()}
-    assert descriptors[COOKING].model_id == "anthropic:claude-opus-5"
+    assert descriptors[COOKING].model_id == OVERRIDE_MODEL
     assert descriptors[BBQ].model_id == DEFAULT_MODEL
     assert descriptors[LIBRARIAN_AGENT_ID].model_id == DEFAULT_MODEL
 
     registry.get(COOKING)
     registry.get(BBQ)
     registry.get(LIBRARIAN_AGENT_ID)
-    assert [c["model"] for c in factories.expert_calls] == [
-        "anthropic:claude-opus-5",
+    # The per-agent override still reaches the factory; what changed is that a configured fallback
+    # makes the model an object rather than a spec string, and the object names its own primary.
+    assert [c["model"].primary_id for c in factories.expert_calls] == [
+        OVERRIDE_MODEL,
         DEFAULT_MODEL,
     ]
-    assert factories.librarian_calls[0]["model"] == DEFAULT_MODEL
+    assert factories.librarian_calls[0]["model"].primary_id == DEFAULT_MODEL
 
     # `model=None` is deprecated and silently falls back to deepagents' own default, shadowing
     # whatever the deployment configured — so no call site may pass it.
@@ -871,6 +884,51 @@ def test_the_model_is_a_registry_concern_rg21(kb: Path) -> None:
         path.relative_to(SRC).as_posix() for path in SRC.rglob("*.py") if passes_model_none(path)
     ]
     assert offenders == []
+
+
+def test_every_agent_carries_the_configured_fallback_rg21(kb: Path) -> None:
+    """A failover is registry configuration, so no agent may be left without one."""
+    registry, factories = registry_for(kb, models={COOKING: OVERRIDE_MODEL})
+
+    for descriptor in registry.list_agents():
+        registry.get(descriptor.agent_id)
+
+    handed = [call["model"] for call in factories.expert_calls + factories.librarian_calls]
+    assert handed, "the fixture must compile at least one graph"
+    for model in handed:
+        assert isinstance(model, FallbackChatModel)
+        assert model.fallback_id == DEFAULT_FALLBACK_MODEL
+
+
+def test_the_fallback_is_overridable_and_disableable_rg21(kb: Path) -> None:
+    """Both models are deployment configuration; ``None`` opts out of the failover entirely."""
+    registry, factories = registry_for(kb, fallback_model=OVERRIDE_MODEL)
+    registry.get(COOKING)
+    assert factories.expert_calls[0]["model"].fallback_id == OVERRIDE_MODEL
+
+    # Disabled, the registry hands over exactly what it was configured with — a graph compiled this
+    # way is indistinguishable from one compiled before the failover existed.
+    off, off_factories = registry_for(kb, fallback_model=None)
+    off.get(COOKING)
+    assert off_factories.expert_calls[0]["model"] == DEFAULT_MODEL
+
+
+def test_compiling_a_graph_resolves_no_model_rg3_rg21(kb: Path) -> None:
+    """Neither model is constructed by ``get``: RG-3/RG-4 make first *use* pay, not first compile.
+
+    This is what keeps a provider SDK — and the credentials or the 20GB local download it wants —
+    out of the compile path. The spec here is deliberately unresolvable, so any attempt to build it
+    raises rather than passing silently.
+    """
+    registry, factories = registry_for(kb, default_model="not-a-real-provider:nope")
+
+    registry.get(COOKING)
+
+    model = factories.expert_calls[0]["model"]
+    assert isinstance(model, FallbackChatModel)
+    assert model.primary_id == "not-a-real-provider:nope"
+    with pytest.raises(ValueError, match="Unable to infer model provider"):
+        _ = model.primary
 
 
 def test_create_deep_agent_is_called_from_exactly_two_places_rg22() -> None:

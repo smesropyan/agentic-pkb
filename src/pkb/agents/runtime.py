@@ -58,6 +58,7 @@ from datetime import UTC, date, datetime
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Final, Literal, Self
 from uuid import uuid4
+from weakref import WeakKeyDictionary
 
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
@@ -86,7 +87,12 @@ from pkb.agents.middleware.maintenance import (
 )
 from pkb.agents.middleware.state import KB_TOUCHED
 from pkb.agents.paths import KB_MOUNT, SKILLS_MOUNT, to_kb_relative
-from pkb.agents.registry import DEFAULT_MODEL, AgentGraph, AgentRegistry
+from pkb.agents.registry import (
+    DEFAULT_FALLBACK_MODEL,
+    DEFAULT_MODEL,
+    AgentGraph,
+    AgentRegistry,
+)
 from pkb.agents.scans import SqliteScanQueue, run_scan
 from pkb.agents.skills import packaged_skills_root
 from pkb.agents.tools.topics import TopicToolEnv, topic_tools
@@ -166,6 +172,15 @@ and then calls this with ``self``.
 # The knowledge-base write lock (RT-51 … RT-53, D-7)
 # --------------------------------------------------------------------------------------
 
+_ACQUIRE_POLL_SECONDS: Final = 0.02
+"""How long one off-loop attempt at the write mutex may hold an executor worker (RT-51).
+
+Short enough that a waiter always hands the worker back before the current holder's own
+``asyncio.to_thread(flush, …)`` can be starved of one, long enough that a contended acquire costs a
+handful of executor round trips rather than a spin. The lock is only ever held across a tree walk
+(RT-52), so waits are short by construction.
+"""
+
 
 class ReentrantWriteLock:
     """One process-wide knowledge-base write lock, safe to re-enter and usable from both worlds.
@@ -174,12 +189,33 @@ class ReentrantWriteLock:
     asynchronous context-manager protocol, because MW-2 makes the *same* critical section run from
     ``after_agent`` (the non-live suite drives ``invoke()``) and from ``aafter_agent`` (the daemon).
 
-    **Why a ``threading.Lock`` underneath and not an ``asyncio.Lock`` (D-7).** An ``asyncio.Lock``
-    cannot be acquired from a synchronous hook at all, and it provides no exclusion against a hook
-    running on a worker thread — which is where ``asyncio.to_thread`` puts Layer 1's tree walk. The
-    plain lock is acquired off-loop through :func:`asyncio.to_thread` on the async path, so the event
-    loop is never blocked while waiting, and released directly (a ``threading.Lock``, unlike an
+    **Why a ``threading.Lock`` underneath (D-7).** An ``asyncio.Lock`` alone cannot be acquired from
+    a synchronous hook at all, and it provides no exclusion against a hook running on a worker
+    thread — which is where :func:`asyncio.to_thread` puts Layer 1's tree walk, and where langchain
+    puts a synchronous tool call reached from ``ainvoke``. So the mutual exclusion that actually
+    holds across both worlds is a plain mutex, released directly (a ``threading.Lock``, unlike an
     ``RLock``, may be released by a different thread than acquired it).
+
+    **Why an ``asyncio.Lock`` on top of it, one per event loop (RT-51, RT-53).** Waiting for the
+    mutex from a coroutine means parking a worker of the loop's *default* executor for the whole
+    wait — and the task that currently holds the lock needs a worker from that same pool for
+    ``asyncio.to_thread(flush, …)``. With N waiters and a pool of ``min(32, cpu_count + 4)``, N+1
+    concurrent flushes park every worker on ``mutex.acquire`` and the holder's flush can never be
+    scheduled: a permanent, process-wide deadlock, and nothing recovers without a restart. The
+    ``asyncio.Lock`` is the queue async waiters actually wait on — it costs no thread — so at most
+    one task *per loop* is ever off-loop waiting for the mutex. That is also the construction RT-53
+    prescribes ("an ``asyncio.Lock`` plus a per-``asyncio.Task`` depth counter"); the mutex beneath
+    it is what extends the exclusion to the synchronous world.
+
+    **Why the off-loop acquire is bounded and shielded.** Bounded (:data:`_ACQUIRE_POLL_SECONDS`)
+    so the one remaining worker is handed back between attempts and a waiter can never starve the
+    holder even on a one-worker executor. Shielded because cancelling the awaiting coroutine —
+    :meth:`PkbRuntime.cancel`, RT-46, or a consumer that stops iterating — does **not** stop the
+    worker thread: it goes on to take the mutex, ``_copy_future_state`` drops the result on the
+    floor because the destination future is already cancelled, and the mutex is then held by nobody
+    with ``depth == 0`` and ``_owner is None``. Every later flush, scaffold and ``regenerate()``
+    blocks forever. The shield keeps the inner future alive so its done-callback can hand a mutex
+    won after the cancellation straight back.
 
     **Why reentrancy at all.** ``create_topic`` takes this lock from *inside* a tool call while an
     outer flush may also want it (RT-53). Delegation does not actually nest the two — a delegated
@@ -196,6 +232,18 @@ class ReentrantWriteLock:
     def __init__(self) -> None:
         self._mutex = threading.Lock()
         self._owner: tuple[int, int] | None = None
+        self._gate: asyncio.Lock | None = None
+        """The per-loop gate this owner is holding, when it acquired through :meth:`__aenter__`."""
+
+        self._gates: WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = (
+            WeakKeyDictionary()
+        )
+        """One gate per event loop. Keyed weakly so a closed loop's gate does not outlive it, and
+        per-loop because an ``asyncio.Lock`` binds to the first loop that awaits it."""
+
+        self._gates_lock = threading.Lock()
+        """Guards :attr:`_gates` — two event loops on two threads may reach it at once."""
+
         self.depth = 0
         """Current re-entry depth. ``0`` when the lock is free; never above 1 for distinct owners."""
 
@@ -222,15 +270,64 @@ class ReentrantWriteLock:
             return True
         return False
 
-    def _claim(self) -> None:
+    def _claim(self, gate: asyncio.Lock | None = None) -> None:
+        """Record this owner. *gate* is the per-loop gate an async acquire is holding for it."""
         self._owner = self._owner_key()
+        self._gate = gate
         self.depth = 1
         self.acquisitions += 1
 
     def _release(self) -> None:
+        """Give the lock back at depth 0 — the mutex first, then the gate.
+
+        That order matters: the next task out of the gate finds the mutex already free and takes it
+        on the non-blocking fast path, without a poll cycle.
+        """
         self.depth -= 1
         if self.depth == 0:
             self._owner = None
+            gate, self._gate = self._gate, None
+            self._mutex.release()
+            if gate is not None:
+                gate.release()
+
+    def _gate_for_loop(self) -> asyncio.Lock:
+        """The gate async waiters on *this* loop queue on (see the class docstring)."""
+        loop = asyncio.get_running_loop()
+        with self._gates_lock:
+            gate = self._gates.get(loop)
+            if gate is None:
+                gate = asyncio.Lock()
+                self._gates[loop] = gate
+            return gate
+
+    async def _acquire_off_loop(self) -> None:
+        """Take the mutex from a worker thread without blocking the loop, cancel-safe (RT-51).
+
+        Each attempt is bounded so the worker goes back to the pool between tries — the holder needs
+        one for its own ``to_thread`` — and shielded so a cancellation cannot orphan an acquire that
+        is about to succeed. The done-callback is attached to the *shielded* future on purpose:
+        attaching it to the outer one would never fire with a result, because
+        ``asyncio.futures._copy_future_state`` refuses to deliver into a cancelled destination,
+        which is the leak itself.
+        """
+        while True:
+            attempt = asyncio.ensure_future(
+                asyncio.to_thread(self._mutex.acquire, True, _ACQUIRE_POLL_SECONDS)
+            )
+            try:
+                acquired = await asyncio.shield(attempt)
+            except asyncio.CancelledError:
+                attempt.add_done_callback(self._hand_back)
+                raise
+            if acquired:
+                return
+
+    def _hand_back(self, attempt: asyncio.Future[bool]) -> None:
+        """Release a mutex won by an acquire whose waiter is already gone (RT-51)."""
+        if attempt.cancelled() or attempt.exception() is not None:
+            return
+        if attempt.result():
             self._mutex.release()
 
     def __enter__(self) -> Self:
@@ -254,14 +351,31 @@ class ReentrantWriteLock:
         self._release()
 
     async def __aenter__(self) -> Self:
-        """Acquire without blocking the event loop.
+        """Acquire without blocking the event loop and without starving the current holder.
 
-        The wait happens on a worker thread, so every other run keeps streaming while one holds the
-        lock — RT-51's "runs on different threads stream concurrently; only the flush is serialized".
+        Three steps, each of them load-bearing (see the class docstring for why):
+
+        1. queue on this loop's ``asyncio.Lock``, which costs no thread, so N waiting tasks cannot
+           exhaust the executor the holder's own ``to_thread`` needs;
+        2. try the mutex non-blockingly on the loop — the uncontended case, and the common one;
+        3. only then go off-loop, in bounded, shielded attempts.
+
+        Every other run keeps streaming throughout — RT-51's "runs on different threads stream
+        concurrently; only the flush is serialized".
         """
-        if not self._take():
-            await asyncio.to_thread(self._mutex.acquire)
-            self._claim()
+        if self._take():
+            return self
+        gate = self._gate_for_loop()
+        await gate.acquire()
+        try:
+            if not self._mutex.acquire(blocking=False):
+                await self._acquire_off_loop()
+        except BaseException:
+            # Includes the cancellation raised out of `_acquire_off_loop`: leaving the gate held
+            # would wedge every other task on this loop just as thoroughly as leaking the mutex.
+            gate.release()
+            raise
+        self._claim(gate)
         return self
 
     async def __aexit__(
@@ -291,7 +405,17 @@ class RuntimeConfig:
     """The model every agent runs on unless :attr:`models` names another (RG-21)."""
 
     models: Mapping[str, str] = field(default_factory=dict)
-    """Per-agent-id overrides, e.g. ``{"topic/cooking": "anthropic:claude-opus-5"}``."""
+    """Per-agent-id overrides, e.g. ``{"topic/cooking": "ollama:qwen4:32b-thinking"}``."""
+
+    fallback_model: str | None = DEFAULT_FALLBACK_MODEL
+    """The model that answers when the chosen one hits quota, concurrency or an unreachable
+    endpoint (RG-21, :func:`pkb.agents.models.with_fallback`).
+
+    A deployment setting like every other field here, and for the same reason: the tree holds
+    knowledge, not the answer to "what do we run when the cloud plan says no". ``None`` disables the
+    failover entirely, which is what a deployment with no local model should set — better a clean
+    ``429`` than a fallback that cannot be built.
+    """
 
     durability: Durability = DEFAULT_DURABILITY
     """Checkpoint durability for every run. See :data:`DEFAULT_DURABILITY`."""
@@ -381,6 +505,7 @@ class PkbRuntime:
             clock=self.clock,
             lock=self.write_lock,
             registry=self,
+            snapshots=self,
         )
         """The failure-path flush (MW-26). A *second* instance of the middleware the graphs carry,
         which is sound precisely because middleware hold read-only configuration and no per-run
@@ -464,11 +589,40 @@ class PkbRuntime:
         tree several times per turn. Invalidation is deliberately event-driven rather than
         mtime-based: mtime granularity is one second on the network and sync filesystems a personal
         knowledge base lives on, and a missed invalidation is silent.
+
+        **Freshness contract (RT-25, RT-28).** The view a caller gets reflects every change made
+        through this process up to the last completed tool call. The cache is dropped by, and only
+        by, these events:
+
+        * a successful knowledge-base mutation through the tool layer — ``KbMaintenanceMiddleware``
+          calls :meth:`invalidate_snapshot` from its innermost ``wrap_tool_call`` (EX-14), so the
+          next ``after_model`` gate evaluation sees the file the previous call just wrote;
+        * a ``create_topic``/``create_subtopic`` scaffold, through :meth:`invalidate` (RG-16);
+        * any flush, including the failure-path flush and the startup regeneration
+          (:meth:`_publish_flush`).
+
+        What it does **not** cover is a change made behind the tool layer's back — a human editing
+        the tree by hand while a turn runs. Anything that must be right about the *disk* rather than
+        about the last write reads the filesystem directly (:func:`pkb.core.paths.owning_topic_root`
+        is how the gates do it) rather than trusting this.
         """
         with self._snapshot_lock:
             if self._snapshot is None:
                 self._snapshot = scan(self.kb_root)
             return self._snapshot
+
+    def invalidate_snapshot(self) -> None:
+        """Drop the cached tree, and only that (RT-25, RT-28).
+
+        Satisfies :class:`~pkb.agents.middleware.maintenance.SupportsSnapshotInvalidate`. The
+        compiled graphs stay: a note landing under ``Cooking/recipes/`` changes what the gates must
+        see on the very next tool call, and changes nothing about any agent's prompt, skills or
+        catalog entry — so calling the whole of :meth:`invalidate` here would recompile the
+        Librarian and every expert once per written file (RG-16), which is a far bigger hammer than
+        the problem.
+        """
+        with self._snapshot_lock:
+            self._snapshot = None
 
     def invalidate(self, agent_id: str | None = None) -> None:
         """Drop the cached tree and the compiled graphs the tree makes wrong (RG-16, MW-30).
@@ -478,8 +632,7 @@ class PkbRuntime:
         a rewritten ``expert.md``, skill or ``topic.md`` invalidates *both* caches through one call,
         and a caller cannot refresh one and forget the other.
         """
-        with self._snapshot_lock:
-            self._snapshot = None
+        self.invalidate_snapshot()
         self._registry.invalidate(agent_id)
 
     # ----------------------------------------------------------------------------------
@@ -739,6 +892,14 @@ class PkbRuntime:
         disconnects, a ``break`` in a caller's loop — leaves an abandoned async generator whose
         ``finally`` runs at some unspecified later point, while a task's ``finally`` always runs.
 
+        The active-run slot is released by that same task, for that same reason (RT-45): a client
+        that stops reading at the terminal event — the natural way to consume this stream — and
+        keeps the generator referenced (an SSE handler frame, a stored iterator) would otherwise
+        hold the slot for as long as it lives, and the next turn on that ``(agent_id, thread_id)``
+        would be refused with a 409 against a run that finished. The release here is the second
+        half, for a stream abandoned *mid-run*; both go through :meth:`_release_slot`, which is
+        identity-guarded because they can run out of order.
+
         The busy check and the registration happen before the first ``await`` in this coroutine, so
         two runs started concurrently on one thread cannot both see a free slot (RT-45).
         """
@@ -777,12 +938,12 @@ class PkbRuntime:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
         finally:
-            self._active.pop(key, None)
             self._tasks.pop(run_id, None)
             if task is not None and not task.done():
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
+            self._release_slot(key, run_id)
 
     async def _drive(
         self,
@@ -795,7 +956,16 @@ class PkbRuntime:
         run_id: str,
         approval_mode: ApprovalMode,
     ) -> None:
-        """Execute the graph and push normalized events into *queue* (RT-42, RT-43, MW-26)."""
+        """Execute the graph and push normalized events into *queue* (RT-42, RT-43, RT-45, MW-26).
+
+        The exit chain is three nested ``finally`` blocks and the nesting is the whole point. The
+        flush must run whatever happened (MW-26); the terminal sentinel must be queued even if the
+        flush raises, or the consumer waits on :meth:`asyncio.Queue.get` forever and ``run()``
+        never returns (a broken :attr:`RuntimeConfig.flush_sink` or a locked scan database is enough
+        to do it); and the active-run slot must be freed even if *that* is cancelled — a bounded
+        queue plus a consumer that walked away can park ``put`` indefinitely, and a slot that
+        outlives its run is a permanently 409 thread (RT-45).
+        """
         config = self.thread_config(thread_id)
         driver = _DurableGraph(graph, self.config.durability)
         try:
@@ -828,8 +998,26 @@ class PkbRuntime:
                     return
                 payload = propose_only_command(captured)
         finally:
-            await self._flush_pending(graph, config)
-            await queue.put(None)
+            try:
+                try:
+                    await self._flush_pending(graph, config)
+                finally:
+                    await queue.put(None)
+            finally:
+                self._release_slot((agent_id, thread_id), run_id)
+
+    def _release_slot(self, key: tuple[str, str], run_id: str) -> None:
+        """Free the active-run slot, but only if *run_id* still owns it (RT-45).
+
+        The guard is not defensive coding. This is called from two places that genuinely run out of
+        order — the drive task's ``finally`` when the run ends, and an abandoned generator's
+        finalization some unspecified number of loop ticks later — so an unguarded ``pop`` would let
+        a finished run evict the slot of the *next* run on that thread, and a third concurrent run
+        would then be admitted. That is an RT-45 breach in the opposite direction from the one this
+        method exists to close.
+        """
+        if self._active.get(key) == run_id:
+            del self._active[key]
 
     async def _refuse_when_pending(self, graph: AgentGraph, thread_id: str) -> None:
         """RT-39. See the module docstring for what the harness does instead (D-16)."""
@@ -898,12 +1086,12 @@ class PkbRuntime:
     def _publish_flush(self, report: FlushReport) -> None:
         """Deliver a report and drop the cached tree (MW-24).
 
-        Every flush is a point at which the tree may have changed, so this is the one place the
-        snapshot cache is invalidated — including the failure-path flush and the startup
-        regeneration, neither of which goes through a middleware hook.
+        A flush rewrites the derived files, so the cached tree is stale by definition afterwards —
+        including on the failure-path flush and the startup regeneration, neither of which goes
+        through a middleware hook. It is *not* the only invalidation point: see
+        :meth:`snapshot` for the full freshness contract.
         """
-        with self._snapshot_lock:
-            self._snapshot = None
+        self.invalidate_snapshot()
         if self.config.flush_sink is not None:
             self.config.flush_sink(report)
 
@@ -965,6 +1153,7 @@ def _default_registry(runtime: PkbRuntime) -> AgentRegistry:
         runtime,
         default_model=runtime.config.default_model,
         models=runtime.config.models,
+        fallback_model=runtime.config.fallback_model,
         tool_factory=runtime.tools_for,
     )
 

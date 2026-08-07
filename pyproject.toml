@@ -7,6 +7,9 @@ requires-python = ">=3.12"
 license = { text = "MIT" }
 dependencies = [
     "deepagents>=0.7.5",
+    # Imported directly by `pkb.agents.models`: the ollama client lets `httpx.ConnectError` escape
+    # on its streaming path, so the failover predicate has to name httpx's exception types.
+    "httpx>=0.28",
     "langchain-ollama>=1.1.0",
     "langgraph-checkpoint-sqlite>=3.1.1",
     "ruamel-yaml>=0.18",
