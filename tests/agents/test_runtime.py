@@ -16,12 +16,15 @@ import ast
 import asyncio
 import inspect
 import sqlite3
+import subprocess
+import sys
+import threading
 import time
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
@@ -33,7 +36,12 @@ from pkb.agents.expert import build_expert
 from pkb.agents.librarian import build_librarian
 from pkb.agents.paths import KB_MOUNT, SKILLS_MOUNT
 from pkb.agents.registry import AgentRegistry
-from pkb.agents.runtime import PkbRuntime, ReentrantWriteLock, RuntimeConfig
+from pkb.agents.runtime import (
+    _ACQUIRE_POLL_SECONDS,
+    PkbRuntime,
+    ReentrantWriteLock,
+    RuntimeConfig,
+)
 from pkb.agents.tools.topics import CREATE_SUBTOPIC, CREATE_TOPIC, TopicToolEnv, topic_tools
 from pkb.contracts import (
     ApprovalPendingError,
@@ -470,6 +478,57 @@ async def test_two_concurrent_runs_on_one_thread_are_refused_rt45(kb: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_a_client_that_stops_reading_still_frees_the_thread_rt45(kb: Path) -> None:
+    """RT-45: the active-run slot belongs to the *run*, not to the caller's generator.
+
+    Breaking out of the loop on the terminal event is the natural way to consume this stream, and an
+    SSE handler or a stored iterator keeps the generator alive afterwards. Releasing the slot in the
+    generator's `finally` therefore released it when the *caller* was collected — never, in that
+    shape — and the next turn on that `(agent_id, thread_id)` was refused with a 409 against a run
+    that had already finished, permanently.
+
+    Keeping `agen` on a local is the whole test: without it, refcounting finalizes the temporary
+    generator within a few ticks and the bug hides. That is why 1022 green tests missed it.
+    """
+    model = scripted(writes(NOTE_PATH, VALID_NOTE, "w1"), says("filed"), says("still here"))
+    async with opened(kb, model) as rt:
+        agen = rt.run(COOKING, "T1", "go", run_id="R1")
+        events: list[Any] = []
+        async for event in agen:
+            events.append(event)
+            if isinstance(event, RunEnd):
+                break
+        assert len(kinds(events, RunEnd)) == 1
+
+        # The run's tail — MW-26's flush — is still in flight at `RunEnd`, so the slot is tied to
+        # the drive task rather than to the event, and this is what "the run ended" means.
+        await asyncio.wait_for(rt._tasks["R1"], timeout=20)
+        assert rt._active == {}
+
+        again = await drain(rt, COOKING, "T1", "carry on")
+        assert len(kinds(again, RunEnd)) == 1
+        assert agen is not None  # the abandoned generator is still referenced, as a client would
+
+
+@pytest.mark.asyncio
+async def test_the_active_slot_is_released_by_identity_rt45(kb: Path) -> None:
+    """RT-45, the other direction: a stale release must not evict the run that took the slot next.
+
+    The slot is now freed from two places that can run out of order — the drive task when the run
+    ends, and an abandoned generator's finalization some unspecified number of ticks later. An
+    unguarded `pop` would let the second evict a *later* run's registration, and a third concurrent
+    run on that thread would then be admitted: the 409 this registry exists for, gone.
+    """
+    async with opened(kb, scripted(says("hi"))) as rt:
+        key = (COOKING, "T1")
+        rt._active[key] = "R2"
+        rt._release_slot(key, "R1")
+        assert rt._active == {key: "R2"}
+        rt._release_slot(key, "R2")
+        assert rt._active == {}
+
+
+@pytest.mark.asyncio
 async def test_a_cancelled_run_leaves_the_thread_resumable_rt46(kb: Path) -> None:
     """LangGraph has no server-side cancel, so the runtime owns `run_id -> asyncio.Task`."""
 
@@ -512,19 +571,52 @@ async def test_a_provider_error_is_one_normalized_event_rt47(kb: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_delete_thread_removes_every_namespace_rt48(kb: Path) -> None:
-    """Delegated sub-runs share the parent's thread id (D-6), so their rows go too."""
+    """Delegated sub-runs share the parent's thread id (D-6), so their rows go too.
+
+    The delegation is the test. `checkpoint_ns` is not a second key dimension: a delegated expert
+    checkpoints under the *Librarian's* `thread_id` in a nested `tools:<uuid>` namespace, and those
+    rows are the only copy of the delegated exchange — Layer 3's "delete this conversation" is their
+    only eraser. A run that never delegates produces the root namespace alone and would pass
+    identically against a `delete_thread` that removed only that one, which is what this test used
+    to be. The `writes` table is asserted too: that is where the delegated content actually sits.
+    """
     db = kb.parent / "pkb.sqlite"
-    async with opened(kb, scripted(says("hi")), db=db) as rt:
-        await drain(rt, COOKING, "T-gone")
-        rows = sqlite3.connect(db).execute(
-            "SELECT count(*) FROM checkpoints WHERE thread_id = 'T-gone'"
-        )
-        assert rows.fetchone()[0] > 0
+    model = scripted(
+        calls(call("task", {"description": "file the steak note", "subagent_type": COOKING}, "d1")),
+        says("filed it"),
+        says("the expert has filed it"),
+    )
+    async with opened(kb, model, db=db) as rt:
+        await drain(rt, LIBRARIAN, "T-gone", "file this for me")
+
+        namespaces = {
+            row[0]
+            for row in sqlite3.connect(db).execute(
+                "SELECT DISTINCT checkpoint_ns FROM checkpoints WHERE thread_id = 'T-gone'"
+            )
+        }
+        assert "" in namespaces
+        assert any(namespace.startswith("tools:") for namespace in namespaces)
+        assert _rows(db, "checkpoints") > 0
+        assert _rows(db, "writes") > 0, "the delegated exchange is in `writes`, not only in state"
+
         await rt.delete_thread("T-gone")
-        rows = sqlite3.connect(db).execute(
-            "SELECT count(*) FROM checkpoints WHERE thread_id = 'T-gone'"
+
+        assert _rows(db, "checkpoints") == 0
+        assert _rows(db, "writes") == 0
+
+
+def _rows(db: Path, table: str) -> int:
+    """Rows the thread `T-gone` owns in *table* — `checkpoints` or `writes` (RT-48)."""
+    connection = sqlite3.connect(db)
+    try:
+        return int(
+            connection.execute(
+                f"SELECT count(*) FROM {table} WHERE thread_id = 'T-gone'"
+            ).fetchone()[0]
         )
-        assert rows.fetchone()[0] == 0
+    finally:
+        connection.close()
 
 
 @pytest.mark.asyncio
@@ -639,6 +731,144 @@ async def test_two_concurrent_runs_leave_the_derived_files_consistent_rt51(kb: P
     assert regenerate_all(kb).written == []
 
 
+async def _hold_the_lock(lock: ReentrantWriteLock) -> None:
+    """Take the lock and give it straight back — a waiter a test can cancel mid-acquire."""
+    async with lock:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_waiter_never_orphans_the_write_mutex_rt51() -> None:
+    """RT-51: a cancelled waiter leaves the one process-wide lock exactly as it found it — free.
+
+    `cancel(run_id)` (RT-46) and a consumer that stops iterating both cancel a task that may be
+    parked in `__aenter__`, and cancelling the awaiting coroutine does **not** stop the worker
+    thread doing the acquire: it goes on to take the mutex, `asyncio.futures._copy_future_state`
+    drops the result because the destination future is already cancelled, and the lock is then held
+    by nobody — `depth == 0`, `_owner is None`, and not even detectably locked. Every later flush,
+    `create_topic` scaffold and `regenerate()` in the process blocks forever. That is a wedged
+    daemon, not a degraded one, and no test in the suite cancelled a task parked in the acquire.
+
+    The holder is *synchronous*, on another thread, on purpose: that is what parks the waiter in the
+    off-loop acquire rather than on the per-loop gate, and it is exactly the shape of a `create_topic`
+    scaffold taking the lock from inside a tool call (RT-53). The cancellation is followed
+    immediately by the holder's release, so the acquire in flight is the one that wins the mutex
+    after its waiter is already gone — the precise race that leaked.
+    """
+    lock = ReentrantWriteLock()
+    holding = threading.Event()
+    release = threading.Event()
+
+    def sync_holder() -> None:
+        with lock:
+            holding.set()
+            release.wait(5)
+
+    thread = threading.Thread(target=sync_holder, daemon=True)
+    thread.start()
+    try:
+        assert await asyncio.to_thread(holding.wait, 5)
+        parked = asyncio.create_task(_hold_the_lock(lock))
+        await asyncio.sleep(5 * _ACQUIRE_POLL_SECONDS)
+        parked.cancel()
+        release.set()  # the holder lets go while the cancelled attempt is still in flight
+        with pytest.raises(asyncio.CancelledError):
+            await parked
+    finally:
+        release.set()
+        await asyncio.to_thread(thread.join, 5)
+
+    await asyncio.sleep(5 * _ACQUIRE_POLL_SECONDS)
+    assert lock.depth == 0
+    assert lock._owner is None
+    assert lock._mutex.acquire(blocking=False), "the cancelled waiter orphaned the write mutex"
+    lock._mutex.release()
+    await asyncio.wait_for(_hold_the_lock(lock), timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_waiter_leaves_the_next_task_free_to_acquire_rt51() -> None:
+    """The same guarantee for the other place an async waiter waits: the per-loop gate (RT-51).
+
+    Async waiters queue on an `asyncio.Lock` rather than in a worker thread (see the class
+    docstring), so a cancellation now has two places to leak. A leaked gate is as fatal as a leaked
+    mutex — every task on that loop stops at `__aenter__` — and it is a hazard the thread-only
+    construction did not have, so it is pinned here rather than assumed.
+    """
+    lock = ReentrantWriteLock()
+    second: asyncio.Task[None] | None = None
+    async with lock:
+        first = asyncio.create_task(_hold_the_lock(lock))
+        await asyncio.sleep(0.05)
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        second = asyncio.create_task(_hold_the_lock(lock))
+        await asyncio.sleep(0.05)
+        assert not second.done(), "the lock is still held; nobody else may be inside it"
+
+    await asyncio.wait_for(second, timeout=5)
+    assert lock.depth == 0
+    assert lock.acquisitions == 2
+    assert lock._mutex.acquire(blocking=False), "the cancelled waiter wedged the gate"
+    lock._mutex.release()
+
+
+_STARVATION_PROBE: Final = """
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+
+from pkb.agents.runtime import ReentrantWriteLock
+
+WORKERS = 2
+FLUSHES = 8
+
+
+async def main() -> None:
+    asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=WORKERS))
+    lock = ReentrantWriteLock()
+
+    async def flush() -> None:
+        # Exactly the shape of KbMaintenanceMiddleware.aflush_turn: the critical section itself
+        # needs a worker from the same pool every waiter is competing for.
+        async with lock:
+            await asyncio.to_thread(lambda: None)
+
+    await asyncio.wait_for(asyncio.gather(*(flush() for _ in range(FLUSHES))), timeout=30)
+    print("serialized")
+
+
+asyncio.run(main())
+"""
+
+
+def test_concurrent_flushes_never_starve_the_lock_holder_rt51() -> None:
+    """RT-51: concurrent flushes serialize; they must not deadlock the process.
+
+    A waiter that parks a default-executor worker for the whole wait starves the holder, whose
+    critical section needs a worker from that same pool: at `min(32, cpu_count + 4) + 1` concurrent
+    flushes every worker sits on the mutex, the holder's `to_thread(flush, …)` never gets scheduled,
+    and nothing ever releases the lock. RT-45 makes N concurrent runs on N threads supported load
+    and RT-53 demands they complete "without deadlock", so this is a guarantee, not an abuse.
+
+    In a subprocess with a deliberately tiny executor: core-count independent, and a regression
+    fails here instead of wedging the pytest process — the blocked workers are non-daemon and
+    `concurrent.futures.thread._python_exit` joins them at interpreter exit.
+    """
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", _STARVATION_PROBE],
+            capture_output=True,
+            text=True,
+            timeout=90,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:  # pragma: no cover - the regression path
+        pytest.fail("8 concurrent flushes on a 2-worker executor deadlocked the process")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip() == "serialized"
+
+
 def test_the_runtime_constructs_no_resume_command_of_its_own_rt33() -> None:
     """The AI never resolves its own interrupt; `approval.py` is the one construction site.
 
@@ -751,6 +981,73 @@ async def test_an_interrupted_turn_flushes_nothing_and_the_resume_flushes_once_m
 
 
 @pytest.mark.asyncio
+async def test_the_terminal_sentinel_survives_a_raising_flush_rt43(kb: Path) -> None:
+    """Every run terminates, even when the exit chain's own flush blows up (RT-43, MW-25).
+
+    `_drive`'s `finally` flushes and *then* queues the sentinel the consumer is waiting on. With
+    nothing between them, a raise in the flush — a `FlushSink` that is down (MW-24 makes one
+    mandatory), a `sqlite3.OperationalError: database is locked` out of the scan queue — meant the
+    sentinel never landed: `run()` never yielded a terminal event, never returned, and held its
+    `(agent_id, thread_id)` slot for as long as the caller lived. A stream that never closes is the
+    one failure a daemon cannot recover from without a restart.
+
+    The flush is broken here at the runtime's own seam, deliberately: the sentinel must not depend
+    on the flush path being total, however carefully the middleware beneath it is guarded.
+    """
+
+    async def explode(graph: Any, config: Any) -> None:
+        msg = "the scan database is locked"
+        raise RuntimeError(msg)
+
+    async with opened(kb, scripted(says("hi"))) as rt:
+        rt._flush_pending = explode  # type: ignore[method-assign]
+        events: list[Any] = []
+
+        async def consume() -> None:
+            async for event in rt.run(COOKING, "T1", "go", run_id="R1"):
+                events.append(event)
+
+        with pytest.raises(RuntimeError, match="the scan database is locked"):
+            await asyncio.wait_for(consume(), timeout=30)
+
+        assert len(kinds(events, RunEnd)) == 1, "the run still terminates"
+        assert rt._active == {}, "and it does not brick the thread on its way out"
+
+
+@pytest.mark.asyncio
+async def test_a_flush_sink_that_is_down_cannot_take_the_run_down_mw25(kb: Path) -> None:
+    """MW-25: a failed flush is logged and reported, never re-raised into the message stream.
+
+    The sink is the one collaborator MW-24 makes mandatory and the one most likely to be a daemon's
+    event stream rather than a list. Raising out of it used to abort `after_agent` — turning a
+    completed run into a `RunError` — and then abort `_drive`'s failure-path flush as well, hanging
+    the run for good. The answer has already been produced by the time any of this runs; it must
+    still be delivered.
+    """
+    seen: list[Any] = []
+
+    def sink(report: Any) -> None:
+        seen.append(report)
+        if len(seen) > 1:  # let the startup regeneration through, then break for good
+            msg = "the event stream is down"
+            raise RuntimeError(msg)
+
+    model = scripted(writes(NOTE_PATH, VALID_NOTE, "w1"), says("filed"), says("still here"))
+    async with opened(kb, model, flush_sink=sink) as rt:
+        events = await asyncio.wait_for(drain(rt, COOKING, "T1"), timeout=30)
+        assert len(kinds(events, RunEnd)) == 1
+        assert kinds(events, RunError) == []
+        assert rt._active == {}
+        assert len(seen) == 2, "the report was delivered; the sink is what failed"
+
+        again = await asyncio.wait_for(drain(rt, COOKING, "T1", "carry on"), timeout=30)
+        assert len(kinds(again, RunEnd)) == 1, "the thread is not wedged"
+
+    assert (kb / NOTE_PATH).exists()
+    assert "reverse-sear" in (kb / "Cooking" / "index.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
 async def test_a_successful_run_flushes_exactly_once_mw28(kb: Path) -> None:
     """A double flush is harmless to the tree but would enqueue every conflict scan twice."""
     model = scripted(writes(NOTE_PATH, VALID_NOTE, "w1"), says("filed"))
@@ -850,6 +1147,39 @@ async def test_a_too_deep_subtopic_is_refused_not_crashed_ex12(kb: Path) -> None
     assert "Refused" in refusal
     assert "4 levels" in refusal
     assert not (kb / "Cooking/sub-topics/Grilling/sub-topics/Charcoal/sub-topics/Lump").exists()
+
+
+@pytest.mark.asyncio
+async def test_invalidate_snapshot_drops_the_tree_and_keeps_the_graphs_rt25(kb: Path) -> None:
+    """RT-25/RT-28: the gates need a tree that includes what this run has already written.
+
+    `snapshot()` is scanned once and cached, and until now only a *flush* dropped it — and the flush
+    is end-of-run. So the `recipes/` folder the previous write minted, or a `topic.*` tag the human
+    approved one tool call ago, was still invisible when the next write was gated, and the same
+    decision was demanded again: RT-28's "the second does not gate" and RT-25's "gates once", both
+    broken for every file after the first in a single run.
+
+    This is the seam that closes it, and it is deliberately narrower than `invalidate()`: dropping
+    the compiled graphs too (RG-16) would recompile the Librarian and every expert once per written
+    note, which is a far bigger hammer than the problem. `KbMaintenanceMiddleware` calls this after
+    every successful knowledge-base mutation; see `PkbRuntime.snapshot` for the full contract.
+    """
+    async with opened(kb, scripted(says("hi"))) as rt:
+        before = rt.snapshot()
+        graph = rt._registry.get(COOKING)
+        recipes = kb / "Cooking" / "recipes"
+        recipes.mkdir()
+        (recipes / "a.md").write_text(VALID_NOTE, encoding="utf-8")
+
+        assert rt.snapshot() is before, "the cache is event-driven, never mtime-based"
+        assert before.topics["Cooking"].extension_folders == ()
+
+        rt.invalidate_snapshot()
+
+        fresh = rt.snapshot()
+        assert fresh is not before
+        assert fresh.topics["Cooking"].extension_folders == ("recipes",)
+        assert rt._registry.get(COOKING) is graph, "the compiled graphs are still correct"
 
 
 @pytest.mark.asyncio

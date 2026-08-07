@@ -18,17 +18,29 @@ replace it with a string test.
 
 Permissions are unaffected by that quirk — ``FilesystemMiddleware`` checks them *after* normalization
 — which is why invariant I3 is airtight where a prefix test is not (RT-11).
+
+**A third vocabulary: what the disk calls things.** :func:`to_kb_relative` settles syntax, not
+spelling, and on a case-insensitive filesystem two spellings of one path are one file. Everything
+Layer 2 decides per path — the gate table's exact-string lookups, ``validate_content``, the flush's
+stamp — keys off the string, so the string has to be the one the disk uses.
+:func:`canonical_kb_path` is that conversion, and it lives here for the same reason the mount
+literal does: one seam, so the consumers cannot drift apart.
 """
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import Final
 
 from deepagents.backends.utils import validate_path
 
+from pkb.core.paths import has_case_exact_entry
+
 __all__ = [
     "KB_MOUNT",
     "SKILLS_MOUNT",
+    "canonical_kb_path",
     "to_backend_path",
     "to_kb_relative",
 ]
@@ -105,3 +117,85 @@ def to_kb_relative(raw: object) -> str | None:
     if not normalized.startswith(KB_MOUNT):
         return None
     return normalized[len(KB_MOUNT) :]
+
+
+def canonical_kb_path(kb_root: Path, rel: str) -> str | None:
+    """*rel* re-spelled the way the tree is actually spelled on disk, or ``None`` if undecidable.
+
+    :func:`to_kb_relative` normalizes *syntax* — ``..``, ``~``, ``.``, ``//``, the missing leading
+    slash (RT-9). It cannot normalize *spelling*, and on a case-insensitive filesystem spelling is
+    where the knowledge base and the agent stop agreeing about which file is which. macOS APFS,
+    Windows NTFS/exFAT and every iCloud/Dropbox/OneDrive mount resolve
+    ``Cooking/sub-topics/grilling/notes/summary.md`` to the very same inode as
+    ``Cooking/sub-topics/Grilling/notes/summary.md`` — so a write to the first *is* a write to the
+    human-approved breadth file — while every dictionary keyed by
+    :class:`~pkb.core.models.KbSnapshot`'s exact strings, and every tuple compare such as
+    ``inner == (TOPIC_FILE,)``, answers "I have never heard of it". The gate table, Layer 1's
+    ``validate_content`` and the maintenance flush then each decide about a different file. This
+    function is what makes them decide about one.
+
+    :func:`pathlib.Path.resolve` and :func:`os.path.realpath` are **not** substitutes: neither
+    re-spells case on macOS (measured, not assumed). The only oracle for "which entry is this?" is
+    the directory listing, so each segment is matched against ``os.scandir`` — first by exact name
+    (Layer 1's :func:`~pkb.core.paths.has_case_exact_entry`, PA-17), then, when the operating system
+    resolves the segment anyway, by identity: the entry whose ``st_dev``/``st_ino`` are the ones
+    ``stat`` reports for the caller's spelling. Comparing inodes rather than folded strings means
+    the answer is right for whatever equivalence *this* filesystem implements — ASCII case, Unicode
+    NFC/NFD, HFS+ folding — without Layer 2 modelling any of them.
+
+    A segment with nothing behind it on disk ends the walk: it and everything below pass through
+    verbatim, because a genuinely new file must stay creatable under the name its author chose.
+
+    Returns ``None`` — "this path resolves to something and I cannot say what" — when a segment
+    exists but no entry claims its inode: an unreadable directory, or a rename racing the walk.
+    A caller must fail closed on it. For a gate that means interrupting: a check that cannot be
+    evaluated is not a check that passed.
+
+    Args:
+        kb_root: The knowledge-base root. Not itself canonicalised — it is the caller's own path.
+        rel: A KB-relative POSIX path, as :func:`to_kb_relative` produces it.
+    """
+    segments = rel.split("/")
+    current = kb_root
+    canonical: list[str] = []
+    for index, segment in enumerate(segments):
+        if has_case_exact_entry(current, segment):
+            actual = segment
+        elif not os.path.lexists(current / segment):
+            canonical.extend(segments[index:])
+            return "/".join(canonical)
+        else:
+            resolved = _entry_named_like(current, segment)
+            if resolved is None:
+                return None
+            actual = resolved
+        canonical.append(actual)
+        current = current / actual
+    return "/".join(canonical)
+
+
+def _entry_named_like(directory: Path, name: str) -> str | None:
+    """The entry of *directory* that ``directory / name`` actually addresses, by inode identity.
+
+    ``follow_symlinks=False`` on both sides so a link is compared as a link: resolving it here would
+    make a link and its target look like the same directory entry, and which of two names a write
+    lands on is precisely what :func:`pkb.agents.permissions.resolves_elsewhere` refuses rather than
+    canonicalises.
+    """
+    try:
+        target = (directory / name).stat(follow_symlinks=False)
+    except OSError:
+        return None
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                # One unreadable entry must not blind the walk to the rest of the directory.
+                try:
+                    same = os.path.samestat(entry.stat(follow_symlinks=False), target)
+                except OSError:
+                    continue
+                if same:
+                    return entry.name
+    except OSError:
+        return None
+    return None

@@ -18,8 +18,15 @@ Three harness facts shape everything here, each executed against the pin rather 
   (`human_in_the_loop.py:299-349`).
 * ``_process_decision`` raises a bare ``ValueError`` **inside the graph** for a disallowed decision
   type, and ``after_model`` raises another for a count mismatch. Both kill the run and leave a
-  confusing message on the thread. That is why :func:`validate_decisions` exists and why RT-40
-  requires it to run *before* the graph is touched.
+  confusing message on the thread. That is why
+  :func:`~pkb.contracts.validate_decisions` exists and why RT-40 requires it to run *before* the
+  graph is touched.
+
+:func:`~pkb.contracts.validate_decisions` is re-exported here rather than defined here. It is the one
+piece of this module a *transport* also needs — arch §6 gives the TUI and the Telegram adapter one
+shared answer to "which decisions is this action allowed" — and a transport cannot import this module
+without importing ``langgraph`` (I2). So it lives in :mod:`pkb.contracts`, where §5.1 declares it,
+and the name stays importable from here so the runtime's import site does not have to care.
 """
 
 from __future__ import annotations
@@ -35,8 +42,7 @@ from pkb.contracts import (
     ApprovalRequest,
     Decision,
     DecisionType,
-    InvalidDecisionError,
-    StaleInterruptError,
+    validate_decisions,
 )
 
 __all__ = [
@@ -48,7 +54,7 @@ __all__ = [
     "normalize_interrupts",
     "propose_only_command",
     "to_resume_command",
-    "validate_decisions",
+    "validate_decisions",  # re-exported from the seam; see the module docstring (§5.1, arch §6)
 ]
 
 DECISION_TYPES: Final[frozenset[str]] = frozenset(get_args(DecisionType))
@@ -163,69 +169,6 @@ def normalize_interrupts(
 # --------------------------------------------------------------------------------------
 # Contracts -> harness
 # --------------------------------------------------------------------------------------
-
-
-def validate_decisions(
-    pending: ApprovalRequest | None,
-    decisions: Sequence[Decision],
-    *,
-    interrupt_id: str | None = None,
-) -> ApprovalRequest:
-    """Refuse a bad resume **before the graph is touched** (RT-40).
-
-    Every check here has a live-verified failure mode on the other side. Without them the harness
-    raises a bare ``ValueError`` from inside ``after_model``, which aborts the superstep, skips the
-    ``after_agent`` flush (D-1) and leaves the human staring at a stack trace instead of a 400. An
-    unmatched interrupt id is the worst of the three: it degrades into a confusing count-mismatch
-    message about "hanging tool calls" that says nothing about the id.
-
-    Args:
-        pending: What ``aget_state(cfg).interrupts`` currently holds, normalized — or ``None`` when
-            the thread is not interrupted at all.
-        decisions: The human's answers, positionally aligned with ``pending.actions``.
-        interrupt_id: The id the client believes it is answering. When given and different from the
-            current one, the decisions are stale.
-
-    Returns:
-        The validated ``pending`` request, so callers can chain into :func:`to_resume_command`.
-
-    Raises:
-        StaleInterruptError: Nothing is pending, or ``interrupt_id`` names a different interrupt.
-            The thread is left interrupted and the original approval is still resolvable.
-        InvalidDecisionError: Wrong number of decisions, a type the action does not allow, or a
-            ``respond`` with no message (``_process_decision`` reads ``decision["message"]``
-            unconditionally and would ``KeyError`` inside the graph).
-    """
-    if pending is None:
-        message = "no approval is pending on this thread"
-        if interrupt_id is not None:
-            message = f"{message}; interrupt {interrupt_id!r} is no longer current"
-        raise StaleInterruptError(message)
-
-    if interrupt_id is not None and interrupt_id != pending.interrupt_id:
-        raise StaleInterruptError(
-            f"decisions answer interrupt {interrupt_id!r}, but the thread is waiting on "
-            f"{pending.interrupt_id!r}"
-        )
-
-    if len(decisions) != len(pending.actions):
-        raise InvalidDecisionError(
-            f"expected {len(pending.actions)} decision(s) for interrupt "
-            f"{pending.interrupt_id!r}, got {len(decisions)}"
-        )
-
-    for index, (decision, action) in enumerate(zip(decisions, pending.actions, strict=True)):
-        if decision.type not in action.allowed_decisions:
-            raise InvalidDecisionError(
-                f"decision {index} is {decision.type!r}, but {action.tool!r} allows only "
-                f"{list(action.allowed_decisions)}"
-            )
-        if decision.type == "respond" and not decision.message:
-            raise InvalidDecisionError(
-                f"decision {index} is 'respond' and needs a message: it becomes the tool's result"
-            )
-
-    return pending
 
 
 def to_resume_command(request: ApprovalRequest, decisions: Sequence[Decision]) -> Command[Any]:

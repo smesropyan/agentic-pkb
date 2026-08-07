@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import sqlite3
 import time
 from collections.abc import Sequence
 from datetime import date, timedelta
@@ -130,6 +131,24 @@ class SpyRegistry:
 
     def invalidate(self) -> None:
         self.invalidations += 1
+
+
+class SpySnapshots:
+    """The slice of ``PkbRuntime`` that owns the cached tree the gates read (RT-25, RT-28)."""
+
+    def __init__(self) -> None:
+        self.invalidations = 0
+
+    def invalidate_snapshot(self) -> None:
+        self.invalidations += 1
+
+
+class ExplodingQueue(ListScanQueue):
+    """A :class:`~pkb.contracts.ScanQueue` whose ``put`` fails the way SQLite actually fails."""
+
+    async def put(self, requests: Sequence[ScanRequest]) -> None:
+        msg = "database is locked"
+        raise sqlite3.OperationalError(msg)
 
 
 # --------------------------------------------------------------------------------------
@@ -466,6 +485,172 @@ def test_an_unexpected_flush_failure_is_reported_not_raised_mw25(
     codes = {finding.code for finding in reports[0].findings}
     assert codes == {"DERIVED_WRITE_FAILED"}
     assert "the clock is on fire" in reports[0].findings[0].message
+
+
+def test_a_queue_that_is_down_is_reported_not_raised_mw25(
+    kb: Path, reports: list[FlushReport]
+) -> None:
+    """The enqueue is real I/O and it is inside the run's exit chain (MW-25, RT-54).
+
+    ``sqlite3.OperationalError: database is locked`` out of ``ScanQueue.put`` used to escape
+    ``after_agent``, which aborts the graph node: a completed run becomes a ``RunError``, and on the
+    failure path the same raise escapes ``PkbRuntime._drive`` between its flush and the terminal
+    sentinel, hanging the run for good. Both MW-25 tests that existed injected their failure inside
+    ``_flush`` — the one call that was already guarded — so neither could see this.
+
+    The scan is genuinely lost (the next flush only sees its own turn's paths), which is why it is
+    reported as an error finding rather than swallowed.
+    """
+    middleware = KbMaintenanceMiddleware(
+        kb, queue=ExplodingQueue(), sink=reports.append, clock=lambda: TODAY
+    )
+    model = scripted(
+        calls(
+            write_call("/kb/Cooking/notes/searing.md", note("Searing", "Crust on a steak"), "c1")
+        ),
+        says("Sear it hot and dry."),
+    )
+
+    result = run(build_agent(kb, model, middleware))
+
+    assert final_text(result) == "Sear it hot and dry."
+    assert reports[0].stamped == ["Cooking/notes/searing.md"], "the flush itself completed"
+    assert "SCAN_ENQUEUE_FAILED" in {finding.code for finding in reports[0].findings}
+
+
+@pytest.mark.asyncio
+async def test_a_sink_that_is_down_still_refreshes_the_registry_mw25(
+    kb: Path, queue: ListScanQueue
+) -> None:
+    """The report's two consumers are independent, and the async twin is the one that ships (MW-2).
+
+    A daemon's event stream going down must not cost a rewritten ``expert.md`` its registry
+    invalidation (MW-30) — the compiled graph would keep serving the old persona because a *log*
+    failed. The sink's own failure has nowhere left to be reported, so it is swallowed there and
+    nowhere else.
+    """
+    registry = SpyRegistry()
+
+    def sink(report: FlushReport) -> None:
+        msg = "the event stream is down"
+        raise RuntimeError(msg)
+
+    middleware = KbMaintenanceMiddleware(
+        kb, queue=queue, sink=sink, clock=lambda: TODAY, registry=registry
+    )
+    model = scripted(
+        calls(write_call("/kb/Cooking/expert.md", "You are a fussy cook.\n", "c1")),
+        says("persona updated"),
+    )
+
+    result = await build_agent(kb, model, middleware).ainvoke({"messages": [HumanMessage("go")]})
+
+    assert final_text(result) == "persona updated"
+    assert registry.invalidations == 1
+
+
+# --------------------------------------------------------------------------------------
+# RT-25 / RT-28 — the cached tree the gates read
+# --------------------------------------------------------------------------------------
+
+
+def test_a_successful_write_drops_the_cached_tree_rt28(
+    kb: Path, reports: list[FlushReport]
+) -> None:
+    """The gate predicate reads a tree the runtime scanned once and cached (RT-25, RT-28).
+
+    Until the flush at the end of the run, that cache does not contain the file the last tool call
+    wrote — so the first note into a new ``recipes/`` folder gates, and so does the second, and the
+    human is asked again for a decision they gave one tool call earlier. This hook is the innermost
+    ``wrap_tool_call`` in the stack (EX-14), so the refresh lands after the backend write and
+    strictly before the next ``after_model`` gate evaluation.
+    """
+    snapshots = SpySnapshots()
+    middleware = KbMaintenanceMiddleware(
+        kb, sink=reports.append, clock=lambda: TODAY, snapshots=snapshots
+    )
+    model = scripted(
+        calls(
+            write_call("/kb/Cooking/recipes/a.md", note("A", "First recipe"), "c1"),
+            write_call("/kb/Cooking/recipes/b.md", note("B", "Second recipe"), "c2"),
+        ),
+        says("filed both"),
+    )
+
+    run(build_agent(kb, model, middleware))
+
+    assert snapshots.invalidations == 2, "one per landed write, before the next gate is evaluated"
+
+
+@pytest.mark.asyncio
+async def test_the_async_hook_drops_the_cached_tree_too_rt28(
+    kb: Path, reports: list[FlushReport]
+) -> None:
+    """`awrap_tool_call` is the variant the daemon runs, so it carries the same refresh (MW-2)."""
+    snapshots = SpySnapshots()
+    middleware = KbMaintenanceMiddleware(
+        kb, sink=reports.append, clock=lambda: TODAY, snapshots=snapshots
+    )
+    model = scripted(
+        calls(write_call("/kb/Cooking/recipes/a.md", note("A", "First recipe"), "c1")),
+        says("filed"),
+    )
+
+    await build_agent(kb, model, middleware).ainvoke({"messages": [HumanMessage("go")]})
+
+    assert snapshots.invalidations == 1
+
+
+def test_a_write_that_never_landed_leaves_the_cached_tree_alone_rt28(
+    kb: Path, reports: list[FlushReport]
+) -> None:
+    """A denial changed nothing, so re-scanning would be pure cost (RT-28, MW-17).
+
+    Same identity test as the touched-path record: a refusal comes back as the handler's own error
+    ``ToolMessage``, a landed mutation comes back re-wrapped. The Librarian's rule set denies every
+    KB write (RT-16), which is the cheapest way to produce a real denial rather than a simulated one.
+    """
+    snapshots = SpySnapshots()
+    middleware = KbMaintenanceMiddleware(
+        kb, sink=reports.append, clock=lambda: TODAY, snapshots=snapshots
+    )
+    model = scripted(
+        calls(write_call("/kb/Cooking/recipes/a.md", note("A", "First recipe"), "c1")),
+        says("could not file it"),
+    )
+    agent = create_deep_agent(
+        model=model,
+        backend=CompositeBackend(
+            default=StateBackend(),
+            routes={KB_MOUNT: FilesystemBackend(root_dir=str(kb), virtual_mode=True)},
+        ),
+        middleware=[middleware],
+        permissions=kb_permissions(None),
+        system_prompt="file it",
+    )
+
+    result = agent.invoke({"messages": [HumanMessage("go")]})
+
+    assert tool_messages(result)[0].status == "error"
+    assert snapshots.invalidations == 0
+
+
+def test_a_scratch_write_leaves_the_cached_tree_alone_rt28(
+    kb: Path, reports: list[FlushReport]
+) -> None:
+    """Paths on the default ``StateBackend`` route are not the tree at all (MW-8)."""
+    snapshots = SpySnapshots()
+    middleware = KbMaintenanceMiddleware(
+        kb, sink=reports.append, clock=lambda: TODAY, snapshots=snapshots
+    )
+    model = scripted(
+        calls(write_call("/scratch/plan.md", "just thinking out loud\n", "c1")),
+        says("thought about it"),
+    )
+
+    run(build_agent(kb, model, middleware))
+
+    assert snapshots.invalidations == 0
 
 
 # --------------------------------------------------------------------------------------

@@ -537,6 +537,86 @@ def test_attempts_reset_at_every_run_entry_mw14(kb: Path) -> None:
 
 
 @pytest.mark.parametrize("drive", DRIVERS, ids=["sync", "async"])
+def test_sibling_calls_in_one_message_share_the_bound_mw14(
+    kb: Path, drive: Callable[[Any], dict[str, Any]]
+) -> None:
+    """MW-14: the bound is "per file per run", and a run is not a sequence of single tool calls.
+
+    `request.state` is the pre-superstep snapshot — every call in one `AIMessage` reads the same
+    object and none of them sees the reducer's deltas from its siblings. Reading the counter from it
+    alone made four writes to one path four separate "Attempt 1 of 3"s: the bound never bound, and
+    the model was told it had three tries left each time it had fewer. Both halves matter here — the
+    counters have to *read* 1/2/3, and the fourth has to stop instead of consuming a fifth try.
+
+    Driven through both hook variants because `awrap_tool_call` shares `_decide` and is the one the
+    daemon actually runs (MW-2, RT-3)."""
+    model = scripted(
+        calls(*(write(NOTE_PATH, NO_FRONTMATTER, f"c{i}") for i in range(1, 5))),
+        says("all four answered"),
+    )
+    agent = build_agent(kb, model)
+    result = drive(agent)
+
+    contents = [str(m.content) for m in tool_messages(result)]
+    assert len(contents) == 4
+    assert [c for c in contents if "Attempt" in c] == contents[:MAX_ATTEMPTS]
+    assert "Attempt 1 of 3" in contents[0]
+    assert "Attempt 2 of 3" in contents[1]
+    assert "Attempt 3 of 3" in contents[2]
+    assert "Attempt" not in contents[3] and NOTE_REL in contents[3]
+
+    assert [m.status for m in tool_messages(result)] == ["error"] * 4
+    assert agent.get_state(config()).values[KB_ATTEMPTS] == {NOTE_REL: MAX_ATTEMPTS}
+    assert not (kb / NOTE_REL).exists()
+
+
+def test_a_batch_that_exhausts_the_bound_escalates_on_the_next_turn_mw15(kb: Path) -> None:
+    """MW-15: the enforcement point stays in `after_model`, which is the only hook that may end the
+    run (MW-16). A batch that burns the whole budget therefore caps the counter at `MAX_ATTEMPTS`
+    and the *next* retry escalates — exactly as three sequential refusals do. Escalating from inside
+    the batch instead would hand the human a decision before Layer 1's findings had been shown even
+    once."""
+    spy = FlushSpy(kb)
+    model = scripted(
+        calls(*(write(NOTE_PATH, NO_FRONTMATTER, f"c{i}") for i in range(1, 5))),
+        calls(write(NOTE_PATH, NO_FRONTMATTER, "c5")),
+        says("never reached"),
+    )
+    agent = build_agent(kb, model, flush_spy=spy)
+    result = run(agent)
+
+    escalation = result["messages"][-1]
+    assert isinstance(escalation, AIMessage)
+    assert NOTE_REL in str(escalation.content)
+    assert "MISSING_FRONTMATTER" in str(escalation.content)
+    assert agent.get_state(config()).next == ()
+    assert spy.reports == [[]]
+    assert not (kb / NOTE_REL).exists()
+
+
+def test_a_recovered_draft_inside_the_batch_still_lands_mw15(kb: Path) -> None:
+    """The bound stops a loop; it does not blacklist a path — in a batch as much as across turns.
+
+    The exhausted-budget check therefore sits *after* Layer 1's verdict, never before it:
+    short-circuiting on the counter alone would be cheaper and would refuse the one call in this
+    batch that is actually correct."""
+    spy = FlushSpy(kb)
+    model = scripted(
+        calls(
+            *(write(NOTE_PATH, NO_FRONTMATTER, f"c{i}") for i in range(1, 4)),
+            write(NOTE_PATH, CLEAN_NOTE, "c4"),
+        ),
+        says("filed at last"),
+    )
+    agent = build_agent(kb, model, flush_spy=spy)
+    result = run(agent)
+
+    assert [m.status for m in tool_messages(result)] == ["error", "error", "error", "success"]
+    assert (kb / NOTE_REL).exists()
+    assert spy.reports == [[NOTE_REL]]
+
+
+@pytest.mark.parametrize("drive", DRIVERS, ids=["sync", "async"])
 def test_the_run_escalates_to_the_human_instead_of_looping_mw15(
     kb: Path, drive: Callable[[Any], dict[str, Any]]
 ) -> None:

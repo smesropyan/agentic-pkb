@@ -39,6 +39,11 @@ per run, then :meth:`~KbValidationMiddleware.after_model` ends the run with an e
 letting the agent grind. It ends it by returning ``{"jump_to": "end"}``, **never**
 ``Command(goto=END)`` — ``END`` and the graph's ``exit_node`` are different nodes, and only
 ``exit_node`` runs the ``after_agent`` chain that flushes the derived files (MW-16).
+
+The bound counts a *batch* as well as a sequence. Nothing forces a model to spend its three tries
+one turn at a time, and ``request.state`` is the pre-superstep snapshot, so sibling calls in one
+``AIMessage`` cannot see each other's increments; :func:`_batch_offset` supplies what the snapshot
+cannot, and a call past the bound is refused without being charged for it.
 """
 
 from __future__ import annotations
@@ -126,10 +131,17 @@ class _Forward:
 
 @dataclass(frozen=True, slots=True)
 class _Refuse:
-    """Do not run the tool; return this text as an error ``ToolMessage`` instead (MW-13)."""
+    """Do not run the tool; return this text as an error ``ToolMessage`` instead (MW-13).
+
+    ``charged`` is ``False`` for the one refusal that does **not** consume an attempt: the call
+    whose budget was already spent by its siblings earlier in the same ``AIMessage`` (MW-14). It
+    still has to be answered — an unanswered tool call breaks the next turn — but adding to the
+    counter would push ``kb_attempts`` past ``max_attempts`` and make the bound a suggestion.
+    """
 
     rel: str
     content: str
+    charged: bool = True
 
 
 _Decision = _Forward | _Refuse
@@ -288,7 +300,12 @@ class KbValidationMiddleware(AgentMiddleware[KbAgentState]):
             return _Forward(rel=rel)
 
         if has_errors(findings):
-            attempt = self._attempts(request.state).get(rel, 0) + 1
+            # MW-14: the checkpointed count plus this call's own position in the batch. The bound is
+            # tested *after* Layer 1's verdict, never before it: a sibling that finally got the
+            # draft right must still land, exactly as the fourth sequential proposal does (MW-15).
+            attempt = self._attempts(request.state).get(rel, 0) + _batch_offset(request, rel) + 1
+            if attempt > self.max_attempts:
+                return _Refuse(rel=rel, content=self._exhausted_text(rel), charged=False)
             return _Refuse(rel=rel, content=self._refusal_text(rel, findings, attempt))
         return _Forward(rel=rel, advisory=_advisory_block(findings))
 
@@ -321,6 +338,9 @@ class KbValidationMiddleware(AgentMiddleware[KbAgentState]):
         matching ``ToolMessage`` inside ``Command.update["messages"]`` (MW-18). The counter update
         is a **delta** — the reducer adds — so two refused sibling calls on one path in a single
         ``AIMessage`` count as two attempts even though neither sees the other's update.
+
+        A refusal past the bound (``charged=False``) carries the message and nothing else, which is
+        what caps ``kb_attempts`` at ``max_attempts`` no matter how wide the batch was.
         """
         tool_call = request.tool_call
         message = ToolMessage(
@@ -329,7 +349,10 @@ class KbValidationMiddleware(AgentMiddleware[KbAgentState]):
             tool_call_id=tool_call["id"],
             status="error",
         )
-        return Command(update={"messages": [message], KB_ATTEMPTS: {decision.rel: 1}})
+        update: dict[str, Any] = {"messages": [message]}
+        if decision.charged:
+            update[KB_ATTEMPTS] = {decision.rel: 1}
+        return Command(update=update)
 
     def _record(
         self,
@@ -392,6 +415,21 @@ class KbValidationMiddleware(AgentMiddleware[KbAgentState]):
             f"file yourself, or drop the change."
         )
 
+    def _exhausted_text(self, rel: str) -> str:
+        """What a call refused *past* the bound is told (MW-14).
+
+        Deliberately short and free of findings: the calls that spent the budget already carried
+        Layer 1's verdict verbatim, and repeating it here would bury the one new fact — that this
+        path is done for this run and the next step is the human, not another draft. The MW-15
+        escalation itself is still raised from ``after_model``, the only hook allowed to end the
+        run (MW-16); this text is what makes the model stop rather than what stops it.
+        """
+        return (
+            f"Not run — {rel} has already used all {self.max_attempts} attempts allowed in this "
+            f"run and this draft still does not pass. Stop rewriting it and ask the human what it "
+            f"should contain."
+        )
+
     def _refusal_text(self, rel: str, findings: Sequence[Finding], attempt: int) -> str:
         """Layer 1's findings, verbatim, under Layer 2's counter and next-step line (MW-13).
 
@@ -418,6 +456,42 @@ class KbValidationMiddleware(AgentMiddleware[KbAgentState]):
 # --------------------------------------------------------------------------------------
 # Message plumbing
 # --------------------------------------------------------------------------------------
+
+
+def _batch_offset(request: ToolCallRequest, rel: str) -> int:
+    """Attempts on ``rel`` already spoken for by earlier calls in this same ``AIMessage`` (MW-14).
+
+    ``request.state`` is the **pre-superstep snapshot**: ``ToolNode`` builds it once per call from
+    the node's input, before any of them runs (``tool_node.py:805``/``:840`` on the pin), so the
+    reducer's deltas from sibling calls are invisible here — that is exactly why
+    :func:`~pkb.agents.middleware.state.merge_attempt_counts` adds rather than replaces. Reading
+    only the snapshot made four ``write_file`` calls to one path inside one ``AIMessage`` four
+    separate "Attempt 1 of 3"s: MW-14's bound never bound, and the model was told it had a full
+    budget each time it had none. Verified against the pin.
+
+    Position decides, not re-validation. Re-simulating each earlier sibling would read a tree those
+    siblings are concurrently writing (``executor.map``/``asyncio.gather``), so the counter would
+    stop being deterministic. The cost is that a batch mixing a *passing* and a failing write to one
+    path charges the failing one a place it did not take — an over-charge, which keeps the bound
+    holding, and the only direction MW-14 can safely be wrong in.
+
+    Calls the harness has already answered are skipped: ``HumanInTheLoopMiddleware`` injects a
+    ``ToolMessage`` for a rejected call before the tools node runs, and a call that never reached
+    validation never spent an attempt. When this call cannot be found in the batch at all the offset
+    is 0 — the single-call shape, which is what a direct ``wrap_tool_call`` caller has.
+    """
+    state = request.state
+    if not isinstance(state, Mapping):
+        return 0
+    offset = 0
+    for tool_call in _pending_tool_calls(state.get("messages") or []):
+        if tool_call["id"] == request.tool_call["id"]:
+            return offset
+        if tool_call["name"] not in VALIDATED_TOOLS:
+            continue
+        if to_kb_relative(tool_call["args"].get(FILE_PATH_ARG)) == rel:
+            offset += 1
+    return 0
 
 
 def _advisory_block(findings: Sequence[Finding]) -> str:

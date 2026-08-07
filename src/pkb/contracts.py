@@ -7,9 +7,12 @@ is a **leaf**: it imports ``pkb.core`` and the standard library, nothing else, e
 contract enforces it, and ``tests/agents/test_contracts.py`` asserts that importing this module
 loads no harness module at all.
 
-Everything here is a frozen dataclass of primitives. Nothing carries a LangChain object, a graph, or
-a callable, because every one of these values is destined for JSON on an SSE stream or an inline
-Telegram keyboard (arch §6).
+Everything here is a frozen dataclass of primitives, with one deliberate exception:
+:func:`validate_decisions`. Nothing carries a LangChain object, a graph, or a callable, because every
+one of these values is destined for JSON on an SSE stream or an inline Telegram keyboard (arch §6) —
+that is a rule about the *values*, not about the module, and arch §6 requires one shared validator
+here so the TUI and the Telegram adapter answer "which decisions is this action allowed" identically
+instead of each keeping a copy (§5.1, RT-40).
 
 ``Finding``, ``Severity``, ``ScanRequest`` and ``FlushReport`` are re-exported from ``pkb.core``
 rather than restated: Layer 1 already defines them, they are already harness-free, and both layers
@@ -58,6 +61,7 @@ __all__ = [
     "ToolEnd",
     "ToolStart",
     "UnknownAgentError",
+    "validate_decisions",
 ]
 
 LIBRARIAN_AGENT_ID = "librarian"
@@ -245,6 +249,80 @@ class Decision:
 
     edited_args: Mapping[str, str] | None = None
     edited_tool: str | None = None
+
+
+def validate_decisions(
+    pending: ApprovalRequest | None,
+    decisions: Sequence[Decision],
+    *,
+    interrupt_id: str | None = None,
+) -> ApprovalRequest:
+    """Refuse a bad resume **before the graph is touched** (§5.1, arch §6, RT-40).
+
+    This lives in the seam rather than in ``pkb.agents.approval`` on purpose. Arch §6 says both human
+    channels must turn an interrupt into a :class:`Decision` consistently — "same action parsing,
+    same validation of which decisions are allowed… that logic lives once" — and ``pkb.clients`` and
+    ``pkb.tui`` cannot import ``pkb.agents.approval`` without dragging ``langgraph`` in, which is
+    exactly what I2 forbids. So the one copy sits here, where every importer of the seam can reach
+    it, and ``pkb.agents.approval`` re-exports it for the runtime.
+
+    Every check has a live-verified failure mode on the other side. Without them the harness raises a
+    bare ``ValueError`` from inside ``after_model``, which aborts the superstep, skips the
+    ``after_agent`` flush (D-1) and leaves the human staring at a stack trace instead of a 400. An
+    unmatched interrupt id is the worst of the three: it degrades into a confusing count-mismatch
+    message about "hanging tool calls" that says nothing about the id.
+
+    The signature is deliberately wider than §5.1's ``(request, decisions) -> None`` sketch. RT-40
+    also requires refusing a resume against a thread that is not interrupted at all and refusing a
+    stale id, neither of which the sketch can express; and returning the validated request lets a
+    caller chain straight into building the resume without re-reading the thread's state.
+
+    Args:
+        pending: What the thread is currently waiting on — or ``None`` when it is not interrupted.
+        decisions: The human's answers, positionally aligned with ``pending.actions`` (RT-41).
+        interrupt_id: The id the client believes it is answering. When given and different from the
+            current one, the decisions are stale.
+
+    Returns:
+        The validated ``pending`` request, so callers can chain into building a resume.
+
+    Raises:
+        StaleInterruptError: Nothing is pending, or ``interrupt_id`` names a different interrupt.
+            The thread is left interrupted and the original approval is still resolvable.
+        InvalidDecisionError: Wrong number of decisions, a type the action does not allow, or a
+            ``respond`` with no message (the harness's ``_process_decision`` reads
+            ``decision["message"]`` unconditionally and would ``KeyError`` inside the graph).
+    """
+    if pending is None:
+        message = "no approval is pending on this thread"
+        if interrupt_id is not None:
+            message = f"{message}; interrupt {interrupt_id!r} is no longer current"
+        raise StaleInterruptError(message)
+
+    if interrupt_id is not None and interrupt_id != pending.interrupt_id:
+        raise StaleInterruptError(
+            f"decisions answer interrupt {interrupt_id!r}, but the thread is waiting on "
+            f"{pending.interrupt_id!r}"
+        )
+
+    if len(decisions) != len(pending.actions):
+        raise InvalidDecisionError(
+            f"expected {len(pending.actions)} decision(s) for interrupt "
+            f"{pending.interrupt_id!r}, got {len(decisions)}"
+        )
+
+    for index, (decision, action) in enumerate(zip(decisions, pending.actions, strict=True)):
+        if decision.type not in action.allowed_decisions:
+            raise InvalidDecisionError(
+                f"decision {index} is {decision.type!r}, but {action.tool!r} allows only "
+                f"{list(action.allowed_decisions)}"
+            )
+        if decision.type == "respond" and not decision.message:
+            raise InvalidDecisionError(
+                f"decision {index} is 'respond' and needs a message: it becomes the tool's result"
+            )
+
+    return pending
 
 
 @dataclass(frozen=True, slots=True)

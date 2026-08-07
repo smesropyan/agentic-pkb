@@ -38,16 +38,16 @@ from typing import TYPE_CHECKING, Any, Final
 
 from deepagents.backends.utils import perform_string_replacement
 
+from pkb.agents.paths import canonical_kb_path
 from pkb.agents.paths import to_kb_relative as _to_kb_relative
+from pkb.agents.permissions import is_denied_derived
 from pkb.contracts import DecisionType
 from pkb.core import (
     Namespace,
     Tag,
-    TopicRecord,
     build_tag_tree,
     errors_only,
     has_errors,
-    is_derived_name,
     render_findings,
     validate_content,
 )
@@ -61,6 +61,7 @@ from pkb.core.paths import (
     STRUCTURAL_DIRS,
     SUMMARY_FILE,
     TOPIC_FILE,
+    extension_folders,
     owning_topic_root,
     rel,
 )
@@ -123,6 +124,12 @@ class GateReason(StrEnum):
     DELETE = "delete"
     """Any delete under the KB. There is no version control and no undo (RT-30, D6)."""
 
+    UNRESOLVED_PATH = "unresolved-path"
+    """The target exists on disk but :func:`pkb.agents.paths.canonical_kb_path` cannot say *as
+    what* — an unreadable directory, or a rename racing the walk. Every rule below this line is a
+    question about a specific file, so none of them can be answered; a check that cannot be
+    evaluated is not a check that passed, and the human decides instead (RT-23 … RT-29)."""
+
     CONFLICT_RESOLUTION = "conflict-resolution"
     """Clearing ``status.conflict-review``. Adding it is exempt — README §1.7 instructs the AI to
     tag, and gating that would block every background scan on a human (RT-26)."""
@@ -166,6 +173,7 @@ GATE_DECISIONS: Final[Mapping[GateReason, tuple[DecisionType, ...]]] = MappingPr
     {
         GateReason.TOPIC_CREATION: WRITE_DECISIONS,
         GateReason.DELETE: DELETE_DECISIONS,
+        GateReason.UNRESOLVED_PATH: WRITE_DECISIONS,
         GateReason.CONFLICT_RESOLUTION: WRITE_DECISIONS,
         GateReason.BREADTH_APPROVAL: WRITE_DECISIONS,
         GateReason.EXPERT_OVERLOAD: WRITE_DECISIONS,
@@ -239,22 +247,48 @@ def requires_approval(
     Returns the first matching :class:`GateReason` in member-declaration order, or ``None`` when
     the action may proceed unattended. Filing a plain note, writing a reference depth file, and
     every read return ``None`` — capture must be frictionless (RT-31).
+
+    **Two ways this function used to answer "no gate" without deciding anything**, both of which
+    put an unapproved write onto one of the three compact approval surfaces, and both of which are
+    closed here rather than in each rule below:
+
+    * The spelling was not the disk's. Every rule under a topic root is an exact-string question —
+      ``snapshot.topics[key]``, ``inner == (TOPIC_FILE,)`` — and on a case-insensitive filesystem
+      ``Cooking/TOPIC.md`` and ``Cooking/sub-topics/grilling/notes/summary.md`` are the human's
+      files under a spelling no dictionary holds, so every one of those questions answered "no".
+      :func:`pkb.agents.paths.canonical_kb_path` re-spells first (RT-23 … RT-29).
+    * The owning topic root was on disk but not in ``snapshot``. See :func:`_owning_topic`: the
+      answer is now derived from disk, not skipped.
+
+    Where the path itself cannot be resolved, the answer is :attr:`GateReason.UNRESOLVED_PATH` and
+    not ``None``. A gate is a claim that a human is not needed; it must never be made by default.
     """
     if tool in _TOPIC_TOOLS:
         return GateReason.TOPIC_CREATION
     if tool not in _FILE_TOOLS or rel_path is None:
         return None
 
-    target = snapshot.root / rel_path
-    if is_derived_name(snapshot.root, target):
+    if is_denied_derived(rel_path):
         # I3 refuses these at the tool layer whatever the prompt says (RT-11, RT-14). Gating them
         # too would ask a human to approve a write that is then denied anyway — the same wasted
-        # round trip RT-35 exists to prevent, one layer over.
+        # round trip RT-35 exists to prevent, one layer over. The predicate must be the permission
+        # rules' own (RT-11/RT-12), which are wider than `pkb.core.is_derived_name` on case and on
+        # a per-topic `tags.md`; asking Layer 1 here would gate writes the tool layer denies. It
+        # runs *above* the canonicaliser because it is already case-insensitive, so it is correct
+        # on the raw spelling and must not depend on the disk resolving one.
         return None
 
     if tool == DELETE_TOOL:
+        # A delete gates whatever it names, so its spelling changes nothing; resolving it is work
+        # that could only turn one gate into a different gate.
         return GateReason.DELETE
 
+    canonical = canonical_kb_path(snapshot.root, rel_path)
+    if canonical is None:
+        return GateReason.UNRESOLVED_PATH
+    rel_path = canonical
+
+    target = snapshot.root / rel_path
     proposed = proposed_content(tool, rel_path, args, snapshot.root)
     current = _read(target)
     topic = _owning_topic(snapshot, rel_path)
@@ -296,6 +330,16 @@ def proposed_content(
     tool would actually write (MW-10). That function returns a ``str`` for its own errors (zero
     occurrences, a non-unique match); that is deepagents' business, so it becomes ``None`` here and
     the content-based gates simply do not fire.
+
+    **The same function is not the same call.** ``FilesystemBackend.edit`` normalizes ``old_string``
+    and ``new_string`` before it matches (``backends/filesystem.py:561-562``, added because real
+    callers do send CRLF), and the file it matches against was read in text mode, so it is LF-only.
+    Passing the raw arguments here made the simulation miss where the write hits: the simulation
+    returned ``None``, and ``None`` is read by every consumer as "deepagents will error on this,
+    forward it" — which disabled ``validate_content`` (MW-13) and the four content-derived gates
+    (RT-24 … RT-27) on one tool call, for nothing more exotic than a model quoting Windows line
+    endings. The inference "``None`` means the write will fail" is only sound while the simulation
+    cannot diverge, so the normalization is what keeps that inference true.
     """
     if tool == WRITE_FILE_TOOL:
         content = args.get("content")
@@ -307,11 +351,20 @@ def proposed_content(
         return None
     result = perform_string_replacement(
         current,
-        str(args.get("old_string", "")),
-        str(args.get("new_string", "")),
+        _normalize_newlines(args.get("old_string", "")),
+        _normalize_newlines(args.get("new_string", "")),
         bool(args.get("replace_all", False)),
     )
     return None if isinstance(result, str) else result[0]
+
+
+def _normalize_newlines(value: object) -> str:
+    """CRLF/CR → LF, exactly as ``FilesystemBackend.edit`` does before matching (MW-10).
+
+    Kept byte-for-byte identical to ``backends/filesystem.py:561-562``, including the order of the
+    two replacements — ``\\r\\n`` first, so a CRLF does not become two newlines.
+    """
+    return str(value).replace("\r\n", "\n").replace("\r", "\n")
 
 
 def new_tags(proposed: str, snapshot: KbSnapshot) -> tuple[str, ...]:
@@ -351,15 +404,55 @@ def _read(path: Path) -> str | None:
         return None
 
 
-def _owning_topic(snapshot: KbSnapshot, rel_path: str) -> TopicRecord | None:
-    """The topic root that owns ``rel_path``, via Layer 1's PA-15 walk — never a prefix match."""
+@dataclass(frozen=True, slots=True)
+class _OwningTopic:
+    """The only two facts the gate table needs about the topic root that owns a path.
+
+    Deliberately *not* a :class:`~pkb.core.models.TopicRecord`: the record carries an ``agent_id``,
+    a ``tag`` and a parent chain that only a full scan can compute, and the whole point of
+    :func:`_owning_topic` is to keep answering when the scan has not caught up. A type that can
+    only hold what is knowable cannot be handed on somewhere that needs the rest.
+    """
+
+    path: str
+    """KB-relative POSIX path of the topic root, as the disk spells it."""
+
+    extension_folders: tuple[str, ...]
+    """Directory names directly under the root that are neither structural nor ignored (PA-7)."""
+
+
+def _owning_topic(snapshot: KbSnapshot, rel_path: str) -> _OwningTopic | None:
+    """The topic root that owns ``rel_path``, via Layer 1's PA-15 walk — never a prefix match.
+
+    **Why the snapshot is not consulted for existence (RT-23 … RT-29).** This used to resolve the
+    root by walking the *disk* and then demand a matching :class:`TopicRecord` from the *cached*
+    snapshot; a root the snapshot had not seen made this return ``None``, ``_within_topic`` return
+    ``None``, and six gates — breadth approval, ``expert.md``, ``skills/**``, extension folders,
+    ``status.approved`` and human-content edits — evaluate to "no gate" without evaluating
+    anything. That window does not need a human or a race to open: an agent writes a valid
+    ``sub-topics/Braising/topic.md``, which gates on nothing because it is not one of *Cooking's*
+    breadth files, and by its next tool call ``Braising`` is a topic root on disk. The write after
+    that landed on ``Braising/notes/summary.md`` carrying ``status.approved``, unapproved and
+    unannounced.
+
+    Both facts below are therefore taken from the same place ``owning_topic_root`` already looked —
+    the disk — and the snapshot is used only as a cache for the second one. ``extension_folders``
+    is read with Layer 1's own :func:`~pkb.core.paths.extension_folders`, the identical call
+    ``scan`` makes (``scan.py:359``), so a fresh snapshot and a stale one give the same answer; a
+    hardcoded ``()`` would have been safe in the RT-28 direction but would re-gate every later
+    write into a folder the human already approved.
+    """
     root = owning_topic_root(snapshot.root, snapshot.root / rel_path)
     if root is None:
         return None
-    return snapshot.topics.get(rel(snapshot.root, root))
+    key = rel(snapshot.root, root)
+    record = snapshot.topics.get(key)
+    if record is not None:
+        return _OwningTopic(path=key, extension_folders=record.extension_folders)
+    return _OwningTopic(path=key, extension_folders=tuple(extension_folders(root)))
 
 
-def _within_topic(rel_path: str, topic: TopicRecord | None) -> tuple[str, ...] | None:
+def _within_topic(rel_path: str, topic: _OwningTopic | None) -> tuple[str, ...] | None:
     """``rel_path``'s segments *below* its topic root, or ``None`` when no topic owns it."""
     if topic is None:
         return None
@@ -393,11 +486,11 @@ def _is_skill_path(rel_path: str, inner: tuple[str, ...] | None) -> bool:
     return len(parts) > 1 and parts[0] == SKILLS_DIR
 
 
-def _mints_extension_folder(topic: TopicRecord, inner: tuple[str, ...]) -> bool:
+def _mints_extension_folder(topic: _OwningTopic, inner: tuple[str, ...]) -> bool:
     """True when this write creates the *first* file of a new extension folder (RT-28).
 
     An extension folder is any directory directly under a topic root that is not in
-    :data:`pkb.core.paths.STRUCTURAL_DIRS` (PA-7). ``TopicRecord.extension_folders`` is Layer 1's
+    :data:`pkb.core.paths.STRUCTURAL_DIRS` (PA-7). ``_OwningTopic.extension_folders`` is Layer 1's
     list of the ones that already exist, so "not in it" means the agent is minting one — which
     README §1.2 makes a human decision. Writing a second file into an existing folder does not gate.
     """
@@ -487,6 +580,12 @@ def describe_write(
     ``wrap_tool_call`` (D-17), so without this the human approves first and *then* watches the
     validator refuse — spending one of three attempts (MW-14) on content they endorsed. With the
     label they can reject or edit instead.
+
+    The path is canonicalised the same way :func:`requires_approval` canonicalises it, so the human
+    reads the file the write will land on rather than the spelling the model happened to emit — and
+    so ``validate_content`` is asked about that same file. Naming the target ``grilling`` for a
+    write the filesystem sends to the approved ``Grilling/notes/summary.md`` would be a diff of the
+    right bytes under the wrong name, which is the one thing an approval must never be.
     """
     slug = reason.value if reason is not None else "review"
     lines = [f"Approval required: {slug}", f"Tool: {tool}"]
@@ -495,6 +594,7 @@ def describe_write(
         lines.extend(_render_args(args))
         return "\n".join(lines)
 
+    rel_path = canonical_kb_path(snapshot.root, rel_path) or rel_path
     target = snapshot.root / rel_path
     current = _read(target)
 

@@ -48,6 +48,7 @@ and are flushed once when the human decides (MW-29).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -77,6 +78,7 @@ __all__ = [
     "KbMaintenanceMiddleware",
     "KbWriteLock",
     "SupportsInvalidate",
+    "SupportsSnapshotInvalidate",
 ]
 
 
@@ -115,6 +117,26 @@ class SupportsInvalidate(Protocol):
     """The slice of ``AgentRegistry`` this middleware is allowed to touch (MW-30, RG-17)."""
 
     def invalidate(self) -> None: ...
+
+
+class SupportsSnapshotInvalidate(Protocol):
+    """The slice of ``PkbRuntime`` that owns the cached tree (RT-25, RT-28).
+
+    Deliberately *not* :class:`SupportsInvalidate`. That one drops every compiled graph as well
+    (RG-16), which on a per-write call would recompile the Librarian and every expert after each
+    note. This one drops the scanned tree and nothing else.
+
+    Why the middleware calls it at all: the runtime scans once and caches until a flush, and the
+    gate predicate reads that cache (``GateEnv(snapshot=runtime.snapshot)``). A file this turn has
+    already written — a first note under a freshly minted ``recipes/``, a note carrying a tag the
+    human approved one tool call ago — is invisible to it, so RT-28's "the second does not gate" and
+    RT-25's "gates once" both fail for every later write in the same run. A successful KB mutation
+    is exactly the moment the cached tree became wrong, and this hook is the innermost
+    ``wrap_tool_call`` in the stack (EX-14), so the refresh lands after the backend write and
+    strictly before the next ``after_model`` gate evaluation.
+    """
+
+    def invalidate_snapshot(self) -> None: ...
 
 
 class KbWriteLock(Protocol):
@@ -207,6 +229,7 @@ class KbMaintenanceMiddleware(AgentMiddleware[KbAgentState]):
         clock: Callable[[], date] = date.today,
         lock: KbWriteLock | None = None,
         registry: SupportsInvalidate | None = None,
+        snapshots: SupportsSnapshotInvalidate | None = None,
     ) -> None:
         """Wire the middleware to one knowledge base and its collaborators.
 
@@ -223,6 +246,11 @@ class KbMaintenanceMiddleware(AgentMiddleware[KbAgentState]):
             lock: The process-wide KB write lock (RT-51). Defaults to :data:`NULL_WRITE_LOCK`.
             registry: Invalidated when the turn changed an ``expert.md``, a skill or a ``topic.md``
                 (MW-30). This middleware performs no other registry mutation and compiles nothing.
+            snapshots: Whoever owns the cached tree the gates read — the runtime. Its cache is
+                dropped after every successful knowledge-base mutation, which is what keeps RT-25's
+                "gates once" and RT-28's "the second does not gate" true *within* one run. ``None``
+                leaves the caller's cache alone, which is right for a middleware wired to no
+                runtime and wrong for a compiled graph (see :class:`SupportsSnapshotInvalidate`).
         """
         super().__init__()
         self.kb_root = kb_root
@@ -231,6 +259,7 @@ class KbMaintenanceMiddleware(AgentMiddleware[KbAgentState]):
         self.clock = clock
         self.lock = lock if lock is not None else NULL_WRITE_LOCK
         self.registry = registry
+        self.snapshots = snapshots
 
     # ----------------------------------------------------------------------------------
     # Recording what the turn touched
@@ -244,7 +273,7 @@ class KbMaintenanceMiddleware(AgentMiddleware[KbAgentState]):
         """Record a successful knowledge-base mutation on the way out (MW-17, MW-18, MW-19)."""
         target = self._target(request)
         result = handler(request)
-        return result if target is None else _with_touched(result, target)
+        return result if target is None else self._record(result, target)
 
     async def awrap_tool_call(
         self,
@@ -259,7 +288,23 @@ class KbMaintenanceMiddleware(AgentMiddleware[KbAgentState]):
         """
         target = self._target(request)
         result = await handler(request)
-        return result if target is None else _with_touched(result, target)
+        return result if target is None else self._record(result, target)
+
+    def _record(
+        self, result: ToolMessage | Command[Any], target: str
+    ) -> ToolMessage | Command[Any]:
+        """Record *target* on the state update, and drop the cached tree if it really changed.
+
+        The identity test is the success test: :func:`_with_touched` returns the handler's own
+        result object unchanged for an error ``ToolMessage`` — a validation refusal, a permission
+        denial, a backend error — and a *new* ``Command`` only when a mutation actually landed
+        (MW-17). So "a new object" means "the tree just changed", which is exactly when the
+        runtime's cached snapshot became wrong (RT-25, RT-28).
+        """
+        recorded = _with_touched(result, target)
+        if recorded is not result and self.snapshots is not None:
+            self.snapshots.invalidate_snapshot()
+        return recorded
 
     def _target(self, request: ToolCallRequest) -> str | None:
         """The KB-relative path this tool call would change, or ``None`` if it changes none.
@@ -318,11 +363,25 @@ class KbMaintenanceMiddleware(AgentMiddleware[KbAgentState]):
         The flush and the enqueue share one critical section (MW-23, RT-55): a crash between the
         file writes and the enqueue loses the scan permanently, because the next flush only ever
         sees *its own* turn's touched paths.
+
+        **Nothing in here may raise (MW-25).** By the time this runs the human's answer has already
+        been produced; an I/O failure in the flush, the queue or the sink must be *reported*, never
+        allowed to take the run down. :meth:`_flush` has always been total; the queue and the sink
+        are the two collaborators MW-24/RT-54 make mandatory and they are real I/O — a
+        ``sqlite3.OperationalError: database is locked``, a daemon event stream that is down — so
+        they are covered here. Letting one of them escape does not merely lose a report: it aborts
+        ``after_agent``, which turns a completed run into a ``RunError``, and on the failure path it
+        escapes ``PkbRuntime._drive`` between the flush and the stream's terminal sentinel.
         """
         with self.lock:
             report = self._flush(touched)
-            _drive(self._enqueue(report.scan_requests))
-        self._publish(report, touched)
+            try:
+                _drive(self._enqueue(report.scan_requests))
+            except Exception as exc:
+                report = replace(report, findings=[*report.findings, _enqueue_failed(exc)])
+        with contextlib.suppress(Exception):
+            # The sink is the last stop: there is nowhere left to report a failure to report.
+            self._publish(report, touched)
         return report
 
     async def aflush_turn(self, touched: Sequence[str]) -> FlushReport:
@@ -331,11 +390,18 @@ class KbMaintenanceMiddleware(AgentMiddleware[KbAgentState]):
         The Layer 1 call is a whole-tree walk that reads every markdown file, so it goes through
         ``asyncio.to_thread``: blocking the event loop here would stall every other thread's
         streaming for the duration of the walk (MW-3).
+
+        Totality is the async twin's obligation too, and it is the variant that actually ships —
+        see :meth:`flush_turn` for why a raise here is worse than a lost report.
         """
         async with self.lock:
             report = await asyncio.to_thread(self._flush, touched)
-            await self._enqueue(report.scan_requests)
-        await asyncio.to_thread(self._publish, report, touched)
+            try:
+                await self._enqueue(report.scan_requests)
+            except Exception as exc:
+                report = replace(report, findings=[*report.findings, _enqueue_failed(exc)])
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(self._publish, report, touched)
         return report
 
     def flush_pending(self, touched: Sequence[str]) -> FlushReport | None:
@@ -416,9 +482,15 @@ class KbMaintenanceMiddleware(AgentMiddleware[KbAgentState]):
         The sink is a transport's log or event stream and the registry check stats a few paths;
         neither writes the tree, so neither belongs in the critical section that every other
         thread's flush is waiting on.
+
+        The two are independent, so a sink that is down must not cost the registry its refresh:
+        a turn that rewrote an ``expert.md`` would otherwise keep serving the stale compiled graph
+        (MW-30) because a *log* failed. The sink's own failure has nowhere left to be reported —
+        it is the reporting channel — so it is swallowed here rather than turned into a finding.
         """
         if self.sink is not None:
-            self.sink(report)
+            with contextlib.suppress(Exception):
+                self.sink(report)
         if self.registry is not None and self._changes_agent_configuration(touched):
             self.registry.invalidate()
 
@@ -442,6 +514,23 @@ class KbMaintenanceMiddleware(AgentMiddleware[KbAgentState]):
 # --------------------------------------------------------------------------------------
 # Free functions
 # --------------------------------------------------------------------------------------
+
+
+def _enqueue_failed(exc: Exception) -> Finding:
+    """The finding a lost conflict-scan batch becomes (MW-25, RT-54, RT-55).
+
+    Reported rather than raised, and reported through the same report the sink already receives, so
+    a queue that is down is visible in the daemon's log instead of ending the run. The scan itself
+    is genuinely lost — the next flush only sees its own turn's touched paths — which is why this is
+    an error and not a warning.
+    """
+    return Finding(
+        code="SCAN_ENQUEUE_FAILED",
+        severity=Severity.ERROR,
+        message=f"this turn's conflict-scan requests could not be queued: {exc}",
+        rule_id="MW-25",
+        hint="the flush itself completed; re-queue the topic by touching one of its files again",
+    )
 
 
 def _touched(state: KbAgentState) -> list[str]:
