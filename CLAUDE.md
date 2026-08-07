@@ -16,8 +16,10 @@ mechanical structure enforced in code and the meaning curated in dialog with the
 
 1. `pkb.core` — schema, validator, generators, scaffolder. **Built.** See §7 "As built" in the
    Layer 1 rules for what diverged, and `src/pkb/core/__init__.py` for the surface Layer 2 imports.
-2. `pkb.agents` — runtime, registry, expert factory, Librarian, middleware, default skills. **← next**
-3. `pkb.service` + `pkb.server` — the protocol, HTTP routes, SSE, MCP mount.
+2. `pkb.agents` — runtime, registry, expert factory, Librarian, middleware, default skills.
+   **Built.** See §2 of the Layer 2 rules for where the harness diverges from the architecture doc,
+   and `docs/reference/deepagents-0.7.5-harness-grounding.md` for the executed evidence.
+3. `pkb.service` + `pkb.server` — the protocol, HTTP routes, SSE, MCP mount. **← next**
 4. `pkb.tui` + `pkb.clients.approval`.
 5. `pkb.server.telegram`.
 
