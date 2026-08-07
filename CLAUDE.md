@@ -28,7 +28,16 @@ mechanical structure enforced in code and the meaning curated in dialog with the
 | | Model | Why |
 |---|---|---|
 | **Default** | `ollama:deepseek-v4-flash:cloud` | 5/5 on a five-task live evaluation of this workload, ~16s per filing turn, cheap. |
-| **Fallback** | `ollama:gemma4:31b` | The **local** tag — no `-cloud` suffix. Also 5/5, Low usage weight, and running it locally is never metered, so the knowledge base keeps working when the cloud quota is exhausted or the endpoint is down. |
+| **Fallback** | `ollama:gemma4:31b` | The **local** tag — no `-cloud` suffix. Also 5/5, Low usage weight, and never metered, so the knowledge base keeps working when the cloud quota is exhausted or the endpoint is down. |
+
+**The fallback is a degraded backup, not a drop-in.** Measured on this machine: the same filing turn
+takes **284 seconds locally** against ~16 seconds on the cloud default — about 18× slower, because a
+turn is 8–12 model calls and each local call is ~25s over a growing context. It works; it is not
+fast. Anything with a deadline in front of it — a TUI turn, a Telegram reply, the conflict-scan
+worker — needs a timeout sized for the fallback rather than for the primary, and the human should be
+told the run switched, because the first symptom of a silent failover is a turn that looks hung.
+The same weights on `gemma4:31b-cloud` ran the eval at ~32s per task, so this is the local hardware,
+not the model.
 
 Both are configured on `RuntimeConfig` (`default_model`, per-agent `models`, `fallback_model`) and
 reach the graphs through `AgentRegistry` — the model is a **registry** concern (RG-21): no
