@@ -16,10 +16,50 @@ mechanical structure enforced in code and the meaning curated in dialog with the
 
 1. `pkb.core` — schema, validator, generators, scaffolder. **Built.** See §7 "As built" in the
    Layer 1 rules for what diverged, and `src/pkb/core/__init__.py` for the surface Layer 2 imports.
-2. `pkb.agents` — runtime, registry, expert factory, Librarian, middleware, default skills. **← next**
-3. `pkb.service` + `pkb.server` — the protocol, HTTP routes, SSE, MCP mount.
+2. `pkb.agents` — runtime, registry, expert factory, Librarian, middleware, default skills.
+   **Built.** See §2 of the Layer 2 rules for where the harness diverges from the architecture doc,
+   and `docs/reference/deepagents-0.7.5-harness-grounding.md` for the executed evidence.
+3. `pkb.service` + `pkb.server` — the protocol, HTTP routes, SSE, MCP mount. **← next**
 4. `pkb.tui` + `pkb.clients.approval`.
 5. `pkb.server.telegram`.
+
+## Models
+
+| | Model | Why |
+|---|---|---|
+| **Default** | `ollama:deepseek-v4-flash:cloud` | 5/5 on a five-task live evaluation of this workload, ~16s per filing turn, cheap. |
+| **Fallback** | `ollama:gemma4:31b` | The **local** tag — no `-cloud` suffix. Also 5/5, Low usage weight, and never metered, so the knowledge base keeps working when the cloud quota is exhausted or the endpoint is down. |
+
+**The fallback is a degraded backup, not a drop-in.** Measured on this machine: the same filing turn
+takes **284 seconds locally** against ~16 seconds on the cloud default — about 18× slower, because a
+turn is 8–12 model calls and each local call is ~25s over a growing context. It works; it is not
+fast. Anything with a deadline in front of it — a TUI turn, a Telegram reply, the conflict-scan
+worker — needs a timeout sized for the fallback rather than for the primary, and the human should be
+told the run switched, because the first symptom of a silent failover is a turn that looks hung.
+The same weights on `gemma4:31b-cloud` ran the eval at ~32s per task, so this is the local hardware,
+not the model.
+
+Both are configured on `RuntimeConfig` (`default_model`, per-agent `models`, `fallback_model`) and
+reach the graphs through `AgentRegistry` — the model is a **registry** concern (RG-21): no
+transport, route or channel picks one, and it is never read from KB content. `fallback_model=None`
+turns the failover off.
+
+**Prerequisite: `ollama pull gemma4:31b`.** It is not pulled by default and it is a ~20GB download,
+so nothing here pulls it and nothing builds it until the day it is needed. If that day arrives and
+it is missing, the error is a `ModelNotInstalledError` naming this exact command.
+
+The failover is `pkb.agents.models.FallbackChatModel`. Two things about it are load-bearing:
+
+- **Only quota, concurrency and availability fail over** — 429, 408, 5xx, connection and timeout
+  errors. A malformed request, a missing model or a content error propagates untouched, because the
+  second model would fail identically and two wrong answers are worse than one clear failure.
+- **Every failover is logged at warning level**, naming both models and the reason, at most once per
+  outage. A silent failover means the human never learns their quota ran out and quietly gets a
+  different model's judgment.
+
+The deployment is an Ollama **Pro** plan: three concurrent cloud models, usage weighted per model,
+limits resetting on 5-hour and weekly windows. Overflow queues, then rejects with 429; a 502 means a
+cloud model was unreachable.
 
 ## Conventions
 

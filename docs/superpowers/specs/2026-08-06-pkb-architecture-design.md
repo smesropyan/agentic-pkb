@@ -1,9 +1,16 @@
 # PKB System Architecture
 
 **Date**: 2026-08-06
-**Status**: Approved
+**Status**: Approved. **Amended 2026-08-07** — see the amendment log below.
 **Scope**: System-wide architecture — the seams between layers. Each layer gets its own spec and
 implementation plan afterward.
+
+### Amendment log
+
+| Date | What changed | Why |
+|------|--------------|-----|
+| 2026-08-07 | §4, §5, §7, §8 corrected in five places where this document described a harness that does not exist as described. | Layers 1 and 2 were built, and a grounding pass **executed** every harness assumption against the pinned `deepagents 0.7.5` / `langchain 1.3.14` / `langgraph 1.2.10`. Five assumptions were wrong. Each correction below names the Layer 2 rules row (`D-1`, `D-6`, `D-11`, `D-12`, `D-15`) holding the executed evidence, so a later reader does not "fix" the text back. |
+| 2026-08-07 | New decisions **D10** (Librarian routing is a harness-encoded workflow) and **D11** (one source, several experts); **D8** narrowed. §4 and §5 updated to match. | Ruled by the human after a live measurement of the Librarian: given a topic question it did **not** delegate — it read the topic folders itself and answered from raw files, with no topic skills, no `expert.md` persona and no per-topic voice, and on another run claimed *"the Cooking expert checked the knowledge base"* when no expert had run. |
 
 ---
 
@@ -33,7 +40,9 @@ layers can be specified and built independently.
 | D6  | KB tree is **plain markdown files** — no version control in the first draft | Keeps Layer 1 to a single responsibility (structure) and removes commit-policy questions (when, what message, what on failure) from the first build. Git is additive later: it observes the tree rather than changing how anything writes to it. See §10. |
 | D9  | The Telegram adapter is **hosted inside the daemon process**, calling `PkbService` directly | The bot's required lifetime *is* the daemon's lifetime. Hosting it in the TUI would tie it to a foreground terminal; hosting it standalone adds a third process and an auth boundary for no gain. It is enabled by config and supervised as a background task. |
 | D7  | Skills use `skills/<name>/SKILL.md`, amending README §2.4 | deepagents' native format. Buys progressive disclosure and name-collision override resolution with no custom code. |
-| D8  | Each topic is its own compiled graph, registered with the Librarian as a `CompiledSubAgent` | Dict-subagents are one-shot; README §1.6 requires multi-turn approval dialog. One artifact serves both direct connection and Librarian routing. |
+| D8  | Each topic is its own compiled graph. **Amended 2026-08-07**: it is no longer registered with the Librarian as a `CompiledSubAgent` — the routing workflow invokes it directly (D10). | Dict-subagents are one-shot; README §1.6 requires multi-turn approval dialog. One artifact still serves both access paths. Experts keep `task` among themselves (their own general-purpose subagent); the Librarian does not get one, because with routing in code the tool is redundant and leaving it leaves the bypass. |
+| D10 | **Librarian routing is a harness-encoded workflow, not a model decision.** A turn is: (1) classify — the one model call, answered through a `route` tool; (2) fan out — code invokes every applicable expert; (3) merge — code composes the reply by attribution; (4) offer the answering experts for direct connection. Ruled by the human, 2026-08-07. | Measured: a Librarian holding a `task` tool and free to decide **did not delegate**, and once claimed an expert had contributed when none had run. The merge is the part that must not be a model call — attribution assembled from actual results cannot lie about who contributed, and a model asked to write the merge demonstrably does. When classification is uncertain the harness asks the human **which experts to engage, from a menu of candidates**; a wrong guess files knowledge in the wrong place and there is no undo (D6). |
+| D11 | **One source may be ingested by several experts.** Fan-out applies to information exactly as it applies to questions; each expert extracts the facets its own topic cares about, and each may decline. Ruled by the human, 2026-08-07. | *"A management book can offer lessons on management & parenting."* Two topic-lens extractions of one source are not two copies of one file, and README §1.8 rule 4 ("no copies") is scoped to **solution notes** — that misreading was made once already and corrected. Misrouted material that nobody files is a correct outcome, not a partial failure. |
 
 ### Rejected alternatives
 
@@ -105,11 +114,20 @@ level:
 permissions=[
     FilesystemPermission(
         operations=["write"],
-        paths=["/kb/**/index.md", "/kb/index.md", "/kb/tags.md"],
+        paths=["/kb/**/index.md", "/kb/**/tags.md"],   # corrected 2026-08-07 — see below
         mode="deny",
     ),
 ]
 ```
+
+> **Corrected 2026-08-07 (Layer 2 rules D-5).** The original list read `["/kb/**/index.md",
+> "/kb/index.md", "/kb/tags.md"]` — one glob too many and one glob short. wcmatch's `GLOBSTAR`
+> matches **zero** directories, so `/kb/**/index.md` already covers `/kb/index.md`; and
+> `/kb/<topic>/tags.md` was unprotected, verified by a scripted write that landed on disk and would
+> have been maintained by no generator. The two globs as built are derived from
+> `pkb.core.is_derived_name` and equivalence-tested against it over a walked tree, rather than
+> restated. `operations=["write"]` only: derived files must stay **readable**, or the routing
+> catalog itself becomes invisible.
 
 (Paths are backend-relative; the KB mounts at `/kb/` — see §4.)
 
@@ -127,10 +145,12 @@ pkb/
 │   └── scaffold.py         # new topic / sub-topic structure
 ├── agents/          # Layer 2
 │   ├── registry.py         # AgentRegistry: catalog, lazy graph construction, invalidation
-│   ├── librarian.py        # root routing agent
+│   ├── librarian.py        # root routing agent (classify step)
+│   ├── routing.py          # the fan-out and the merge — code, not a model (D10)
 │   ├── expert.py           # Topic Expert factory (template + expert.md override)
-│   ├── middleware/         # KbValidationMiddleware, KbMaintenanceMiddleware
-│   └── runtime.py          # shared checkpointer, store, backend
+│   ├── middleware/         # KbValidation, KbMaintenance, KbBreadth (§4), KbRouting (D10)
+│   └── runtime.py          # shared checkpointer, store, backend, locks, run/resume/cancel
+├── contracts.py     # the Layer 2 ↔ Layer 3 seam: a leaf module, no harness imports (I2)
 ├── service.py       # PkbService protocol + implementation
 ├── server/          # Layer 3
 │   ├── app.py              # FastAPI; owns the daemon lifecycle
@@ -147,41 +167,102 @@ pkb/
 ## 4. Agent topology and addressing
 
 Every topic gets its **own compiled graph** — `create_deep_agent(...)` with its own system prompt,
-skills chain, and `memory=[topic.md, notes/summary.md]`. That single artifact serves both access
-paths:
+skills chain, and breadth files. That single artifact serves both access paths:
 
 - **Direct connection** — addressable on its own, with its own threads and checkpoints.
-- **Librarian routing** — registered with the Librarian as
-  `CompiledSubAgent(name=..., description=..., runnable=expert_graph)`, so deepagents' `task()` tool
-  routes to it.
+- **Librarian routing** — invoked by the routing workflow below, on a thread derived from the
+  Librarian's.
+
+> **Corrected 2026-08-07 — `memory=` (Layer 2 rules D-11).** This section originally said each
+> expert graph gets `memory=[topic.md, notes/summary.md]`. **Do not restore it.** deepagents'
+> `MemoryMiddleware` injects a system prompt that instructs the model to call `edit_file` on the
+> memory files *"to persist new knowledge"* — those two files are exactly the human-approval
+> surfaces README §1.6 says the AI never finalizes on its own — and it caches their contents in
+> checkpointed state, so a long-lived thread never sees the human's edit. `KbBreadthMiddleware`
+> replaces it, reading both files fresh on every model call and appending them to the system
+> message. The *intent* of this paragraph — breadth always in context, `index.md` on demand — is
+> preserved exactly; only the mechanism changed.
+
+### The Librarian turn (D10)
+
+Routing is a workflow the harness runs, not a decision the Librarian may take differently. Four
+steps, three of them code:
+
+1. **Classify — the one model call.** The Librarian is given the generated root catalog and answers
+   by calling a `route` tool with the applicable topic ids and a one-line reason. It is a tool call
+   rather than structured output because the `format` parameter is ignored on the deployment's
+   Ollama cloud endpoint (measured, 2026-08-07). This is the only step with discretion in it.
+2. **Fan out — code.** The runtime invokes every applicable expert graph. Not a tool the model may
+   decline to call; a step that always runs, for **information exactly as for questions** (D11).
+   Concurrency is capped and the cap is configurable — the deployment allows three concurrent cloud
+   models, so a five-topic item runs five experts three at a time. The cap bounds concurrency, never
+   the set: dropping an expert from the fan-out would silently lose the extraction this design
+   exists to produce.
+3. **Merge — code, never a model.** The reply is composed by attribution: each expert's own answer
+   under its own heading, with the expert's title and agent id, verbatim. An expert that failed, or
+   that is waiting on an approval, gets a section saying so, and the rest of the reply is still
+   delivered. An expert that had nothing to contribute says so in **its own words** — the merge does
+   not classify that, because deciding an answer means "declined" requires reading the answer to
+   decide what it meant, and a decline is a correct outcome rather than a status. A merge written by
+   a model is exactly how *"the Cooking expert checked the knowledge base"* gets said when no expert
+   ran.
+4. **Offer direct connection.** The reply names the agent ids that answered, and each has a real,
+   addressable thread, so a client can offer "continue with the Cooking expert" and mean it.
+
+**When classification is uncertain, the harness asks the human — with a menu of candidate experts.**
+Not a guess and not an open question. It fires when the model answers in prose instead of calling
+`route` — after one forced retry — or when nothing it named resolves against the catalog. The menu
+is the turn's **reply**: the candidate experts, plus whatever the model did say, quoted rather than
+hidden, so the human can see it is a question about their item rather than a system error. It lands
+in the Librarian's thread like any other reply, so it survives a restart and is answerable from any
+channel; the human's choice arrives as the next message. A topic gap — nothing applicable and
+nothing worth choosing between, which is every item in a fresh knowledge base — goes to the gated
+`create_topic` flow instead (README §2.2).
+
+**The Librarian holds no `task` tool.** With routing in code it is redundant, and leaving it leaves
+the bypass that D10 exists to close. Experts keep theirs (D8).
 
 **Addressing.** Agent IDs mirror the tree: `librarian`, `topic/cooking`, `topic/cooking/grilling`.
 Sub-topics resolve to the nearest ancestor holding an `expert.md`, falling back to the topic root —
 README §1.8 rule 5, implemented as path resolution rather than a special case.
 
-**Registry.** `AgentRegistry` scans `*/topic.md` at startup to build the catalog, but constructs
-graphs **lazily on first use** and caches them. Fifty topics must not mean fifty graphs at boot.
-Topic creation invalidates the registry; the Librarian's subagent list is rebuilt on next access.
+**Registry.** `AgentRegistry` scans the tree at startup to build the catalog, but constructs graphs
+**lazily on first use** and caches them. Fifty topics must not mean fifty graphs at boot. Topic
+creation invalidates the registry.
 
 **Shared runtime.** One `AsyncSqliteSaver` checkpointer, one store, and one backend:
 
 ```python
 CompositeBackend(
     default=StateBackend(),                                    # agent scratch, thread-scoped
-    routes={"/kb/": FilesystemBackend(root_dir=KB, virtual_mode=True)},
+    routes={
+        "/skills/": FilesystemBackend(root_dir=PACKAGED_SKILLS, virtual_mode=True),
+        "/kb/":     FilesystemBackend(root_dir=KB, virtual_mode=True),
+    },
 )
 ```
 
-A thread is `(agent_id, thread_id)`. Cross-channel resume is the same `thread_id` reached from a
-different client.
+> **Corrected 2026-08-07 — threads (Layer 2 rules D-6).** This section originally said *"a thread is
+> `(agent_id, thread_id)`"*. The checkpointer keys on **`thread_id` alone**; `checkpoint_ns` is not
+> usable as a second dimension (passing one explicitly makes `aget_state` raise). So thread ids must
+> be globally unique, and the `(agent_id, thread_id)` association is bookkeeping in the daemon's own
+> `threads` table (§5), not something the checkpointer can answer.
 
-**Consequence.** A conversation held *directly* with the Cooking expert and work the Librarian
-*delegates* to it are different threads. Delegated work runs in the subagent's isolated context and
-returns a summary. "Continue what the Librarian was doing" resumes the Librarian's thread, not the
-expert's. This is correct behaviour, and the TUI must not imply otherwise.
+**Expert threads are derived, not opaque.** The work the routing workflow gives an expert runs on
+`<librarian-thread>::<agent-id>` — a deterministic function of the Librarian's thread, so it needs
+no table to resolve and no id to invent. That is what makes step 4 real: "continue with the Cooking
+expert" opens a thread that exists, holding the exchange the human just read part of. It replaces
+the nested `checkpoint_ns` the harness would otherwise use, which no client can address.
 
-**Model.** Configurable per agent; default `anthropic:claude-sonnet-5`. The model is a registry
-concern, not a transport concern.
+**Consequence.** A conversation held *directly* with the Cooking expert on a thread of the human's
+own and the work the Librarian routed to it are still different conversations, on different threads.
+"Continue what the Librarian was doing" resumes the Librarian's thread; "continue with the Cooking
+expert" resumes the derived one. Both are addressable, and the TUI should say which is which.
+
+**Model.** Configurable per agent; default `ollama:deepseek-v4-flash:cloud` with a local
+`ollama:gemma4:31b` fallback, both chosen on a measured evaluation of this workload (Layer 2 rules
+Q6 — this document's original `anthropic:claude-sonnet-5` was a placeholder). The model is a
+registry concern, not a transport concern.
 
 ---
 
@@ -214,12 +295,27 @@ class PkbService(Protocol):
 
 Events are **normalized**, not proxied from LangGraph. The clients need different slices: the TUI
 wants token deltas, Telegram cannot use them (editing a message per token hits rate limits, so it
-renders on `message.complete`), and MCP wants only the final result. Proxying raw
-`astream_events(version="v3")` payloads would require every adapter to understand deepagents
-internals, making invariant I2 fiction.
+renders on `message.complete`), and MCP wants only the final result. Proxying raw stream payloads
+would require every adapter to understand deepagents internals, making invariant I2 fiction.
+
+> **Corrected 2026-08-07 — the stream API (Layer 2 rules D-12).** This section originally named
+> `astream_events(version="v3")`. On the langgraph pin, v3 is a **different protocol**: a coroutine
+> that must be awaited before iteration, yielding JSON-RPC-style `{"type","method","params"}`
+> envelopes with no `event` key — not the `on_chat_model_stream` shape assumed here. Layer 2 uses
+> `graph.astream(input, cfg, stream_mode=["updates","messages"], subgraphs=True)`. `subgraphs=True`
+> is required, or a subgraph's messages are invisible.
 
 `subagent.start`/`subagent.end` let the TUI show *"→ routing to Cooking expert"*, making README
-§2.2's routing behaviour visible instead of a silent pause.
+§2.2's routing behaviour visible instead of a silent pause. Under D10 they are emitted by the
+fan-out step itself, once per expert, naming the **delegate** — not derived from a `task` tool call,
+which the Librarian no longer has. Between them the runtime forwards that expert's own events —
+message deltas, tool starts, an approval it raised — relabelled with the expert's agent id and
+carrying its derived thread id, so a client can show progress per expert and resolve an expert's
+approval on the thread that owns it.
+
+A run's `run.end` for a Librarian turn carries the **merged, attributed** text (§4 step 3). The
+Librarian's own prose is not the answer and never reaches the client as one; the same merged text is
+appended to the Librarian's thread so replayed history shows what the human actually read.
 
 ### Thread metadata
 
@@ -233,6 +329,12 @@ threads(thread_id, agent_id, title, created_at, updated_at, origin_channel,
 
 Without it, "list my threads with the Cooking expert" has no answer and cross-channel resume has no
 discovery surface.
+
+Two thread-id shapes are **derived rather than minted by a client**, and Layer 3 must recognize both:
+`<librarian-thread>::<agent-id>` for work the routing workflow gave an expert (§4), and
+`scan:<agent-id>:<uuid4>` for a conflict-scan run (§7). Both are ordinary threads — resumable,
+holding real history, carrying their own approvals. A routed thread belongs in the human's thread
+list as a child of the Librarian's; a scan thread is machine bookkeeping and belongs out of it.
 
 ---
 
@@ -349,6 +451,17 @@ The flush runs on both success and failure. A run that errors midway may have al
 and leaving the tree with stale derived files is worse than the partial write itself — regeneration
 is idempotent, so running it is always safe.
 
+> **Corrected 2026-08-07 — where that guarantee comes from (Layer 2 rules D-1).** `after_agent`
+> cannot deliver it. It is a graph node on the **normal exit edge**: any exception aborts the
+> superstep and it never executes — verified across four failure shapes, each leaving a written file
+> and no flush. It also does not run on an *interrupted* turn; it runs once when the resumed run
+> completes. So the guarantee lives in `pkb.agents.runtime`, which wraps **every** graph execution
+> in `try/finally`, recovers the touched paths from the checkpoint when `after_agent` did not fire,
+> and flushes there — exactly one flush per run on both paths. A daemon-startup
+> `regenerate_all` closes the abandoned-approval case. This is why the runtime owns the only
+> sanctioned way to execute a graph: HTTP runs, Telegram runs, the scan worker, the routing
+> workflow's fan-out and MCP calls otherwise make a fifth caller that forgets structurally possible.
+
 ### Conflict scan queue
 
 README §1.9 has Layer 1 *schedule* scans and Layer 2 *execute* them. `after_agent` writes scan
@@ -364,6 +477,22 @@ runs the relevant topic expert on its own thread with a conflict-scan prompt. Fi
 lock, because regeneration touches root `tags.md` and the root catalog. Two concurrent runs on the
 same thread return `409`.
 
+> **Corrected 2026-08-07 — where the 409 comes from (Layer 2 rules D-15).** Not from the harness.
+> LangGraph OSS has **no multitask strategy** — that is a Platform feature — and verified,
+> `asyncio.gather` of two runs on one thread returned two successes with interleaved writes. The 409
+> is Layer 2's own per-`(agent_id, thread_id)` active-run registry raising `ThreadBusyError`, which
+> Layer 3 maps. A second, related refusal is Layer 2's too: sending a new message to a thread with a
+> pending interrupt silently **discards** the interrupt in the harness, so the runtime refuses that
+> as well.
+
+**Fan-out concurrency (D10).** The routing workflow runs experts up to the configured cap at a time,
+each on its own derived thread, and each takes the write lock for its own flush — so their flushes
+serialize while their model calls do not. Because a routed thread is an ordinary thread, the two
+refusals above apply to it: an expert still sitting at an unresolved approval from an earlier turn
+cannot be given new work, and the merge reports that instead of silently dropping the interrupt.
+**One expert failing must not lose the others**: a failed fan-out branch becomes its own section in
+the merged reply, and the rest is delivered.
+
 **Failure modes.**
 
 | Failure | Behaviour |
@@ -372,7 +501,9 @@ same thread return `409`.
 | Model or provider error | `run.error` event; thread remains resumable. |
 | Client disconnects mid-approval | Interrupt persists in the checkpoint, appears as pending on `list_threads`, and **any** client can resolve it later. |
 | Telegram bot task crashes | Supervised restart; logged and surfaced in `/health`. The daemon and in-flight runs are unaffected (D9). |
-| Run errors after partial writes | The `after_agent` flush still runs, so derived files match the tree. Without version control there is no rollback — see the caveat in §10. |
+| Run errors after partial writes | The runtime's `try/finally` flush runs (see §7's correction), so derived files match the tree. Without version control there is no rollback — see the caveat in §10. |
+| One expert fails during a fan-out | Its failure is reported in its own section of the merged reply; every other expert's answer is still delivered. A fan-out is not all-or-nothing. |
+| An expert declines the routed material | A correct outcome, not a failure (D11). Its section says so, and nothing is filed in that topic. |
 
 The abandoned-approval case is a direct benefit of the daemon model: approve from a phone something
 the TUI asked about hours earlier. The thread list should be designed around it.
@@ -390,7 +521,14 @@ the TUI asked about hours earlier. The thread list should be designed around it.
 | end-to-end | live smoke tests behind an opt-in marker | yes |
 
 Because `PkbService` is a Protocol, everything above Layer 2 tests against a stub. Nearly the entire
-suite runs free and fast; live tests are a thin top layer.
+suite runs free and fast; live tests are a thin top layer. The stock langchain fakes cannot drive a
+deep agent — they inherit a `bind_tools` that raises, and `create_agent` always calls it — so Layer 2
+ships its own `ScriptedChatModel` fixture.
+
+Moving routing into code (D10) moves most of it out of the live suite: classification is one scripted
+tool call, and the fan-out, the merge, the cap, the derived thread ids and the failure isolation are
+all code with no model in them. What still needs a live model is whether the classification is
+*right*.
 
 Invariants I1 and I2 are enforced by an import-linter rule in CI, not by convention.
 
@@ -423,19 +561,41 @@ Deferred deliberately, not overlooked:
 Bottom-up, one spec and plan per layer:
 
 1. **`pkb.core`** — schema, validator, generators, scaffolder. No LLM, no agents, fully TDD-able.
-   Every guarantee above rests on it.
-2. **`pkb.agents`** — runtime, registry, expert factory, Librarian, the two middleware, default
-   skills.
+   Every guarantee above rests on it. **Built.**
+2. **`pkb.agents`** — runtime, registry, expert factory, Librarian, the middleware (three, not two —
+   see §4's `memory=` correction), default skills. **Built**, with the Librarian's routing workflow
+   (D10) as the one part specified but not yet implemented: see §1.4 of the Layer 2 rules for which
+   `LB-*` rules are designed-but-unproven and which are verified.
 3. **`pkb.service` + `pkb.server`** — the protocol, its implementation, HTTP routes, SSE, MCP mount.
+   **← next.**
 4. **`pkb.tui`** + **`pkb.clients.approval`** — Textual client, including the approval diff modal.
 5. **`pkb.server.telegram`** — daemon-hosted bot task, reusing the approval helper from step 4.
 
+Each built layer has its own rules document with stable rule ids that its tests cite; where the
+implementation diverged from this document, the divergence is recorded there and the correction is
+carried back here rather than left to a reader to notice.
+
 ---
 
-## 12. README amendments required
+## 12. README amendments
+
+All of the following are **applied** to `README.md` as of 2026-08-07.
 
 1. **§2.4 and §1.3** — skills become `skills/<skill-name>/SKILL.md` rather than
    `skills/<skill>.md`, adopting the deepagents Agent Skills format. Applies to both the PKB root
    `skills/` folder and topic-level overload folders. Override resolution (same skill name, later
-   source wins) is then provided by the harness.
+   source wins) is then provided by the harness, and it is **whole-record**: a topic's copy replaces
+   the root one rather than merging with it.
 2. **Part 3** — the KB tree diagram updates to reflect the same change.
+3. **§1.4 (new)** — `skills/**` is a **third file class**, alongside knowledge files and
+   machine-generated files: exempt from PKB frontmatter and from index and tag generation, carrying
+   the harness's `name`/`description` instead. Forcing the PKB fields onto a `SKILL.md` breaks
+   deepagents' own parser and the skill disappears from the prompt with no error anywhere.
+4. **§2.2** — routing is described as the harness-run workflow it now is (D10), including the expert
+   menu when classification is uncertain.
+5. **§1.8 rule 4 and §2.2/§2.3** — one source may be ingested by several experts, each through its
+   own topic's lens, and an expert may decline (D11). Rule 4 gains a clause saying it is scoped to
+   *solution notes*, because the generalization to source ingestion was made once already.
+6. **§2.6** — the agent-hierarchy diagram shows the fan-out and the merge.
+7. **Part 3 step 2** — `voice` ships an opinionated starter profile rather than being bootstrapped
+   from a questionnaire (ruled by the human, 2026-08-07; Layer 2 rules C8).
