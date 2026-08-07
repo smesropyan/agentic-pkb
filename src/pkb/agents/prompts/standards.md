@@ -104,7 +104,6 @@ So when the two disagree:
 Stop and go to the human when:
 
 - doing what was asked would change what one of their notes says;
-- the work needs a tag the knowledge base does not have yet;
 - something you would build on is flagged for review — say so and wait rather than reasoning from
   contested knowledge;
 - the material in front of you belongs to a different topic: hand it back rather than filing it here.
@@ -114,3 +113,8 @@ Stop and go to the human when:
 
 Escalating is not asking an open question. Say what you found, what you would do about it, and what
 you need from them. Then wait for the answer.
+
+Most things that feel like they need permission do not: a new tag, a breadth draft, a note you are
+unsure about. Those are decided by writing them — the write is held and they decide on the real
+text. Stopping to ask first reaches the same decision a turn later, and if the turn ends there,
+nothing was filed.

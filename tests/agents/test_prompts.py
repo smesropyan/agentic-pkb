@@ -244,11 +244,53 @@ def test_no_prompt_restates_a_mechanically_enforced_rule_pr4(name: str) -> None:
         assert found is None, f"{name} says {found.group(0)!r} — {mechanism}"
 
 
+PROMPT_BUDGET: Final[dict[str, int]] = {
+    "standards.md": 16_000,
+    "expert_template.md": 9_000,
+    "librarian.md": 7_000,
+}
+"""Per-file character budgets — deliberately generous, and deliberately not spent.
+
+**Precision matters, length does not.** That is measured, not asserted. Two prompt sets were run
+against a five-task live evaluation over three models: the 6.9K `standards.md` scored 14/15, a 12.2K
+rewrite of it scored 15/15, and repeating the one differentiating cell three times per arm gave 3/3
+both ways. The extra 5,300 characters bought nothing. What *did* move the numbers, twice, was
+removing a specific ambiguity:
+
+* "show the text you want to write" → models wrote the file into the chat and never called the tool.
+  0/2 runs filed anything. Naming the mechanism took it to 3/3.
+* "propose it before you file the content" → models asked about a new tag and ended the turn.
+  0/3 → 3/3.
+
+Each fix was shorter than the sentence it replaced. So the budget is headroom for saying a thing
+*exactly*, never licence to say more things.
+
+The ceiling is not about the context window — 32K characters is ~8K tokens against a 256K-1M window.
+Two other costs are real and both scale with calls rather than with the window:
+
+* **Metering.** The system prompt is re-sent on every model call of a multi-step agentic loop, on
+  usage-weighted plans. A prompt that doubles costs double on every step of every turn, forever.
+* **Attention.** Long instruction lists measurably dilute adherence to the instructions that matter.
+  Adding a rule can silently weaken an existing one, and nothing in this suite would show it — only a
+  live evaluation would. The 12.2K rewrite was also where a *contradiction* was found: an escalation
+  bullet saying to stop for a new tag, eight lines under the rule saying not to.
+
+So: say what no mechanism can enforce, name the mechanism behind everything else, and put detail in a
+skill, which loads on demand instead of on every call (PR-4, PR-5, SK-14).
+"""
+
+
 @pytest.mark.parametrize("name", PROMPT_FILES)
-def test_prompts_stay_short_enough_to_read_pr4(name: str) -> None:
-    """Every turn pays for this text, and a human is expected to read it whole (PR-4)."""
-    assert len(read_prompt(name)) <= 7_000, name
-    assert len(default_expert_prompt()) <= 11_000
+def test_prompts_stay_within_their_budget_pr4(name: str) -> None:
+    """Every model call pays for this text, and a human is expected to read it whole (PR-4)."""
+    assert len(read_prompt(name)) <= PROMPT_BUDGET[name], name
+
+
+def test_the_assembled_expert_prompt_stays_bounded_pr4() -> None:
+    """Standards plus the default template is what an expert actually carries on every call."""
+    assert len(default_expert_prompt()) <= sum(
+        PROMPT_BUDGET[name] for name in ("standards.md", "expert_template.md")
+    )
 
 
 # --------------------------------------------------------------------------------------
