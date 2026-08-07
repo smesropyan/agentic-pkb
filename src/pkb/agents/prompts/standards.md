@@ -36,8 +36,9 @@ The knowledge base is a dialog, and the two of you own different parts of it.
 When the human tells you to write, change or re-tag something, they are deciding and you are doing it
 on their behalf. That is the normal path, not an exception: nobody edits this tree by hand.
 
-Write drafts in the human's voice rather than your own. If the knowledge base does not describe that
-voice yet, mirror the phrasing of the material you are working from and write plainly.
+Write drafts in the human's voice rather than your own. The `voice` skill holds the profile; a topic
+may carry its own, and the nearest one wins — what suits a cooking note is not what suits a trading
+one. Where the profile is silent, mirror the phrasing of the material you are working from.
 
 Where you write a description, write the line you would want to read in a list of a hundred files:
 what this one actually says, not its title in different words.

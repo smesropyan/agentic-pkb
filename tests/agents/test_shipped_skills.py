@@ -37,7 +37,9 @@ from pkb.core import (
 )
 from pkb.core.frontmatter import REQUIRED_FIELDS
 from pkb.core.frontmatter import parse as parse_frontmatter
+from pkb.core.scaffold import scaffold_topic
 from pkb.core.tags import MAX_TAG_DEPTH, STATUS_TAGS, TYPE_TAGS, Namespace
+from tests.agents.conftest import TODAY
 
 SKILL_FILE = "SKILL.md"
 
@@ -369,3 +371,79 @@ def test_shipped_skill_mechanics_need_no_key_and_no_network_sk18(
     assert result.adopted
     assert validate_content(kb, result.path, (kb / result.path).read_text()) == []
     assert check_skill_dir(kb, kb / "skills" / "research") == []
+
+
+# --------------------------------------------------------------------------------------
+# Voice — a usable default, narrowed per topic
+# --------------------------------------------------------------------------------------
+
+
+def test_the_shipped_voice_is_a_profile_not_a_questionnaire_sk1() -> None:
+    """`voice` ships an opinionated starter profile, so day-one drafts have a definite style.
+
+    The alternative — shipping only a procedure for building a profile — leaves the first weeks of
+    drafts with an accidental voice rather than a chosen one. A wrong default is visible and gets
+    corrected; an absent one is invisible and does not.
+    """
+    body = _body("voice")
+    assert "## The profile" in body, "voice ships no profile section"
+    profile = body.split("## The profile", 1)[1].split("\n## ", 1)[0]
+    assert len(profile) > 800, "the profile is a stub, not something an agent can write from"
+    # Concrete instructions, not an interview script.
+    assert profile.count("\n- **") >= 6, "the profile has no enumerated, applicable rules"
+    for questionnaire in ("gather samples", "ask the human how", "interview"):
+        assert questionnaire not in profile.lower(), (
+            f"the profile section reads as a procedure, not a profile: {questionnaire!r}"
+        )
+    # It must still present itself as a guess about someone it has never met.
+    assert "starter profile" in body or "starter draft" in body
+
+
+def test_voice_explains_that_a_topic_copy_replaces_rather_than_merges_sk1() -> None:
+    """The resolver is whole-record last-wins, and a human writing a topic voice must know it.
+
+    `resolve_skills` returns one path per skill name, so a topic's `skills/voice/` *replaces* the
+    root profile for that topic. Someone who assumes it layers writes a two-line topic voice and
+    silently loses every general rule — with no error anywhere to tell them.
+    """
+    body = _flat(_body("voice"))
+    assert "replaces this file for that topic" in body
+    assert "does not merge" in body
+    assert "restate" in body
+
+
+def test_each_topic_resolves_its_own_voice_sk16(kb: Path) -> None:
+    """Cooking and Trading are different registers, so each topic may hold its own voice (SK-16).
+
+    Asserted through `pkb.core.resolve_skills`, which is what the expert's skill chain is built
+    from: nearest copy wins, a topic without one falls back to the root, and a sub-topic may narrow
+    its parent again.
+    """
+    scaffold_topic(
+        kb,
+        "Trading",
+        title="Trading",
+        description="Positions, theses, and post-mortems",
+        today=TODAY,
+    )
+    adopt_skill(kb, "voice")
+    adopt_skill(kb, "voice", topic_path=Path("Trading"))
+    adopt_skill(kb, "voice", topic_path=Path("Cooking/sub-topics/Grilling"))
+
+    trading = kb / "Trading" / "skills" / "voice" / SKILL_FILE
+    trading.write_text(
+        trading.read_text(encoding="utf-8").replace(
+            "## The profile", "## The profile\n\nDates, sizes, and the reasoning at the time.\n"
+        ),
+        encoding="utf-8",
+    )
+
+    assert resolve_skills(kb, kb / "Trading")["voice"] == trading
+    assert resolve_skills(kb, kb / "Cooking")["voice"] == kb / "skills" / "voice" / SKILL_FILE
+    assert (
+        resolve_skills(kb, kb / "Cooking" / "sub-topics" / "Grilling")["voice"]
+        == kb / "Cooking" / "sub-topics" / "Grilling" / "skills" / "voice" / SKILL_FILE
+    )
+    assert "Dates, sizes" not in resolve_skills(kb, kb / "Cooking")["voice"].read_text(
+        encoding="utf-8"
+    ), "the Trading voice leaked into Cooking"
