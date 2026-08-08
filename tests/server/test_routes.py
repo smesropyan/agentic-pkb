@@ -45,6 +45,7 @@ from pkb.contracts import (
     expert_thread_id,
 )
 from pkb.server.app import create_app
+from pkb.server.health import HealthState, redact
 from pkb.server.routes import route_paths
 from pkb.service import RunSubscription, Thread
 from tests.server.stub import COOKING, LIBRARIAN, NOW, StubService, opener_for
@@ -845,3 +846,65 @@ def test_no_middleware_may_compress_a_stream_ss2(service: StubService) -> None:
     installed = [middleware.cls.__name__ for middleware in app.user_middleware]
 
     assert not [name for name in installed if "GZip" in name or "Compress" in name], installed
+
+
+# --------------------------------------------------------------------------------------
+# A credential must never reach an unauthenticated surface, 2026-08-08
+# --------------------------------------------------------------------------------------
+
+
+def test_a_subsystem_error_never_publishes_a_credential_ap18() -> None:
+    """`/health` is unauthenticated by design, and it published `last_error` verbatim.
+
+    AP-20 defers auth on the ground that the daemon binds localhost; AP-18 makes `/health` a 200
+    that reports degradation in the body. Together those mean an exception message from a background
+    task is served to anything on the machine. A Telegram bot token lives in the URL *path*, so
+    `raise_for_status()` on a 401 puts it in the message, `SubsystemState.failed` stored it, and
+    `/health` handed it out — measured with a real token before this was fixed.
+
+    The redaction lives where the storing happens rather than at each call site, because the defect
+    is a property of publishing arbitrary exception text on a public surface: a future subsystem
+    with a credentialed URL inherits the fix without knowing the rule exists.
+    """
+    import httpx
+
+    token = "123456789:AAFAKEfakeFAKEfake_TOKEN_valueXYZ"
+    url = f"https://api.telegram.org/bot{token}/getUpdates"
+    state = HealthState(kb_root="/kb")
+
+    try:
+        httpx.Response(401, request=httpx.Request("POST", url)).raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        state.telegram.failed(exc)
+
+    body = state.payload(
+        agent_count=1, active_runs=0, subscribers=0, threads=(0, 0), proposals_pending=0
+    )
+
+    assert token not in str(body)
+    assert "[redacted]" in str(body["telegram"]["last_error"])
+    assert "401 Unauthorized" in str(body["telegram"]["last_error"]), "the diagnosis survives"
+
+
+@pytest.mark.parametrize(
+    ("raw", "secret"),
+    [
+        (
+            "https://api.telegram.org/bot123456789:AAF-secret-value-here/getUpdates",
+            "AAF-secret-value-here",
+        ),
+        ("https://user:hunter2@example.com/x", "hunter2"),
+        ("GET /x?api_key=sk-abcdef123456", "sk-abcdef123456"),
+        ("Authorization: Bearer sk-xyz789", "sk-xyz789"),
+        ("Authorization: sk-plain", "sk-plain"),
+    ],
+)
+def test_every_credential_shape_is_redacted_ap18(raw: str, secret: str) -> None:
+    """The shapes a credential actually arrives in, rather than the one that prompted the fix."""
+    assert secret not in redact(raw)
+
+
+def test_redaction_leaves_ordinary_text_alone_ap18() -> None:
+    """A redactor that eats diagnostics is a redactor somebody turns off."""
+    message = "ConnectError: [Errno 61] Connection refused to 127.0.0.1:8765"
+    assert redact(message) == message

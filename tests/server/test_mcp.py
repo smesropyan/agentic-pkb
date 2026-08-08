@@ -806,14 +806,27 @@ async def test_no_subagent_events_means_no_experts_however_the_reply_reads_mc10(
 
 
 def test_nothing_in_layer_three_parses_the_merged_reply_mc10() -> None:
-    """No regex engine anywhere in the transport, and no method ever called on ``final_text``.
+    """No regex engine in a module that *sees a reply*, and no method ever called on ``final_text``.
 
-    Two cheap facts that together make the parse impossible rather than merely absent: ``pkb/server``
-    imports no ``re``, and ``final_text`` is only ever read and passed on — never split, never
-    scanned for headings. A future edit that adds either has to delete this test first, which is the
-    conversation the rule wants to force.
+    Two cheap facts that together make the parse impossible rather than merely absent: the modules
+    that handle a run's output import no ``re``, and ``final_text`` is only ever read and passed on
+    — never split, never scanned for headings. A future edit that adds either has to delete this
+    test first, which is the conversation the rule wants to force.
+
+    **Scoped to the reply path rather than to the package.** It was every file under ``pkb/server``,
+    which is a proxy: `re` in a module that never touches a run cannot parse a reply. The proxy then
+    forbade an unrelated correct thing — the credential redaction on ``/health``, which exists
+    because that endpoint is unauthenticated and published a bot token verbatim — and a rule that
+    blocks a security fix for a reason unrelated to its own is a rule that gets deleted wholesale
+    rather than narrowed. Widen it again the moment another module starts handling a reply.
     """
-    for source in SERVER_SOURCES:
+    reply_path = [
+        source
+        for source in SERVER_SOURCES
+        if source.name in {"mcp.py", "sse.py", "routes.py", "telegram.py"}
+    ]
+    assert reply_path, "the reply-path module set went stale"
+    for source in reply_path:
         assert "re" not in _roots(source), source
     assert not [chain for chain in attribute_chains(MCP_SOURCE) if chain.startswith("final_text.")]
 

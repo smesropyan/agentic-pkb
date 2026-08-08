@@ -232,6 +232,19 @@ async def _supervise(start: Callable[[], Awaitable[None]], state: Any) -> None:
     An unhandled exception restarts the task, is logged, and shows up in ``/health``; it never
     terminates the daemon or an in-flight run. The supervision loop is Layer 3's alone — RT-50 says
     Layer 2 contains no supervision, no ``/health`` and no origin-channel tracking.
+
+    **The contract this places on ``start``: it must own everything it spawns.** This supervisor
+    awaits the callable and has no handle on tasks the callable created with ``asyncio.create_task``,
+    so a task that detaches a child and then raises leaves that child running and gets a *second*
+    one on the restart. Measured against this function: three restarts in 3.6 s left three live
+    children, and ``/health`` reported ``restarts: 3`` throughout — which looks like ordinary
+    flapping rather than three copies of the same worker.
+
+    For a Telegram long poll that is not a leak, it is a *correctness* failure: Telegram permits one
+    ``getUpdates`` per token and answers the rest with ``409 Conflict: terminated by other getUpdates
+    request``, so updates split across consumers that then crash and multiply. A supervised task
+    therefore uses structured concurrency internally (``asyncio.TaskGroup``) so its children die with
+    it, rather than detaching them.
     """
     backoff = 1.0
     while True:

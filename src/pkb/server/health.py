@@ -13,12 +13,55 @@ exactly when the system is under load — which is when something is asking.
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
-__all__ = ["HealthState", "SubsystemState"]
+__all__ = ["HealthState", "SubsystemState", "redact"]
+
+_SECRETS: Final = (
+    # A Telegram bot token lives in the URL *path*, so it reaches any exception message that names
+    # the URL — which `raise_for_status()` does.
+    re.compile(r"(?i)\b(bot)(\d{6,})(:[A-Za-z0-9_-]{20,})"),
+    # Credentials in a netloc, and the usual query-string names.
+    re.compile(r"(?i)(://)([^/\s:@]+):([^/\s@]+)(@)"),
+    # `Authorization: Bearer <token>` — the scheme word is not the secret, the rest of it is.
+    re.compile(r"(?i)\b(authorization)(:\s*)((?:bearer|basic|token)\s+)?\S+"),
+    re.compile(r"(?i)\b(token|api[_-]?key|secret|password)(=|:\s*)([^\s&\"']+)"),
+)
+
+_MASK: Final = "[redacted]"
+
+
+def redact(text: str) -> str:
+    """Strip anything credential-shaped from a string bound for ``/health`` or the log.
+
+    ``/health`` is **unauthenticated by design** (AP-20: the daemon binds localhost and defers auth),
+    and it publishes ``last_error`` verbatim. A subsystem whose credential lives in a URL therefore
+    leaks it on its first failure: measured with a real bot token, ``raise_for_status()`` on a 401
+    produces ``Client error '401 Unauthorized' for url 'https://api.telegram.org/bot<TOKEN>/…'``,
+    ``SubsystemState.failed`` stores that verbatim, and ``/health`` serves it to anything on the
+    machine.
+
+    Redacting here rather than at each call site is the point: the leak is a property of *storing an
+    arbitrary exception message on a public surface*, so the fix belongs where the storing happens.
+    A future subsystem with a credentialed URL inherits it without knowing this rule exists.
+    """
+    for pattern in _SECRETS:
+        text = pattern.sub(lambda m: _mask(m), text)
+    return text
+
+
+def _mask(match: re.Match[str]) -> str:
+    groups = match.groups()
+    if len(groups) == 4:  # scheme://user:pass@
+        return f"{groups[0]}{groups[1]}:{_MASK}{groups[3]}"
+    if groups[0].lower() == "authorization":
+        return f"{groups[0]}{groups[1]}{groups[2] or ''}{_MASK}"
+    return f"{groups[0]}{groups[1]}{_MASK}"
+
 
 Status = Literal["ok", "degraded"]
 
@@ -50,8 +93,13 @@ class SubsystemState:
         return not self.enabled or self.state == "running"
 
     def failed(self, exc: BaseException) -> None:
+        """Record a crash — with the message **redacted** before it can reach ``/health``.
+
+        See :func:`redact`. An exception message is arbitrary text from an arbitrary library, and
+        this field is served unauthenticated.
+        """
         self.restarts += 1
-        self.last_error = f"{type(exc).__name__}: {exc}"
+        self.last_error = redact(f"{type(exc).__name__}: {exc}")
         self.last_error_at = _now()
         self.state = "restarting"
 
