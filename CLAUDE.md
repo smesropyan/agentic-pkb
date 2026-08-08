@@ -12,6 +12,7 @@ mechanical structure enforced in code and the meaning curated in dialog with the
 | `docs/superpowers/specs/2026-08-06-pkb-core-layer1-rules.md` | Every Layer 1 rule with a stable id (`FM-1`, `PA-3`, `VA-12`, `GE-4`, `MA-3`, `SC-9`). The contract `pkb.core` is tested against. |
 | `docs/superpowers/specs/2026-08-06-pkb-agents-layer2-rules.md` | Every Layer 2 rule (`RT-*`, `RG-*`, `MW-*`, `LB-*`, `PR-*`, `SK-*`): runtime, registry, permissions, gates, middleware, the routing workflow, the shipped prompts and skills. The contract `pkb.agents` is tested against. |
 | `docs/superpowers/specs/2026-08-07-pkb-service-server-layer3-rules.md` | Every Layer 3 rule (`SV-*`, `RO-*`, `SS-*`, `AP-*`, `ST-*`, `MC-*`, `PK-*`): the service protocol, HTTP routes, SSE, approvals, packs, the MCP mount and the Telegram wiring. Built. |
+| `docs/superpowers/specs/2026-08-08-pkb-tui-clients-layer4-rules.md` | Every Layer 4 rule (`CL-*`, `DC-*`, `TU-*`): the shared approval helper, the SSE decoder, the transport and the Textual client. Built. |
 | `docs/superpowers/specs/2026-08-07-large-source-ingestion.md` | Sources that do not fit a turn: one file per source with the arguments as sections, `.inbox` staging, re-ingestion and reconciliation. Crosses all three layers. Designed, not built. |
 | `docs/reference/deepagents-0.7.5-api-recon.md` | Verified signatures of the harness Layer 2 will use. |
 
@@ -27,14 +28,22 @@ mechanical structure enforced in code and the meaning curated in dialog with the
    the run supervisor, HTTP routes, SSE, the MCP mount and the daemon. **Built.** See §8 "As built"
    in the Layer 3 rules for what the grounding pass corrected and the thirteen defects the suite
    found.
-4. `pkb.tui` + `pkb.clients.approval`. **← next**
-5. `pkb.server.telegram` — hosted in the daemon, one Telegram channel per expert.
+4. `pkb.clients` + `pkb.tui` — the shared approval helper, the SSE decoder, the HTTP transport and
+   the Textual client. **Built.** Run it with `python -m pkb.tui` against a running daemon. See §8
+   "As built" in the Layer 4 rules.
+5. `pkb.server.telegram` — hosted in the daemon, one Telegram channel per expert. **← next**
 
 **The daemon owns runs.** A run is a plain `asyncio.Task` publishing into a per-run hub; an HTTP
 response subscribes to it. A dropped connection **detaches** — it never cancels — because D2's whole
 promise is that a turn outlives the terminal that started it, and an ingestion turn killed because a
 phone crossed a tunnel is that promise broken. Cancellation is a deliberate act with its own route.
-Run it with `python -m pkb.daemon <kb-root>`; it binds localhost and has no auth (arch §10).
+Run the daemon with `python -m pkb.daemon <kb-root>` and the client with `python -m pkb.tui`; the
+daemon binds localhost and has no auth (arch §10).
+
+**`pkb.clients` is transport-free and UI-free** — no httpx, no textual — and a contract enforces it,
+because step 5's Telegram adapter runs *inside* the daemon and calls `PkbService` directly. The
+approval helper is the one place an interrupt becomes a `Decision`, so both human channels answer
+identically; only the rendering differs.
 
 Large-source ingestion has its own spec and is not built. It changes **nothing** in `pkb.core`: one
 physical file per source with the arguments as sections inside it is the shape Layer 1 already
