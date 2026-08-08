@@ -65,6 +65,7 @@ from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
+from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Final, Literal, Self
 from uuid import uuid4
@@ -100,6 +101,7 @@ from pkb.agents.ingestion import (
     ingest_tools,
     model_asker,
     reference_file_path,
+    resolve_slug,
 )
 from pkb.agents.middleware.maintenance import (
     FlushSink,
@@ -154,11 +156,17 @@ from pkb.core import regenerate_all
 from pkb.core.models import TopicRecord
 from pkb.core.paths import LIBRARIAN_AGENT_ID
 from pkb.core.scan import scan
-from pkb.sources import StagedSource, find_staged, stage
+from pkb.sources import (
+    SourceNotFoundError,
+    StagedSource,
+    canonical_origin,
+    check_fetchable,
+    is_url,
+    slug_for,
+    stage,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from pathlib import Path
-
     from langchain_core.language_models import BaseChatModel
     from langchain_core.messages import BaseMessage
     from langchain_core.runnables import RunnableConfig
@@ -473,6 +481,32 @@ class RuntimeConfig:
     knowledge, not the answer to "what do we run when the cloud plan says no". ``None`` disables the
     failover entirely, which is what a deployment with no local model should set — better a clean
     ``429`` than a fallback that cannot be built.
+    """
+
+    source_roots: tuple[Path, ...] = ()
+    """Directories a source may be ingested from. Empty means **the human's home directory**.
+
+    ``ingest_source`` is the one tool that reads outside the knowledge base, and ``origin`` is a
+    string the *model* chooses. Every other read an expert can make is confined by the backend —
+    ``FilesystemBackend(root_dir=kb_root, virtual_mode=True)`` refuses traversal outright — so
+    without a bound here a single tool call reads any file the daemon's user can read, puts its
+    text in front of the model, and copies it byte-for-byte into the tree. Reproduced with
+    ``~/.ssh/id_rsa``: staged, ingested, and copied into a topic as an ordinary reference.
+
+    The default is the home directory rather than the empty set because refusing everything would
+    make the feature unusable on day one for the person it is built for, and because the realistic
+    threat is not a user who cannot reach their own files — it is a prompt-injected model reaching
+    for ``/etc``, a mounted volume, or another user's home. A deployment that wants it tighter names
+    the directories it wants; a deployment that wants a sealed system names one it controls.
+    """
+
+    allow_url_sources: bool = True
+    """Whether a source may be fetched over HTTP at all.
+
+    The URL branch is the same read surface over the network: nothing restricted the host, so
+    ``http://169.254.169.254/…`` and ``http://localhost:…`` were both reachable from inside a model
+    turn. Link-local, loopback and private addresses are refused whatever this is set to; this
+    switch turns the whole branch off for a deployment that ingests only local files.
     """
 
     durability: Durability = DEFAULT_DURABILITY
@@ -1084,10 +1118,18 @@ class PkbRuntime:
     ) -> tuple[StagedSource | None, str]:
         """Stage the source, or answer ``(None, slug)`` when the human should be asked (LS-11).
 
-        The "already here?" question is answered from the manifest, before anything is fetched:
-        :func:`pkb.sources.find_staged` reads ``<kb>/.inbox/<slug>/source.json`` and nothing else, so
-        offering a re-ingestion costs no network and no extraction. A source that was never staged
-        cannot have been ingested, which is what makes that check sufficient.
+        The "already here?" question is answered from **the topic**, before anything is fetched: the
+        reading record lives in ``<topic>/references/<slug>/<slug>.md``, and the folder is found by
+        the origin recorded in its own provenance block, so the answer costs one directory listing
+        and no network.
+
+        It used to be answered from ``<kb>/.inbox/<slug>/source.json`` instead, on the reasoning
+        that a source never staged cannot have been ingested. That is false, and the spec says so
+        two rules earlier: LS-9 makes ``.inbox`` a disposable cache — clearing it is the first thing
+        anyone does to reclaim the disk an 18.8 MB PDF took — while the reading state lives in the
+        tree. So ``rm -rf .inbox`` turned a finished book into an unread one and a housekeeping
+        command into an hour of unattended model calls, with a spurious second pass recorded in the
+        provenance and nobody asked.
 
         Staging itself runs off the event loop and under the staging lock rather than the
         knowledge-base write lock: it writes only inside ``<kb>/.inbox/``, which no flush and no
@@ -1095,12 +1137,44 @@ class PkbRuntime:
         every other thread's flush for that long (RT-52's argument, applied to I/O rather than to an
         approval).
         """
-        known = await asyncio.to_thread(find_staged, self.kb_root, origin)
-        if known is not None and not refresh and not confirm and self._is_read(topic, known.slug):
-            return None, known.slug
+        recorded = canonical_origin(origin)
+        self._check_origin_allowed(recorded)
+        slug = await asyncio.to_thread(
+            resolve_slug, self.kb_root, topic.path, recorded, slug_for(recorded)
+        )
+        if not refresh and not confirm and self._is_read(topic, slug):
+            return None, slug
         async with self._staging_lock:
             staged = await asyncio.to_thread(stage, self.kb_root, origin, refresh=refresh)
         return staged, staged.slug
+
+    def _check_origin_allowed(self, origin: str) -> None:
+        """The read surface ``ingest_source`` opens, bounded — see :attr:`RuntimeConfig.source_roots`.
+
+        Raises :class:`pkb.sources.SourceNotFoundError` rather than a new type, so the tool's
+        existing handler relays a refusal the model can act on instead of aborting the superstep.
+        The message names the setting, because the person who hits this legitimately — a book on an
+        external drive — needs to know what to change.
+        """
+        if is_url(origin):
+            if not self.config.allow_url_sources:
+                raise SourceNotFoundError(
+                    "this deployment does not ingest sources over the network "
+                    "(RuntimeConfig.allow_url_sources is off)"
+                )
+            check_fetchable(origin)
+            return
+
+        roots = self.config.source_roots or (Path.home(),)
+        target = Path(origin)
+        if any(target == root or root in target.parents for root in roots):
+            return
+        allowed = ", ".join(str(root) for root in roots)
+        raise SourceNotFoundError(
+            f"{origin} is outside the directories this knowledge base ingests from ({allowed}). "
+            f"Ask the human to move the source there, or to add its directory to "
+            f"RuntimeConfig.source_roots."
+        )
 
     def _is_read(self, topic: TopicRecord, slug: str) -> bool:
         """Does this topic already hold a *complete* reading of this source (LS-5, LS-11)?
@@ -1122,11 +1196,12 @@ class PkbRuntime:
 
         The prompt is :func:`pkb.agents.expert.expert_prompt` — the non-overridable standards
         preamble with the topic's ``expert.md`` or the shipped template beneath it (EX-4) — so the
-        lens is the topic's own even though no graph runs. The model is the one the deployment
-        configured for this agent (RG-21); nothing here selects a model, and nothing reads one from
-        the tree.
+        lens is the topic's own even though no graph runs. The model comes from the **registry**
+        (RG-21), which is what carries the configured failover: reading ``config.default_model`` and
+        calling ``init_chat_model`` on it directly is how this became the only path in the system
+        that could not survive an exhausted quota, on the operation that spends the most of it.
         """
-        chosen = self.config.models.get(agent_id, self.config.default_model)
+        chosen = self._registry.chat_model_for(agent_id)
         model = init_chat_model(chosen) if isinstance(chosen, str) else chosen
         return model_asker(model, expert_prompt(self.kb_root, topic))
 

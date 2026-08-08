@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import shutil
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -57,7 +58,7 @@ from pkb.core import find_orphans, has_errors, validate_content, validate_tree
 from pkb.core.errors import Severity
 from pkb.core.frontmatter import parse
 from pkb.core.models import TopicRecord
-from pkb.core.paths import LIBRARIAN_AGENT_ID
+from pkb.core.paths import LIBRARIAN_AGENT_ID, REFERENCES_DIR
 from pkb.core.scaffold import scaffold_topic
 from pkb.core.scan import scan
 from pkb.sources import INBOX_DIR, SourceError, StagedSource, stage
@@ -719,7 +720,10 @@ def registry_factory(model: ScriptedChatModel) -> Any:
         return AgentRegistry(
             runtime.kb_root,
             runtime,
-            default_model="scripted",
+            # The real object, not the placeholder string: `_asker` asks the registry for the
+            # model (RG-21) so the ingestion loop gets the configured failover, and a registry
+            # whose model is a name no provider knows cannot answer that.
+            default_model=model,
             tool_factory=runtime.tools_for,
             expert_factory=expert,
             librarian_factory=librarian,
@@ -735,7 +739,14 @@ async def opened(
     async with PkbRuntime.open(
         kb,
         kb.parent / "pkb.sqlite",
-        config=RuntimeConfig(clock=clock, default_model=model),
+        config=RuntimeConfig(
+            clock=clock,
+            default_model=model,
+            # The production guard, pointed at where this test's sources live: `ingest_source` is
+            # the one tool that reads outside the knowledge base, so a test that ran with it
+            # disabled would not be exercising the tool as it ships.
+            source_roots=(kb.parent,),
+        ),
         registry_factory=registry_factory(model),
     ) as runtime:
         yield runtime
@@ -1000,3 +1011,458 @@ def test_a_markdown_original_is_copied_where_layer_1_will_not_validate_it_ls1(
     ), "the copy must be byte-identical to what arrived"
     assert not (folder / "handbook.source.md").exists()
     assert [f for f in validate_tree(kb) if f.severity is Severity.ERROR] == []
+
+
+# --------------------------------------------------------------------------------------
+# Audit regressions, 2026-08-07 — each one reproduced against the shipped code first
+# --------------------------------------------------------------------------------------
+
+
+REPEATED = (
+    ("Chapter 1", "First chapter."),
+    ("Summary", "The first summary."),
+    ("Chapter 2", "Second chapter."),
+    ("Summary", "SECRET-TWO: the second summary, which says something else."),
+)
+
+
+@pytest.mark.asyncio
+async def test_a_repeated_section_title_is_still_opened_and_kept_apart_ls9(
+    kb: Path, tmp_path: Path
+) -> None:
+    """Two sections called "Summary" are two sections — not one (LS-9, LS-10).
+
+    The resume frontier was a set of section *titles*, so the second "Summary" was already
+    accounted for before the loop reached it: never windowed, never asked about, never read. The
+    same membership test computed `unread`, so it was not reported missing either — `complete` was
+    set and the file wrote "Pass complete: every section of this reading was opened."
+
+    That is verbatim the failure this whole feature exists to prevent, and it was live on the run
+    cited as proof the design worked: Pro Git has 123 sections and 111 distinct titles, so eleven
+    chapters were never opened while the file said otherwise. "Summary", "Exercises", "Notes",
+    "Discussion" are what real books call their sections.
+    """
+    report, model = await read(
+        kb,
+        source_file(tmp_path / "sources", "Repeats", chapters=REPEATED),
+        *["NEW: take one.", "NEW: take two.", "NEW: take three.", "NEW: take four.", "NOTHING"],
+    )
+
+    asked = questions(model)
+    assert any("SECRET-TWO" in question for question in asked), "the twin was put in front of it"
+    assert report.sections_total == 4
+    assert len(report.covered) == 4
+    assert report.unread == ()
+    assert [line for line in contents(kb, report).splitlines() if line.startswith("## ")] == [
+        f"## {PROVENANCE_HEADING}",
+        "## Chapter 1",
+        "## Summary",
+        "## Chapter 2",
+        "## Summary (2)",
+        f"## {READING_RECORD_HEADING}",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_sections_are_filed_in_the_sources_own_order_ls10(kb: Path, tmp_path: Path) -> None:
+    """`titles.index(heading)` resolves a repeat to its *first* occurrence (LS-10).
+
+    So a file whose source runs 1, Summary, 2, Summary was written 1, 2, Summary — the placement
+    rule that exists to keep the file reading in the source's order, defeated by the same
+    title-as-identity assumption.
+    """
+    report, _ = await read(
+        kb,
+        source_file(tmp_path / "sources", "Ordered", chapters=REPEATED),
+        *[
+            "NOTHING",
+            "NEW: from the first summary.",
+            "NEW: from chapter two.",
+            "NOTHING",
+            "NOTHING",
+        ],
+    )
+
+    chapters = [line for line in contents(kb, report).splitlines() if line.startswith("## ")]
+    assert chapters.index("## Summary") < chapters.index("## Chapter 2")
+
+
+@pytest.mark.asyncio
+async def test_a_source_file_that_cannot_be_decoded_is_never_written_over_ls12(
+    kb: Path, book: Path
+) -> None:
+    """ "No file" and "a file I cannot read" sent the loop opposite ways (LS-12, D6).
+
+    `_read` returned `None` for both, so a file a human's editor had saved as cp1252 was taken for
+    absent: pass 1 was opened again and the whole file — every earlier pass, and the line they had
+    just added — was rewritten from scratch. `gates._read` swallowed the same exception, so
+    `REFERENCE_REWRITE` saw no current content to diff against and never fired. The one write the
+    design says can never be walked back, reached by an ordinary edit in an ordinary editor.
+    """
+    first, _ = await read(kb, book, "NEW: pass one argument.", "NOTHING", "NOTHING", "NOTHING")
+    target = kb / str(first.path)
+    edited = target.read_text(encoding="utf-8").replace(
+        "## Chapter 2", "- MY OWN NOTE: the crème de la crème.\n\n## Chapter 2"
+    )
+    target.write_bytes(edited.encode("cp1252"))
+    before = target.read_bytes()
+
+    with pytest.raises(SourceError):
+        await read(kb, book, "NEW: pass two argument.", today=LATER)
+
+    assert target.read_bytes() == before
+
+
+@pytest.mark.asyncio
+async def test_a_reference_folder_keeps_its_name_when_the_inbox_is_cleared_ls8(
+    kb: Path, tmp_path: Path
+) -> None:
+    """The folder is permanent; `.inbox` is a cache LS-9 says may be cleared (LS-1, LS-8).
+
+    The slug came off the staging directory, whose name is decided by what happens to be in
+    `.inbox`: the first source to slug to `report` got `report` and the next got `report-2`. After
+    `rm -rf .inbox` the two swapped, and each one's arguments were appended to the *other's* file as
+    a fresh pass — a provenance block naming a different document, beside a copy of a different
+    original, with `validate_tree` reporting nothing and no undo.
+    """
+    grilling = tmp_path / "sources" / "grilling"
+    baking = tmp_path / "sources" / "baking"
+    grilling.mkdir(parents=True)
+    baking.mkdir(parents=True)
+    (grilling / "report.txt").write_text("## Fire\n\nTwo zones beat one.\n", encoding="utf-8")
+    (baking / "report.txt").write_text("## Yeast\n\nProof it in warm water.\n", encoding="utf-8")
+
+    fire, _ = await read(kb, grilling / "report.txt", "NEW: two zones.", "NOTHING")
+    yeast, _ = await read(kb, baking / "report.txt", "NEW: proof it warm.", "NOTHING")
+    shutil.rmtree(kb / INBOX_DIR)
+    again, _ = await read(kb, baking / "report.txt", "NEW: proof it warm.", "NOTHING", today=LATER)
+
+    assert fire.slug != yeast.slug
+    assert again.slug == yeast.slug
+    assert "Yeast" not in contents(kb, fire)
+    assert "Fire" not in contents(kb, again)
+
+
+@pytest.mark.asyncio
+async def test_a_refused_first_write_leaves_no_folder_and_claims_nothing_ls6(
+    kb: Path, tmp_path: Path
+) -> None:
+    """The copy was made before the write was validated, so a refusal left an orphan (LS-1, LS-6).
+
+    Any source whose slug is one of Layer 1's reserved names does this on contact — an ordinary
+    `https://…/guides/index.html`, a local `summary.pdf`. The copy was already on disk and nothing
+    removed it: `MISSING_MAIN_FILE` in a tree that is supposed to stay valid, `ORPHAN_ITEM_FOLDER`
+    published into the topic index, and the report saying "Filed to `…/index/index.md`" — success
+    reported for work that was thrown away, including every model call spent reading it.
+    """
+    reserved = tmp_path / "sources" / "index.txt"
+    reserved.write_text("## Chapter 1\n\nA chapter.\n", encoding="utf-8")
+
+    report, _ = await read(kb, reserved, "NEW: an argument.", "NOTHING")
+
+    assert report.gainful is False
+    assert report.path is None
+    assert not (kb / "Cooking" / REFERENCES_DIR / "index").exists()
+    assert not has_errors(validate_tree(kb))
+    assert find_orphans(kb, scan(kb)) == []
+
+
+@pytest.mark.asyncio
+async def test_a_gate_mid_loop_stops_the_reading_and_says_what_it_did_not_reach_ls12(
+    kb: Path, tmp_path: Path
+) -> None:
+    """A refused write means nothing later in the pass can land, so reading on is waste (LS-12).
+
+    The loop kept going and kept appending to `record.took`, so the run reported every chapter
+    covered, `complete`, and "5 of 5 sections gave this topic something. Filed to …" for a file
+    whose later half was never written — with one line saying "One write was withheld" (singular)
+    for four withheld writes. On the local fallback that is 284 s a chapter spent on answers with
+    nowhere to go.
+    """
+    chapters = tuple((f"Chapter {n}", f"Body of chapter {n}.") for n in range(1, 6))
+    source = source_file(tmp_path / "sources", "Long Book", chapters=chapters)
+    staged = staged_source(kb, source)
+    asked = 0
+
+    async def ask(question: str) -> str:
+        nonlocal asked
+        asked += 1
+        if asked == 3:  # the human opens the file mid-run and adds a line of their own
+            target = kb / reference_file_path("Cooking", staged.slug)
+            target.write_text(
+                target.read_text(encoding="utf-8").replace(
+                    "## Chapter 2", "## My own note\n\nMine.\n\n## Chapter 2"
+                ),
+                encoding="utf-8",
+            )
+        return f"NEW: argument {asked}."
+
+    report = await ingest(kb, topic_of(kb), staged, ask=ask, snapshot=lambda: scan(kb), today=TODAY)
+
+    assert report.gate == GateReason.REFERENCE_REWRITE.value
+    assert report.unread == ("Chapter 4", "Chapter 5")
+    assert report.complete is False
+    assert "Chapter 4" in report.summary() and "Chapter 5" in report.summary()
+    assert "5 of 5" not in report.summary()
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "Nothing relevant to this topic.",
+        "NOTHING for this topic.",
+        "None.",
+        "N/A",
+        "- nothing here",
+    ],
+)
+def test_a_refusal_the_model_phrases_naturally_is_still_a_refusal_ls6(answer: str) -> None:
+    """LS-6's guarantee cannot depend on phrasing the prompt does not control.
+
+    A refusal meant the single word `NOTHING` and nothing else, so "Nothing relevant to this topic."
+    was filed as an *argument* — and one argument is what makes a topic gainful. Handing a cooking
+    book to the Trading expert built the folder, wrote a file whose every bullet read "Nothing
+    relevant to this topic.", copied the whole source in, and recorded "Took something from" for
+    each section. Those bullets carry `type.reference` and the topic's tag, so they surface in the
+    index, in tag search and in packs as if they were knowledge.
+    """
+    assert parse_takes(answer) == ()
+
+
+def test_an_argument_that_merely_opens_with_a_refusal_word_is_kept_ls6() -> None:
+    """The other half of the rule: a real claim about nothingness is not a refusal to answer."""
+    answer = (
+        "Nothing in this chapter survives contact with a real kitchen, because the heat is wrong."
+    )
+
+    assert [take.text for take in parse_takes(answer)] == [answer]
+
+
+@pytest.mark.asyncio
+async def test_a_naturally_phrased_refusal_still_leaves_no_trace_ls6(
+    kb: Path, tmp_path: Path
+) -> None:
+    """LS-6 end to end, with the phrasing that used to defeat it."""
+    scaffold_topic(kb, "Trading", title="Trading", description="Positions", today=TODAY)
+    cookbook = source_file(tmp_path / "sources", "Cookbook")
+
+    report, _ = await read(
+        kb, cookbook, *["Nothing relevant to this topic."] * 5, topic_path="Trading"
+    )
+
+    assert report.gainful is False
+    assert report.path is None
+    assert not (kb / "Trading" / REFERENCES_DIR / "cookbook").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_bullet_the_human_deleted_stays_deleted_ls12(kb: Path, book: Path) -> None:
+    """Striking out a claim is the only curation gesture a human has on this file (LS-12, D6).
+
+    Duplicate suppression compared against what is in the file *right now*, so a line they deleted
+    was indistinguishable from a line nobody had found yet: the next pass re-inserted it, un-gated
+    (an insertion never gates), and recorded it as a fresh discovery. The reading record now carries
+    how many arguments each pass filed, which is what tells "removed by hand" from "never seen".
+
+    The withheld text is reported to the expert and **not** written into the file — restating it in
+    the reading record is how the first attempt at this fix put the struck-out line straight back.
+    """
+    first, _ = await read(
+        kb, book, "NEW: Keep this one.", "NEW: Salt early, never late.", "NOTHING", "NOTHING"
+    )
+    target = kb / str(first.path)
+    target.write_text(
+        "\n".join(
+            line
+            for line in target.read_text(encoding="utf-8").splitlines()
+            if "Salt early" not in line
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    second, _ = await read(
+        kb,
+        book,
+        "NEW: Keep this one.",
+        "NEW: Salt early, never late.",
+        "NOTHING",
+        "NOTHING",
+        today=LATER,
+    )
+
+    assert "Salt early" not in target.read_text(encoding="utf-8")
+    assert "Salt early, never late." in second.flagged
+    assert second.gate is None
+
+
+@pytest.mark.asyncio
+async def test_a_re_ingestion_marks_an_approved_file_for_review_again_ls12(
+    kb: Path, book: Path
+) -> None:
+    """`status.draft` was set once, by `create`, and never re-applied (LS-12).
+
+    README §1.7's conflict flow moves a reviewed source file to `status.approved`, so "an approved
+    file that is later re-ingested" is the designed steady state — and a second pass dropped an
+    argument the human had never seen into a file their own tag says they have read and accepted.
+    """
+    first, _ = await read(kb, book, "NEW: One.", "NOTHING", "NOTHING", "NOTHING")
+    target = kb / str(first.path)
+    target.write_text(
+        target.read_text(encoding="utf-8").replace("status.draft", "status.approved"),
+        encoding="utf-8",
+    )
+
+    await read(
+        kb,
+        book,
+        "NOTHING",
+        "NEW: A second, newly found argument.",
+        "NOTHING",
+        "NOTHING",
+        today=LATER,
+    )
+
+    meta = parse(target.read_text(encoding="utf-8")).meta
+    assert meta is not None
+    assert "status.draft" in meta.tags
+    assert "status.approved" not in meta.tags
+
+
+@pytest.mark.asyncio
+async def test_a_source_section_named_like_a_structural_heading_stays_out_of_it_ls10(
+    kb: Path, tmp_path: Path
+) -> None:
+    """`Provenance`, `Reading record` and `Across the source` are the file's own (LS-10).
+
+    A source section with one of those titles wrote its arguments straight into that block: the
+    provenance block grew model prose under `- First read: …`, the reading record grew a bullet
+    above `### Pass 1`, and the next pass was prompted with the file's own metadata as prior art.
+    """
+    odd = (
+        (READING_RECORD_HEADING, "A section the book itself calls this."),
+        (PROVENANCE_HEADING, "And another."),
+        ("Chapter 3", "An ordinary chapter."),
+    )
+    report, _ = await read(
+        kb,
+        source_file(tmp_path / "sources", "Odd Book", chapters=odd),
+        "NEW: one.",
+        "NEW: two.",
+        "NEW: three.",
+        "NOTHING",
+    )
+
+    body = contents(kb, report)
+    provenance = SourceFile.load(body)
+    assert provenance.origin is not None, "the real provenance block is still readable"
+    assert f"## {READING_RECORD_HEADING} (2)" in body
+    assert f"## {PROVENANCE_HEADING} (2)" in body
+    assert not has_errors(validate_tree(kb))
+
+
+@pytest.mark.asyncio
+async def test_the_file_carries_the_tags_its_sections_are_about_ls3(
+    kb: Path, tmp_path: Path
+) -> None:
+    """LS-3, which was not implemented at all and had zero citations anywhere.
+
+    It is the rule that makes one-file-per-source survivable: the file is findable by any argument
+    in it. As built the file carried only `topic.cooking`, so a grilling book ingested by the
+    Cooking expert never came back for `topic.cooking.grilling` — and packs select by tag.
+
+    A tag the tree does not know is *proposed*, not written: minting one is the human's call (RT-25)
+    and a write carrying one would fire `GateReason.NEW_TAG` and withhold the whole pass.
+    """
+    notes = kb / "Cooking" / "notes"
+    notes.mkdir(parents=True, exist_ok=True)
+    (notes / "known.md").write_text(
+        "---\ntitle: A grilling note\ndescription: Something already tagged.\ntopic: Cooking\n"
+        "tags:\n  - topic.cooking.grilling\n  - type.note\n  - status.draft\n"
+        "created: 2026-08-07\nupdated: 2026-08-07\nsource_type: note\n---\n\nText.\n",
+        encoding="utf-8",
+    )
+    grill = source_file(tmp_path / "sources", "Grilling", chapters=(("Chapter 1", "Charcoal."),))
+
+    report, _ = await read(
+        kb,
+        grill,
+        "NEW: Two-zone fires beat one.\nTAGS: topic.cooking.grilling, domain.invented",
+        "NOTHING",
+    )
+
+    meta = parse(contents(kb, report)).meta
+    assert meta is not None
+    assert "topic.cooking.grilling" in meta.tags
+    assert "domain.invented" not in meta.tags
+    assert any("domain.invented" in note for note in report.flagged)
+    assert not has_errors(validate_tree(kb))
+
+
+def test_an_unreadable_source_file_is_not_reported_as_absent_ls12(tmp_path: Path) -> None:
+    """`_read` distinguishes "no file" from "a file I cannot read" (LS-12, D6).
+
+    Pinned on the helper because the two answers send the loop opposite ways and only one of them
+    creates a document from scratch. `resolve_slug` now refuses first for the same reason, so this
+    is the second of two independent guards on the one write that cannot be walked back — and a
+    guard nothing tests is a guard that quietly stops being there.
+    """
+    missing = tmp_path / "nothing.md"
+    unreadable = tmp_path / "there.md"
+    unreadable.write_bytes("- crème de la crème.\n".encode("cp1252"))
+
+    assert ingestion._read(missing) is None
+    with pytest.raises(SourceError):
+        ingestion._read(unreadable)
+
+
+@pytest.mark.asyncio
+async def test_the_ingestion_loop_runs_on_the_registrys_model_rg21(kb: Path, book: Path) -> None:
+    """The model — and its failover — is a registry property, for every consumer (RG-21).
+
+    The loop reached for `init_chat_model(config.default_model)` itself and so became the one path
+    in the system with no fallback: a 300-page book is 100+ sequential calls, by far the most
+    quota-exposed operation there is, and it was the one that could not survive a 429.
+    """
+    model = scripted(says("NOTHING"))
+    asked: list[Any] = []
+
+    async with opened(kb, model) as runtime:
+        registry = runtime._registry
+        original = registry.chat_model_for
+        registry.chat_model_for = lambda agent_id: (  # type: ignore[method-assign]
+            asked.append(agent_id) or original(agent_id)
+        )
+        await runtime.ingest(COOKING, str(book))
+
+    assert asked == [COOKING], "the asker's model came from the registry, not from the config"
+
+
+@pytest.mark.asyncio
+async def test_a_source_outside_the_configured_roots_is_refused(kb: Path, tmp_path: Path) -> None:
+    """`ingest_source` is the one tool that reads outside the knowledge base (RT-15).
+
+    `origin` is a string the *model* chooses, and every other read an expert can make is confined by
+    the backend — `FilesystemBackend(root_dir=kb_root, virtual_mode=True)` refuses traversal
+    outright. Unbounded, one tool call read any file the daemon's user could read, put its text in
+    front of the model, and copied it byte-for-byte into the tree; reproduced with `~/.ssh/id_rsa`.
+    """
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    secret = outside / "id_rsa.txt"
+    secret.write_text("# Private key\n\nSECRET-MATERIAL\n", encoding="utf-8")
+    model = scripted(says("NOTHING"))
+
+    async with PkbRuntime.open(
+        kb,
+        kb.parent / "pkb.sqlite",
+        config=RuntimeConfig(
+            clock=lambda: TODAY, default_model=model, source_roots=(kb.parent / "sources",)
+        ),
+        registry_factory=registry_factory(model),
+    ) as runtime:
+        with pytest.raises(SourceError, match="outside the directories"):
+            await runtime.ingest(COOKING, str(secret))
+
+    assert not (kb / INBOX_DIR).exists()
+    assert not any((kb / "Cooking" / REFERENCES_DIR).glob("id-rsa*"))

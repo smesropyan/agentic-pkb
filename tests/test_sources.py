@@ -32,6 +32,7 @@ from pkb.sources import (
     EncryptedSourceError,
     ExtractedSource,
     Fetched,
+    FetchError,
     GarbledTextError,
     MalformedSourceError,
     ScannedSourceError,
@@ -39,6 +40,7 @@ from pkb.sources import (
     SourceNotFoundError,
     StructureMethod,
     UnsupportedSourceError,
+    check_fetchable,
     detect_kind,
     extract,
     find_staged,
@@ -1217,3 +1219,242 @@ def test_extracted_source_defaults_are_conservative() -> None:
     assert source.site is None
     assert source.page_count is None
     assert source.warnings == ()
+
+
+# --------------------------------------------------------------------------------------
+# Audit regressions, 2026-08-07 — each one reproduced against the shipped code first
+# --------------------------------------------------------------------------------------
+
+
+def test_a_source_named_like_the_manifest_is_not_overwritten_by_it_ls8(kb_root: Path) -> None:
+    """`source.json` is the manifest's fixed name and a source can slug to exactly it (LS-8).
+
+    The derived files were made defensive by construction and the manifest was not, so a file called
+    `source.json` — or `!!!.json`, or anything whose stem slugifies to nothing — had its preserved
+    original overwritten by the manifest written moments later, and `_load_staged` then served the
+    manifest as the original forever, satisfied that a file by that name existed.
+    """
+    original = kb_root.parent / "source.json"
+    original.write_bytes(b'{"my": "hand-written notes", "value": 42}')
+
+    staged = stage(kb_root, original)
+
+    assert staged.original.read_bytes() == original.read_bytes()
+    assert staged.original.name == "source.original.json"
+    assert stage(kb_root, original).original.read_bytes() == original.read_bytes()
+
+
+def test_one_document_spelled_three_ways_is_one_source_ls5(
+    kb_root: Path, outlined_pdf: Path
+) -> None:
+    """`~/b.pdf`, `./b.pdf` and `/x/../x/b.pdf` are the same book, so they stage once (LS-5, LS-9).
+
+    Uncanonicalised, each spelling was its own source: the book was read once per spelling, landed
+    in its own reference folder with its own copy of a 19 MB PDF, and reconciliation never ran
+    because no pass had anything to reconcile against — the "near-identical parts under slightly
+    different names" that the one-file-per-source layout exists to prevent, at whole-source scale.
+    """
+    first = stage(kb_root, outlined_pdf)
+    dotted = stage(kb_root, outlined_pdf.parent / "." / outlined_pdf.name)
+    doubled = stage(kb_root, outlined_pdf.parent / "sub" / ".." / outlined_pdf.name)
+
+    assert first.slug == dotted.slug == doubled.slug
+    assert dotted.from_cache and doubled.from_cache
+    assert len(list((kb_root / INBOX_DIR).iterdir())) == 1
+
+
+def test_a_changed_source_is_restaged_rather_than_served_from_cache_ls5(kb_root: Path) -> None:
+    """The commonest reason to re-ingest a local file is that it changed (LS-5, LS-9).
+
+    Keyed on the origin string alone, the cache handed back the superseded text with a reading dated
+    today: new chapters invisible, corrections invisible, and LS-1's copy in the topic holding the
+    first edition while the provenance points at a path that now holds something else.
+    """
+    source = kb_root.parent / "edition.txt"
+    source.write_text("## Fire\n\nUse lighter fluid, it is fine.\n", encoding="utf-8")
+    stage(kb_root, source)
+
+    source.write_text(
+        "## Fire\n\nNever use lighter fluid.\n\n## Smoke\n\nDry wood.\n", encoding="utf-8"
+    )
+    again = stage(kb_root, source)
+
+    assert again.from_cache is False
+    assert [section.title for section in again.extracted.sections] == ["Fire", "Smoke"]
+    assert again.original.read_bytes() == source.read_bytes()
+
+
+def test_a_failed_restage_leaves_the_previous_staging_whole_ls7(kb_root: Path) -> None:
+    """`refresh=True` writes the new bytes only if the new extraction succeeds (LS-7, LS-9).
+
+    In place, a failed re-extraction left edition two's original beside edition one's extraction,
+    with a manifest asserting they were the same document — served as a clean cache hit forever
+    after. The loop would then file arguments from one edition while LS-1 copied the other into
+    every topic, as the file a human opens to check a claim.
+    """
+    source = kb_root.parent / "book.txt"
+    source.write_text("## Chapter 1\n\nEdition one says searing works.\n", encoding="utf-8")
+    stage(kb_root, source)
+    source.write_text("— — —\n", encoding="utf-8")  # no alphanumerics: EmptySourceError
+
+    with pytest.raises(EmptySourceError):
+        stage(kb_root, source, refresh=True)
+
+    held = find_staged(kb_root, source)
+    assert held is not None
+    assert held.extracted.sections[0].text.startswith("Edition one")
+    assert held.original.read_text(encoding="utf-8").startswith("## Chapter 1")
+
+
+def test_a_utf16_text_source_is_decoded_not_mojibaked_ls7(kb_root: Path) -> None:
+    """cp1252 "succeeds" on UTF-16, so the guard has to look at the byte-order mark (LS-7).
+
+    Notepad's "Unicode" and PowerShell 5.1's redirection both write this. Decoded as cp1252 it is
+    not empty, so `_guard_text` passed it, and the expert was asked to find arguments in
+    `ÿþ#\\x00 \\x00D\\x00…` — the loud failure LS-7 promises, failing in the worse direction.
+    """
+    source = kb_root.parent / "notes.txt"
+    source.write_bytes("# Deliberate Practice\n\nFeedback is the mechanism.\n".encode("utf-16"))
+
+    staged = stage(kb_root, source)
+
+    assert staged.extracted.title == "Deliberate Practice"
+    assert "\x00" not in staged.text_path.read_text(encoding="utf-8")
+    assert staged.original.read_bytes() == source.read_bytes()
+
+
+def test_text_that_is_really_binary_is_refused_whatever_it_is_called_ls7(kb_root: Path) -> None:
+    """`_looks_like_text` rejects NULs, and `detect_kind` short-circuits before reaching it (LS-7).
+
+    The same bytes were refused when the file had no extension and accepted when it was called
+    `notes.txt`, which is the shape a real source arrives in.
+    """
+    source = kb_root.parent / "notes.txt"
+    source.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x01\x00")
+
+    with pytest.raises(MalformedSourceError):
+        extract(source)
+
+
+def test_a_byte_order_mark_does_not_swallow_the_first_heading_ls10(kb_root: Path) -> None:
+    """`utf-8-sig` has to be tried before `utf-8`, which never fails on a BOM (LS-7, LS-10).
+
+    The mark survived into the text, so `^#` no longer matched: the opening chapter was folded into
+    `(front matter)` and the document title degraded to the filename. That chapter is the stable key
+    LS-10 reconciles on, so a later pass reading the same book from a BOM-free path would see a
+    chapter that had never existed and file it as a pure addition.
+    """
+    body = "# Radical Candor\n\nThe thesis.\n\n## Challenge directly\n\nBody two.\n"
+    plain = kb_root.parent / "plain.md"
+    plain.write_bytes(body.encode("utf-8"))
+    marked = kb_root.parent / "marked.md"
+    marked.write_bytes(b"\xef\xbb\xbf" + body.encode("utf-8"))
+
+    assert extract(marked).title == extract(plain).title == "Radical Candor"
+    assert [s.title for s in extract(marked).sections] == [s.title for s in extract(plain).sections]
+
+
+def test_an_epub_chapter_is_decoded_by_its_own_declaration_ls7(kb_root: Path) -> None:
+    """`payload.decode("utf-8", errors="replace")` discards the XML declaration (LS-7).
+
+    A chapter declared ISO-8859-1 reached the expert as `Kierkegaardï¿½s rï¿½sumï¿½` — silent,
+    permanent (Layer 1 never deletes), and applied to every book that is not in English.
+    """
+    chapter = (
+        '<?xml version="1.0" encoding="ISO-8859-1"?>'
+        '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
+        "<h1>Le caf\xe9 de Bo\xefto</h1><p>Kierkegaard\xe9s r\xe9sum\xe9 of the argument.</p>"
+        "</body></html>"
+    ).encode("latin-1")
+    path = kb_root.parent / "cafe.epub"
+    path.write_bytes(_epub_with_chapter(chapter))
+
+    extracted = extract(path)
+
+    assert "�" not in extracted.sections[0].text
+    assert "Le café de Boïto" in extracted.sections[0].text
+    assert "Kierkegaardés résumé" in extracted.sections[0].text
+
+
+def _epub_with_chapter(chapter: bytes) -> bytes:
+    """A minimal conformant EPUB 3 holding exactly one chapter document."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip")
+        archive.writestr(
+            "META-INF/container.xml",
+            '<?xml version="1.0"?><container version="1.0" '
+            'xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles>'
+            '<rootfile full-path="OEBPS/book.opf" '
+            'media-type="application/oebps-package+xml"/></rootfiles></container>',
+        )
+        archive.writestr(
+            "OEBPS/book.opf",
+            '<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0">'
+            '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Café</dc:title>'
+            "</metadata><manifest>"
+            '<item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/></manifest>'
+            '<spine><itemref idref="c1"/></spine></package>',
+        )
+        archive.writestr("OEBPS/c1.xhtml", chapter)
+    return buffer.getvalue()
+
+
+def test_a_short_outline_title_anchors_at_a_line_start_not_inside_prose_ls10(kb_root: Path) -> None:
+    """`page_text.find(title)` puts chapter 6's anchor inside chapter 5's prose (LS-10).
+
+    Bare numerals and Roman numerals are ordinary outline titles in typeset books, and several
+    chapters share a page. The expert was then asked what chapter 6 argues while reading the tail of
+    chapter 5, chapter 5 kept one sentence, and `warnings` came back empty because
+    `_drop_colliding_anchors` only fires on exactly equal offsets.
+    """
+    pages = [
+        [
+            ("5", 14.0, 700.0),
+            ("Ship early. In the 6 months after launch we learned more.", 11.0, 680.0),
+            ("6", 14.0, 640.0),
+            ("Measure honestly. A metric nobody acts on is decoration.", 11.0, 620.0),
+        ]
+    ]
+    path = kb_root.parent / "numbered.pdf"
+    path.write_bytes(add_outline(make_pdf(pages), [("5", 1, 0), ("6", 1, 0)]))
+
+    extracted = extract(path)
+
+    sections = {section.title: section.text for section in extracted.sections}
+    assert "Ship early" in sections["5"]
+    assert "6 months after launch" in sections["5"], "chapter 5 keeps its whole body"
+    assert sections["6"].startswith("Measure honestly")
+
+
+def test_a_url_pointing_back_inside_the_machine_is_refused_ls7() -> None:
+    """`origin` is model-chosen, and a fetch is a read the knowledge base then keeps (LS-7).
+
+    Nothing restricted the host, so a prompt-injected turn could reach cloud metadata or a service
+    on loopback, put the response in front of the model, and copy it into a topic as a reference.
+    """
+    for blocked in (
+        "http://169.254.169.254/latest/meta-data/",
+        "http://127.0.0.1:8080/admin",
+        "http://localhost/secrets",
+        "http://10.0.0.5/internal",
+        "file:///etc/passwd",
+    ):
+        with pytest.raises((FetchError, UnsupportedSourceError)):
+            check_fetchable(blocked)
+
+    check_fetchable("https://example.com/book.pdf")
+
+
+def test_a_section_title_is_one_line_however_the_source_wrote_it_ls10() -> None:
+    """The file format, the reading record and the resume frontier all assume one line (LS-10).
+
+    A pretty-printed EPUB `navLabel` wraps its text and PDF bookmarks carry whatever the typesetter
+    put in them. Left alone, such a section grew a duplicate heading block in the file on every pass
+    and a duplicate reading-record entry on every write, with `validate_tree` reporting nothing.
+    """
+    section = Section(
+        title="Chapter 1: Care Personally\n        and Challenge Directly", level=1, text="x"
+    )
+
+    assert section.title == "Chapter 1: Care Personally and Challenge Directly"

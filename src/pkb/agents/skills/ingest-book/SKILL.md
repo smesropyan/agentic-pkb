@@ -98,8 +98,12 @@ extracted; chapter 12 is worth a second look for its account of hiring" is usefu
 is not. A file that does not say what it left out reads as finished, so nobody goes back to it,
 while an honestly partial file invites the second pass it needs.
 
-Record the tags the file carries as the union of what its sections are actually about. One file
-holds every argument you extracted, so it is findable only by what you say it contains.
+Answer `TAGS:` on each section with the tags naming what that section is *about*, comma separated.
+One file holds every argument you extracted, so it is findable only by what those lines say it
+contains — a book full of grilling arguments that carries only `topic.cooking` never comes back for
+a search or a pack about grilling. Prefer tags the knowledge base already uses; a tag it does not
+know is recorded for the human to approve rather than written, so proposing one costs nothing and
+inventing a dozen buys nothing.
 
 ## Provenance
 

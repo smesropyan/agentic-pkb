@@ -1232,3 +1232,27 @@ def test_a_crlf_spelled_edit_of_a_human_note_interrupts_rt24(gated_kb: Path) -> 
     action = sole_interrupt(agent, config)
     assert action["description"].startswith("Approval required: human-content-edit")
     assert target.read_text(encoding="utf-8") == human
+
+
+def test_a_file_that_cannot_be_decoded_is_protected_not_ignored_rt31(kb: Path) -> None:
+    """Three states, not two: absent, readable, and *there but unreadable* (RT-31, LS-12).
+
+    Every rule in the table reads `current is None` as "nothing here to protect", so folding
+    "exists but is not valid UTF-8" into `None` disarmed the whole table for exactly the files most
+    likely to hold something a human wrote by hand — a note saved by an editor whose default
+    encoding is not UTF-8 stopped gating its own overwrite. `UNREADABLE` is a sentinel no proposed
+    content can extend, so the content-diff rules fire and the write stops for a human.
+    """
+    rel = "Cooking/references/book/book.md"
+    target = kb / rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes("---\ntitle: Book\n---\n\n- crème de la crème.\n".encode("cp1252"))
+
+    reason = requires_approval(
+        "write_file",
+        rel,
+        {"file_path": f"/kb/{rel}", "content": "---\ntitle: Book\n---\n\n- Something else.\n"},
+        scan(kb),
+    )
+
+    assert reason is GateReason.REFERENCE_REWRITE

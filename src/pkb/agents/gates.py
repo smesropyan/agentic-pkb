@@ -109,6 +109,14 @@ CREATE_SUBTOPIC_TOOL: Final = "create_subtopic"
 APPROVED_TAG: Final = "status.approved"
 """A member of Layer 1's closed ``status.*`` vocabulary — pinned by a test, not restated policy."""
 
+UNREADABLE: Final = "\x00<unreadable>"
+"""Stands in for the current content of a file that exists and cannot be decoded — see `_read`.
+
+A sentinel rather than `None` because the difference decides whether the gate table protects the
+file at all, and a sentinel rather than `""` because an empty string is a *readable* empty file,
+which a proposed body legitimately extends. The NUL makes it unconstructible as real file content.
+"""
+
 CONFLICT_TAG: Final = "status.conflict-review"
 """Ditto. README §1.7's review flag; adding it is deliberately ungated (RT-26)."""
 
@@ -432,11 +440,21 @@ def new_tags(proposed: str, snapshot: KbSnapshot) -> tuple[str, ...]:
 
 
 def _read(path: Path) -> str | None:
-    """Current bytes of a KB file, or ``None`` when it does not exist or is not text."""
+    """Current bytes of a KB file, ``None`` when there is no file, :data:`UNREADABLE` otherwise.
+
+    Three states, not two. Every rule below reads ``current is None`` as "nothing here to protect",
+    so folding "exists but is not valid UTF-8" into ``None`` disarmed the entire table for exactly
+    the files most likely to hold something a human wrote by hand: a note saved by an editor whose
+    default encoding is not UTF-8 stopped gating its own overwrite. :data:`UNREADABLE` is a
+    non-empty string that no proposed content can extend, so every content-diff rule fires and the
+    write stops for a human — which is the right answer when we cannot see what we would destroy.
+    """
     try:
         return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    except (FileNotFoundError, NotADirectoryError):
         return None
+    except (OSError, UnicodeDecodeError):
+        return UNREADABLE
 
 
 @dataclass(frozen=True, slots=True)

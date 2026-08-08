@@ -813,7 +813,10 @@ def test_the_public_surface_is_thread_free_and_delegation_free_rg20() -> None:
         if not name.startswith("_")
     }
 
-    assert public == {"list_agents", "get", "invalidate"}  # `subagents` retired: RG-7
+    # `chat_model_for` is RG-21's answer to a third consumer: the ingestion loop needs the same
+    # model-with-failover the two factories get, and reaching for `init_chat_model` itself is how it
+    # became the only path in the system with no fallback. `subagents` retired: RG-7.
+    assert public == {"list_agents", "get", "invalidate", "chat_model_for"}
     for name in public:
         parameters = set(inspect.signature(getattr(AgentRegistry, name)).parameters)
         assert not parameters & {"thread_id", "run_id"}

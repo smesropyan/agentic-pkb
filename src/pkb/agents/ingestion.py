@@ -82,6 +82,7 @@ withholds the write if it fires, so the two can never disagree.
 from __future__ import annotations
 
 import asyncio
+import re
 import shutil
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -102,7 +103,17 @@ from pkb.agents.gates import (
 )
 from pkb.agents.middleware.maintenance import NULL_WRITE_LOCK, KbWriteLock
 from pkb.agents.middleware.state import KB_TOUCHED
-from pkb.core import Finding, Metadata, errors_only, has_errors, render_findings, validate_content
+from pkb.core import (
+    Finding,
+    Metadata,
+    Namespace,
+    Tag,
+    build_tag_tree,
+    errors_only,
+    has_errors,
+    render_findings,
+    validate_content,
+)
 from pkb.core.frontmatter import parse, serialize, set_field
 from pkb.core.models import KbSnapshot, TopicRecord
 from pkb.core.paths import REFERENCES_DIR
@@ -162,6 +173,29 @@ READING_RECORD_HEADING: Final = "Reading record"
 NOTHING_MARKER: Final = "NOTHING"
 """What the expert answers when a section holds nothing for its topic (LS-6, decision G)."""
 
+_REFUSAL_WORDS: Final = frozenset({"nothing", "none", "n", "na", "no", "nil", "skip"})
+"""First words that make a short line a refusal rather than an argument — see :func:`parse_takes`."""
+
+_REFUSAL_MAX_CHARS: Final = 80
+"""How long a line may be and still be read as a refusal.
+
+A bound is what separates "Nothing relevant to this topic." from an argument that opens with the
+word *nothing* and goes on to say something. Generous enough for every phrasing a model reaches for
+when declining, short enough that a real claim is never silently dropped."""
+
+_WORD: Final = re.compile(r"[a-z0-9]+")
+
+
+class SourceFileUnreadableError(SourceError):
+    """A source file exists in the tree and cannot be read, so no pass may write over it.
+
+    Subclasses :class:`pkb.sources.SourceError` so the ingest tool's existing handler reports it to
+    the model as a source problem rather than crashing the run — it is the same category of answer
+    ("this cannot be ingested, and here is exactly why") even though the unreadable file is the
+    knowledge base's rather than the human's.
+    """
+
+
 SECTION_WINDOW_CHARS: Final = 12_000
 """How much of one section is put in front of the model at a time (LS-9).
 
@@ -191,6 +225,12 @@ record exists not to get wrong.
 """
 
 _NO_TEXT: Final = "No text was extracted for"
+_WITHHELD: Final = "Not applied — this section was edited by hand"
+"""Deliberately names the section and a count, never the withheld text.
+
+The text is what the human deleted. Restating it in the reading record would put it back in the
+file — a heading further down, under a label that reads like a note about their own edit.
+"""
 _REWORDING: Final = "Proposed rewording, not applied, for"
 _CONTRADICTION: Final = "Contradicts an earlier reading of"
 _COMPLETE: Final = "Pass complete"
@@ -219,11 +259,11 @@ _REFERENCE_SOURCE_TYPE: Final = "reference"
 
 
 class TakeKind(StrEnum):
-    """The three things one reading of a section can produce about an existing file (LS-5).
+    """What one reading of a section can produce about an existing file (LS-3, LS-5).
 
-    The names are the wire format: the model answers ``NEW:``, ``BETTER:`` or ``CONTRADICTS:``, and
-    a bare ``- `` bullet is read as :attr:`NEW` because that is what a model writes when it forgets
-    the grammar and the additive reading is the safe one.
+    The names are the wire format: the model answers ``NEW:``, ``BETTER:``, ``CONTRADICTS:`` or
+    ``TAGS:``, and a bare ``- `` bullet is read as :attr:`NEW` because that is what a model writes
+    when it forgets the grammar and the additive reading is the safe one.
     """
 
     NEW = "new"
@@ -238,6 +278,20 @@ class TakeKind(StrEnum):
     and a one-line ``review_note`` on the source file — §1.7's machinery, extended to the one
     conflict where neither side is human (README §1.7, and the `conflict-detection` skill)."""
 
+    TAGS = "tags"
+    """What this section is *about*, so the file carries the union across its sections (LS-3).
+
+    LS-3 is what makes one-file-per-source survivable: the file is findable by any argument in it.
+    Without it a grilling book ingested by the Cooking expert carried only ``topic.cooking``, so a
+    search or a pack for ``topic.cooking.grilling`` never returned it — the coarseness the spec
+    accepts, made worse than the spec says, in the direction that loses knowledge.
+
+    A tag reaches the frontmatter only if the tree already knows it. A tag it does not is a
+    *proposal* (RT-25): recorded in the reading record for the human rather than written, because
+    minting a namespace tag is theirs to approve and because a write carrying one would trip
+    ``GateReason.NEW_TAG`` and withhold the whole pass.
+    """
+
 
 @dataclass(frozen=True, slots=True)
 class Take:
@@ -251,6 +305,7 @@ _PREFIXES: Final[Mapping[str, TakeKind]] = {
     "NEW:": TakeKind.NEW,
     "BETTER:": TakeKind.BETTER,
     "CONTRADICTS:": TakeKind.CONTRADICTS,
+    "TAGS:": TakeKind.TAGS,
 }
 
 SECTION_INSTRUCTION: Final = (
@@ -258,6 +313,7 @@ SECTION_INSTRUCTION: Final = (
     "  NEW: <the argument in one sentence — the claim, and the reasoning or condition it rests on>\n"
     "  BETTER: <a clearer statement of an argument already recorded below for this section>\n"
     "  CONTRADICTS: <an argument here that disagrees with one already recorded below>\n"
+    "  TAGS: <existing tags, comma separated, naming what this section is about>\n"
     f"Answer {NOTHING_MARKER} on its own line if this section holds nothing your topic cares "
     "about. That is a correct answer, not a failure: a file of twenty entries of which six are "
     "real is worse than a file of six, because a reader cannot tell which six. Do not summarise "
@@ -290,25 +346,63 @@ def parse_takes(answer: str, *, allow: Iterable[TakeKind] = tuple(TakeKind)) -> 
     """Read a section answer into takes, tolerating the shapes a small model actually emits.
 
     A bare ``- `` or ``* `` bullet counts as :attr:`TakeKind.NEW`; a prefix may be bulleted, bolded
-    or lower-cased. ``NOTHING`` anywhere on its own line ends the answer with no takes, which is how
-    LS-6's "no trace at all" is reached without the loop having to interpret prose.
+    or lower-cased. A **refusal** ends the answer with no takes, which is how LS-6's "no trace at
+    all" is reached without the loop having to interpret prose.
+
+    A refusal used to mean the single word ``NOTHING`` and nothing else, which put the rule at the
+    mercy of phrasing the prompt cannot control. "Nothing relevant to this topic.", "NOTHING for
+    this topic.", "None", "N/A" were each filed as an *argument* — and one argument is what makes a
+    topic gainful, so handing a cooking book to the Trading expert built the folder, wrote a file
+    whose every bullet read "Nothing relevant to this topic.", copied the whole source in, and
+    recorded "Took something from" for each section. LS-6's guarantee inverted on ordinary output.
+
+    So a refusal is now: an answer whose lines are *all* refusals, each being a short line that
+    opens with a refusal word. Both halves matter. Requiring every line keeps a real argument that
+    happens to start with "None of this survives contact…" from silently deleting its siblings, and
+    the length bound keeps a genuine sentence about nothingness — an argument in a philosophy book —
+    from being read as a refusal to answer.
 
     *allow* narrows the grammar: the "across the source" question can only produce additions, so a
     ``BETTER:`` there is dropped rather than filed against a section it does not name.
     """
     permitted = set(allow)
+    content = [line for line in (_strip_bullet(raw) for raw in answer.splitlines()) if line]
+    if any(line.upper().rstrip(".") == NOTHING_MARKER for line in content):
+        # The marker itself, anywhere, still zeroes the answer: a model that lists takes and then
+        # says NOTHING has contradicted itself, and LS-6 makes filing nothing the safe reading.
+        return ()
+    if content and all(_is_refusal(line) for line in content):
+        return ()
+
     takes: list[Take] = []
-    for raw in answer.splitlines():
-        line = raw.strip().lstrip("-*").strip()
-        line = line.removeprefix(_TITLE_MARK).strip()
-        if not line:
+    for line in content:
+        if _is_preamble(line):
             continue
-        if line.upper().rstrip(".") == NOTHING_MARKER:
-            return ()
         kind, text = _classify(line)
         if kind in permitted and text:
             takes.append(Take(kind=kind, text=text))
     return tuple(takes)
+
+
+def _strip_bullet(raw: str) -> str:
+    return raw.strip().lstrip("-*").strip().removeprefix(_TITLE_MARK).strip()
+
+
+def _is_refusal(line: str) -> bool:
+    """True when this line is the model declining, rather than an argument."""
+    if len(line) > _REFUSAL_MAX_CHARS:
+        return False
+    words = _WORD.findall(line.casefold())
+    return bool(words) and words[0] in _REFUSAL_WORDS
+
+
+def _is_preamble(line: str) -> bool:
+    """A lead-in like "Here are the arguments this topic takes:" — never itself an argument.
+
+    Only a line ending in a colon with no prefix of its own, so ``NEW: …`` and a real argument that
+    happens to end in a colon-terminated clause are untouched.
+    """
+    return line.endswith(":") and _classify(line)[0] is TakeKind.NEW
 
 
 def _classify(line: str) -> tuple[TakeKind, str]:
@@ -365,9 +459,14 @@ class PassRecord:
     read_on: date | None = None
     header: str = ""
     took: list[str] = field(default_factory=list)
+    filed: dict[str, int] = field(default_factory=dict)
+    """How many arguments this pass filed under each heading — see :func:`_curated_by_hand`."""
+
     nothing: list[str] = field(default_factory=list)
     held: list[str] = field(default_factory=list)
     no_text: list[str] = field(default_factory=list)
+    withheld: list[str] = field(default_factory=list)
+    """Sections where this pass had something to add and did not — see :func:`_curated_by_hand`."""
     flagged: list[str] = field(default_factory=list)
     conflicts: list[str] = field(default_factory=list)
     complete: bool = False
@@ -376,6 +475,161 @@ class PassRecord:
     def accounted(self) -> set[str]:
         """Section titles this pass has already opened — the resume frontier."""
         return {*self.took, *self.nothing, *self.held, *self.no_text}
+
+
+def section_headings(sections: Sequence[Section]) -> tuple[str, ...]:
+    """The heading each section gets in the file — one per section, unique, in source order.
+
+    **A section's identity is its heading, and two sections may not share one.** That sounds like
+    formatting and is the difference between a reading and a claim about a reading.
+
+    Titles were the identity, and titles repeat: "Summary", "Exercises", "Notes", "Discussion" are
+    what real books and papers call their sections. The loop's resume frontier was a set of titles,
+    so the *second* section called "Summary" was already accounted for before it was reached — never
+    windowed, never asked about, never read. The same membership test computed ``unread``, so it was
+    not reported missing either: ``complete`` was set, and the file wrote "Pass complete: every
+    section of this reading was opened." The skip is deterministic, so re-ingesting skipped it
+    again. That is verbatim the failure this whole feature exists to prevent — a confident account
+    of the part that was seen, with nothing recording that the rest was never opened — and it was
+    live on the run cited as proof the design worked: Pro Git has 123 sections and 111 distinct
+    titles, so eleven chapters were never opened and the file said otherwise.
+
+    So a repeat is numbered: ``Summary``, then ``Summary (2)``. The file's own structural headings
+    are reserved the same way, which is what stops a source section called "Provenance" from writing
+    its arguments into the provenance block and its bullets into the next pass's prompt.
+
+    Deliberately not a machine id (LS-10: no machine ids in a file a human reads) and deliberately
+    positional: the same source extracts to the same headings every time, so a second pass
+    reconciles chapter against chapter. A source whose sections get *reordered* between extractor
+    versions is the one case this cannot survive, and it is the case the reading record makes
+    visible rather than silent.
+    """
+    used = set(_STRUCTURAL_HEADINGS)
+    headings: list[str] = []
+    for section in sections:
+        heading = section.title
+        attempt = 1
+        while heading in used:
+            attempt += 1
+            heading = f"{section.title} ({attempt})"
+        used.add(heading)
+        headings.append(heading)
+    return tuple(headings)
+
+
+_ORIGIN_LINE: Final = re.compile(r"^-\s+Origin:\s+`(.+)`\s*$")
+
+
+def resolve_slug(kb_root: Path, topic_path: str, origin: str, preferred: str) -> str:
+    """Which reference folder this source owns in this topic — a durable answer (LS-1, LS-8).
+
+    The slug is the permanent name of ``<topic>/references/<slug>/``, and it used to come straight
+    off the staging directory, whose name is decided by *what is sitting in ``.inbox`` right now*:
+    the first source to slug to ``report`` gets ``report`` and the next gets ``report-2``. But LS-9
+    declares ``.inbox`` a clearable cache, so after ``rm -rf .inbox`` the two sources swap names —
+    and each one's arguments were appended to the *other's* file as a fresh pass, under a provenance
+    block naming a different document, beside a copy of a different original, with ``validate_tree``
+    reporting nothing. Two unrelated sources silently merged into one curated file, with no undo.
+
+    So identity is resolved here, against the tree, which is the durable half of the system:
+
+    1. **A folder whose source file already records this origin wins**, whatever it is called. That
+       is what makes the name survive a cache clear, a re-stage, and a different spelling of the
+       path — the file says what it is about, and the file is what is backed up.
+    2. Otherwise the preferred name is taken if it is free or already ours, and ``-2``, ``-3``, …
+       are tried in turn. A folder holding a file with a *different* origin is never joined, which
+       also covers a hand-filed reference that happens to share a slug: the book lands beside it
+       rather than having its chapters appended into somebody else's note.
+    """
+    references = kb_root / topic_path / REFERENCES_DIR
+    claimed: dict[str, str | None] = {}
+    unreadable: set[str] = set()
+    if references.is_dir():
+        for folder in sorted(p for p in references.iterdir() if p.is_dir()):
+            recorded, readable = _recorded_origin(folder / f"{folder.name}.md")
+            if readable and recorded == origin:
+                return folder.name
+            if not readable:
+                unreadable.add(folder.name)
+            claimed[folder.name] = recorded
+
+    if preferred in unreadable:
+        # The folder this source would take holds a file we cannot read, so we cannot tell whether
+        # it is this source's own earlier reading. Landing in `<preferred>-2` instead would fork one
+        # source into two reference folders and lose the reconciliation between them, silently. The
+        # human is told instead — the same answer `_read` gives for the same reason.
+        raise SourceFileUnreadableError(
+            f"{topic_path}/{REFERENCES_DIR}/{preferred}/{preferred}.md exists and cannot be read, "
+            f"so this reading cannot tell whether it is an earlier pass over the same source. "
+            f"Nothing was written. Re-save it as UTF-8 and ingest again."
+        )
+
+    # Anything already in `claimed` belongs to a different origin, or to a file whose origin cannot
+    # be read — the loop returned above for a match. Neither is joinable.
+    for attempt in range(1, 100):
+        slug = preferred if attempt == 1 else f"{preferred}-{attempt}"
+        if slug not in claimed:
+            return slug
+    raise SourceFileUnreadableError(
+        f"too many reference folders named {preferred!r} in {topic_path}/{REFERENCES_DIR}"
+    )
+
+
+_PROPOSABLE_NAMESPACES: Final = frozenset({Namespace.TOPIC, Namespace.DOMAIN})
+"""The two open namespaces a tag may be proposed in — the same pair RT-25 gates on."""
+
+
+def _tag_candidates(answers: Iterable[str]) -> Iterator[str]:
+    """Well-formed tags out of comma-separated ``TAGS:`` answers, in order, without repeats.
+
+    Anything that is not a parseable tag is dropped rather than reported: the model writing prose
+    on a TAGS line is a grammar slip, and a reading record full of "could not parse" would bury the
+    proposals that are real.
+    """
+    seen: set[str] = set()
+    for answer in answers:
+        for raw in answer.replace(";", ",").split(","):
+            candidate = raw.strip().strip("`").casefold()
+            if not candidate or candidate in seen:
+                continue
+            seen.add(candidate)
+            if Tag.parse(candidate).is_valid:
+                yield candidate
+
+
+def _curated_by_hand(document: SourceFile, heading: str) -> bool:
+    """True when this section holds fewer arguments than the reading record says were filed there.
+
+    The only reading of that gap is that a human removed one — nothing else in the system deletes,
+    by rule (Layer 1 flags and never repairs; the loop only ever inserts). It is deliberately a
+    count and not a comparison of the text: knowing *that* they curated is enough to stop writing
+    over them, and storing what was deleted would put the deleted line back in the file, which is
+    the thing they were trying to be rid of.
+    """
+    recorded = sum(record.filed.get(heading, 0) for record in document.passes())
+    return recorded > len(document.bullets(heading))
+
+
+def _status_of(document: SourceFile) -> str | None:
+    """The file's single ``status.*`` tag, or ``None`` — Layer 1 allows at most one (VA-9)."""
+    meta = parse(document.frontmatter).meta
+    return next((tag for tag in (meta.tags if meta else ()) if tag.startswith("status.")), None)
+
+
+def _recorded_origin(path: Path) -> tuple[str | None, bool]:
+    """``(origin, readable)`` for a reference file — the origin, and whether we could look.
+
+    Two answers because they lead to different places: a file with no provenance line is somebody
+    else's note and simply not ours, while a file we could not decode is a question we cannot
+    answer and must not guess at. See :func:`resolve_slug`.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (FileNotFoundError, NotADirectoryError):
+        return None, True
+    except (OSError, UnicodeDecodeError):
+        return None, False
+    return SourceFile.load(text).origin, True
 
 
 def reference_file_path(topic_path: str, slug: str) -> str:
@@ -472,6 +726,23 @@ class SourceFile:
             return ()
         lines = self._lines()
         return tuple(_bullet_text(line) for line in _bullets(lines[span.start : span.stop]))
+
+    @property
+    def origin(self) -> str | None:
+        """The source this file was written from, read back off its own provenance block.
+
+        This is what makes a reference folder's identity durable. It is recorded in the file, in the
+        topic — the tree, which is backed up and never deleted — rather than inferred from
+        ``.inbox``, which LS-9 declares a disposable cache.
+        """
+        span = self._span(PROVENANCE_HEADING)
+        if span is None:
+            return None
+        for line in self._lines()[span.start : span.stop]:
+            match = _ORIGIN_LINE.match(line.strip())
+            if match:
+                return match.group(1)
+        return None
 
     def passes(self) -> list[PassRecord]:
         """Every reading recorded in the file, oldest first — the resume state (LS-5)."""
@@ -748,10 +1019,11 @@ def _entry_lines(record: PassRecord) -> list[str]:
     earlier run wrote is touched.
     """
     entries: list[str] = []
-    entries += [_entry(_TOOK, title) for title in record.took]
+    entries += [_took_entry(title, record.filed.get(title, 0)) for title in record.took]
     entries += [_entry(_NOTHING, title) for title in record.nothing]
     entries += [_entry(_HELD, title) for title in record.held]
     entries += [_entry(_NO_TEXT, title) for title in record.no_text]
+    entries += [_entry(_WITHHELD, note) for note in record.withheld]
     entries += [_entry(_REWORDING, note) for note in record.flagged]
     entries += [_entry(_CONTRADICTION, note) for note in record.conflicts]
     if record.complete:
@@ -763,11 +1035,42 @@ def _entry(label: str, subject: str) -> str:
     return f"- {label}: {_TITLE_MARK}{subject}{_TITLE_MARK}"
 
 
+def _took_entry(title: str, count: int) -> str:
+    """A "took something from" line, carrying **how much** it took.
+
+    The count is what lets a later pass tell "the human struck this out" from "never seen". Without
+    it, `add_arguments` suppressed duplicates against whatever is in the file *right now*, so a
+    bullet the human deliberately deleted was indistinguishable from a bullet nobody had found yet
+    — and came back on the next re-ingestion, un-gated (an insertion never gates), recorded as a
+    fresh discovery. Striking out a claim they judged wrong is the only curation gesture a human has
+    on a machine-written reference file, and it was the one gesture that did not stick.
+
+    Written as prose rather than as a machine field because a human reads this file (LS-10).
+    """
+    suffix = f" — {count} argument{'' if count == 1 else 's'}" if count else ""
+    return f"- {_TOOK}: {_TITLE_MARK}{title}{_TITLE_MARK}{suffix}"
+
+
+_COUNT_SUFFIX: Final = re.compile(r"^(.*?)\s+—\s+(\d+)\s+arguments?$")
+
+
+def _split_count(subject: str) -> tuple[str, int | None]:
+    """``("**Chapter 2**", 2)`` from ``"**Chapter 2** — 2 arguments"``; the count is optional.
+
+    Optional because a file written before the count existed still has to resume, and because a
+    hand-edited line that lost its suffix should degrade to "no idea how many" rather than to an
+    unparseable entry that stops the reading record from being read at all.
+    """
+    match = _COUNT_SUFFIX.match(subject)
+    return (match.group(1), int(match.group(2))) if match else (subject, None)
+
+
 _LABELS: Final[Mapping[str, str]] = {
     _TOOK: "took",
     _NOTHING: "nothing",
     _HELD: "held",
     _NO_TEXT: "no_text",
+    _WITHHELD: "withheld",
     _REWORDING: "flagged",
     _CONTRADICTION: "conflicts",
 }
@@ -801,8 +1104,11 @@ def _parse_passes(lines: Sequence[str]) -> list[PassRecord]:
         for label, attribute in _LABELS.items():
             if body.startswith(f"{label}: "):
                 subject = body[len(label) + 2 :].strip()
+                subject, count = _split_count(subject)
                 subject = subject.removeprefix(_TITLE_MARK).removesuffix(_TITLE_MARK)
                 getattr(current, attribute).append(subject)
+                if count is not None and label == _TOOK:
+                    current.filed[subject] = count
                 break
     return records
 
@@ -970,7 +1276,8 @@ async def ingest(
         trace at all: no file, no folder, no copy (LS-6).
     """
     source = staged.extracted
-    rel_path = reference_file_path(topic.path, staged.slug)
+    slug = resolve_slug(kb_root, topic.path, source.origin, staged.slug)
+    rel_path = reference_file_path(topic.path, slug)
     existing = _read(kb_root / rel_path)
     document = SourceFile.load(existing) if existing is not None else None
     record, resumed = _pass_for(document, today)
@@ -988,6 +1295,7 @@ async def ingest(
         topic=topic,
         staged=staged,
         rel_path=rel_path,
+        slug=slug,
         document=document,
         record=record,
         snapshot=snapshot,
@@ -995,32 +1303,42 @@ async def ingest(
         lock=lock,
     )
 
-    for index, section in enumerate(source.sections, start=1):
-        if section.title in record.accounted:
+    headings = section_headings(source.sections)
+    state.headings = headings
+    for index, (section, heading) in enumerate(
+        zip(source.sections, headings, strict=True), start=1
+    ):
+        if heading in record.accounted:
             continue
         if section.is_empty:
-            record.no_text.append(section.title)
+            record.no_text.append(heading)
             await state.persist()
             continue
-        takes = await _read_section(ask, source, section, index, state)
-        await state.apply(section.title, takes)
+        takes = await _read_section(ask, source, section, heading, index, state)
+        await state.apply(heading, takes)
         await state.persist()
+        if state.gate is not None or state.findings:
+            # A refused write means nothing this pass produces can land. Reading on would spend the
+            # rest of the book's model calls on answers with nowhere to go, and — the part that
+            # made this a silent failure — the loop went on appending to `record.took`, so the run
+            # reported every chapter covered, `complete`, and "Filed to …" for a file whose later
+            # half was never written. Stopping here leaves the sections it did not reach in
+            # `unread`, which is the one channel that exists to say so.
+            break
 
-    if state.document is not None and not record.complete:
+    if state.document is not None and not record.complete and state.gate is None:
         await _read_across(ask, state)
         record.complete = True
         await state.persist()
 
-    unread = tuple(
-        section.title for section in source.sections if section.title not in record.accounted
-    )
+    unread = tuple(heading for heading in headings if heading not in record.accounted)
     return IngestionReport(
         agent_id=agent_id,
         topic_path=topic.path,
         origin=source.origin,
-        slug=staged.slug,
-        path=rel_path if state.document is not None else None,
-        gainful=state.document is not None,
+        slug=slug,
+        path=rel_path if state.landed else None,
+        gainful=state.landed,
         pass_number=record.number,
         resumed=resumed,
         sections_total=len(source.sections),
@@ -1028,7 +1346,7 @@ async def ingest(
         nothing=tuple(record.nothing),
         held=tuple(record.held),
         unread=unread,
-        flagged=tuple(record.flagged),
+        flagged=(*record.flagged, *state.withheld),
         conflicts=tuple(record.conflicts),
         touched=tuple(state.touched),
         copied_original=state.copied,
@@ -1058,6 +1376,7 @@ class _State:
     topic: TopicRecord
     staged: StagedSource
     rel_path: str
+    slug: str
     document: SourceFile | None
     record: PassRecord
     snapshot: Callable[[], KbSnapshot]
@@ -1067,6 +1386,18 @@ class _State:
     copied: str | None = None
     gate: GateReason | None = None
     findings: list[Finding] = field(default_factory=list)
+    withheld: list[str] = field(default_factory=list)
+    headings: tuple[str, ...] = ()
+    landed: bool = False
+    """True once a write has actually reached the disk — not merely been composed.
+
+    `document is not None` used to stand in for this, and it means something weaker: a document was
+    built. A first write that Layer 1 refuses, or that the gate withholds, leaves a document in
+    memory and nothing on disk, and the report then claimed `gainful=True` with a path to a file
+    that does not exist. Any source whose slug is one of Layer 1's reserved names does this on
+    contact — an ordinary `https://…/guides/index.html`, a local `summary.pdf` — which made the
+    report say "Filed to `Cooking/references/index/index.md`" for work that was thrown away.
+    """
 
     async def apply(self, title: str, takes: Sequence[Take]) -> None:
         """Fold one section's answer into the file, per LS-12's destructiveness line."""
@@ -1076,19 +1407,40 @@ class _State:
 
         if additions and self.document is None:
             # LS-6: the first argument is what earns the folder, the file and the copy. Until then
-            # a topic that takes nothing leaves nothing at all behind.
-            self.copied = await asyncio.to_thread(self._copy_original)
+            # a topic that takes nothing leaves nothing at all behind. The copy is *named* here and
+            # made in `persist`, only once the file itself has landed — see `_copy_original`.
+            self.copied = _copy_name(self.staged, self.slug, self.rel_path)
             self.document = SourceFile.create(
                 topic=self.topic,
                 source=self.staged.extracted,
-                slug=self.staged.slug,
+                slug=self.slug,
                 today=self.today,
                 original=self.copied,
             )
         landed: list[str] = []
         if additions and self.document is not None:
-            order = [section.title for section in self.staged.extracted.sections]
-            landed = self.document.add_arguments(title, additions, order=order)
+            if _curated_by_hand(self.document, title):
+                # The human has deleted something from this section. Anything this pass would add
+                # here is now indistinguishable from the line they removed, so nothing is applied
+                # and every proposal is flagged where they can see it. LS-12's rule for a rewording,
+                # applied to the one situation that turns an addition into a quiet undo.
+                count = len(additions)
+                note = f"{title} — {count} argument{'' if count == 1 else 's'}"
+                if note not in self.record.withheld:
+                    self.record.withheld.append(note)
+                # The texts go to the *report*, which the expert relays in the turn — never into
+                # the file. Writing them there is how the first attempt at this fix reintroduced
+                # the very line the human had struck out, one heading further down.
+                self.withheld.extend(additions)
+                additions = []
+            else:
+                landed = self.document.add_arguments(title, additions, order=self.headings)
+        if landed and self.document is not None:
+            self.record.filed[title] = self.record.filed.get(title, 0) + len(landed)
+            self._mark_for_review()
+
+        if landed:
+            self._apply_tags(take.text for take in takes if take.kind is TakeKind.TAGS)
 
         for text in rewordings:
             # Flagged, never applied: it would replace text the human may have read and relied on.
@@ -1135,8 +1487,64 @@ class _State:
             self.gate = reason
         if findings:
             self.findings = findings
-        if written and self.rel_path not in self.touched:
+        if not written:
+            return
+        if self.rel_path not in self.touched:
             self.touched.append(self.rel_path)
+        if not self.landed:
+            self.landed = True
+            # Only now — the file exists, so a folder holding a copy is no longer an orphan.
+            self.copied = await asyncio.to_thread(self._copy_original)
+
+    def _apply_tags(self, answers: Iterable[str]) -> None:
+        """LS-3's union: the file carries what its sections are about, one section at a time.
+
+        Only tags the tree already knows are written. An unknown ``topic.*``/``domain.*`` tag is
+        the human's to mint (RT-25) — and a write carrying one would fire ``GateReason.NEW_TAG``
+        and withhold the whole pass — so it is recorded as a proposal in the reading record where
+        they will see it beside the argument that suggested it. Namespaces Layer 1 keeps closed
+        (``type.*``, ``status.*``) are dropped silently: a write carrying an invented one is
+        refused outright, and the model reaching for one is a grammar slip, not a proposal.
+        """
+        if self.document is None:
+            return
+        known = build_tag_tree(self.snapshot()).tags
+        meta = parse(self.document.frontmatter).meta
+        carried = list(meta.tags) if meta else []
+        added = False
+        for candidate in _tag_candidates(answers):
+            if candidate in carried:
+                continue
+            if candidate in known:
+                carried.append(candidate)
+                added = True
+            elif Tag.parse(candidate).namespace in _PROPOSABLE_NAMESPACES:
+                proposal = f"New tag proposed, not applied: {candidate}"
+                if proposal not in self.record.flagged:
+                    self.record.flagged.append(proposal)
+        if added:
+            self.document.set_field("tags", carried)
+
+    def _mark_for_review(self) -> None:
+        """New machine-written content lands **marked for review** — LS-12's whole safety story.
+
+        ``status.draft`` was set once, by :meth:`SourceFile.create`, and never re-applied. But
+        README §1.7's conflict flow moves a reviewed source file to ``status.approved``, so "an
+        approved file that is later re-ingested" is the designed steady state rather than an edge
+        case — and a second pass then dropped an argument the human had never seen into a file
+        their own tag says they have read and accepted. Un-gated, because an addition legitimately
+        does not gate (LS-12), which is precisely why the marker has to carry the signal instead.
+
+        A conflict flag outranks it: :meth:`SourceFile.set_status` holds Layer 1's one-``status.*``
+        rule, and demoting ``status.conflict-review`` to ``status.draft`` would hide the thing the
+        human most needs to see.
+        """
+        if self.document is None:
+            return
+        status = _status_of(self.document)
+        if status in (_DRAFT_TAG, CONFLICT_TAG):
+            return
+        self.document.set_status(_DRAFT_TAG)
 
     def _flag_conflict(self) -> None:
         """§1.7's three steps, applied to the **source file** (README §1.7, LS-5).
@@ -1163,9 +1571,18 @@ class _State:
         nothing to gain from routing it through a tool call the model must remember to make, and a
         binary cannot go through ``write_file`` in any case. See the module docstring for how this
         sits with RT-18.
+
+        **Made after the first write lands, not before it.** Copying first meant a refused write —
+        Layer 1 rejecting the name, or the gate withholding it — left the copy alone in a folder
+        with no main file: ``MISSING_MAIN_FILE`` in a tree that is supposed to stay valid,
+        ``ORPHAN_ITEM_FOLDER`` published into the topic index, up to 18.8 MB of it, and exactly the
+        "empty folder implying the source was considered" that LS-6 forbids. Layer 1 never repairs
+        and there is no undo (D6), so the human cleaned it up by hand — the one thing this design
+        says nobody does. The provenance block still names the copy, because it is written into the
+        document that is about to be written and the copy follows immediately after it.
         """
-        name = _copy_name(self.staged, self.rel_path)
-        destination = f"{self.topic.path}/{REFERENCES_DIR}/{self.staged.slug}/{name}"
+        name = _copy_name(self.staged, self.slug, self.rel_path)
+        destination = f"{self.topic.path}/{REFERENCES_DIR}/{self.slug}/{name}"
         target = self.kb_root / destination
         try:
             with self.lock:
@@ -1185,7 +1602,7 @@ _MARKDOWN_SUFFIXES: Final = frozenset({".md", ".markdown", ".mdown"})
 """Suffixes Layer 1 treats as authored markdown, and therefore validates for frontmatter."""
 
 
-def _copy_name(staged: StagedSource, rel_path: str) -> str:
+def _copy_name(staged: StagedSource, slug: str, rel_path: str) -> str:
     """What the copied original is called inside the reference folder.
 
     Almost always ``<slug><ext>``, byte-identical to what arrived.
@@ -1201,10 +1618,10 @@ def _copy_name(staged: StagedSource, rel_path: str) -> str:
     would make the copy no longer the source, and exempting it in Layer 1 would mean changing the
     layer this feature promised not to touch.
     """
-    name = f"{staged.slug}{staged.original.suffix}"
+    name = f"{slug}{staged.original.suffix}"
     if name != Path(rel_path).name and staged.original.suffix.lower() not in _MARKDOWN_SUFFIXES:
         return name
-    return f"{staged.slug}.source.txt"
+    return f"{slug}.source.txt"
 
 
 # --------------------------------------------------------------------------------------
@@ -1213,10 +1630,15 @@ def _copy_name(staged: StagedSource, rel_path: str) -> str:
 
 
 async def _read_section(
-    ask: Asker, source: ExtractedSource, section: Section, index: int, state: _State
+    ask: Asker,
+    source: ExtractedSource,
+    section: Section,
+    heading: str,
+    index: int,
+    state: _State,
 ) -> tuple[Take, ...]:
     """One section, in as many bounded windows as it needs (LS-9)."""
-    recorded = state.document.bullets(section.title) if state.document is not None else ()
+    recorded = state.document.bullets(heading) if state.document is not None else ()
     takes: list[Take] = []
     windows = list(_windows(section.text))
     for position, window in enumerate(windows, start=1):
@@ -1302,10 +1724,34 @@ def _windows(text: str, limit: int = SECTION_WINDOW_CHARS) -> Iterator[str]:
 
 
 def _read(path: Path) -> str | None:
+    """The file's text, or ``None`` when there is **no file**.
+
+    A file that exists and cannot be decoded raises. It used to return ``None`` as well, and the two
+    answers send the loop opposite ways: "no file" means open pass 1 and create a new document, so
+    an existing file that a human's editor had saved as cp1252 was read as absent and the whole
+    file — every earlier pass, and the line the human had just added — was rewritten from scratch.
+    The gate could not stop it, because :func:`pkb.agents.gates._read` swallowed the same exception
+    and saw no current content to diff against, so ``REFERENCE_REWRITE`` never fired. That is the
+    one write the design says can never be walked back (D6, LS-12), reached by an ordinary edit in
+    an ordinary editor, and reported as a normal first pass.
+
+    Raising is the conservative answer: refusing to touch a file we cannot read loses a pass, and
+    guessing loses the file.
+    """
     try:
         return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    except FileNotFoundError:
         return None
+    except NotADirectoryError:
+        # A path component is a file: nothing can exist here, and nothing will be overwritten.
+        return None
+    except UnicodeDecodeError as exc:
+        raise SourceFileUnreadableError(
+            f"{path} exists but is not valid UTF-8, so this reading cannot tell what is already "
+            f"recorded in it. Nothing was written. Re-save it as UTF-8 and ingest again."
+        ) from exc
+    except OSError as exc:
+        raise SourceFileUnreadableError(f"{path} exists but could not be read: {exc}") from exc
 
 
 def _write(
@@ -1379,9 +1825,16 @@ def ingest_source_tool(host: IngestHost, agent_id: str) -> BaseTool:
         origin: str,
         tool_call_id: Annotated[str, InjectedToolCallId],
         confirm_reingest: bool = False,
+        reread_source: bool = False,
     ) -> Command[Any]:
         try:
-            report = await host.ingest(agent_id, origin, confirm=confirm_reingest, maintain=False)
+            report = await host.ingest(
+                agent_id,
+                origin,
+                confirm=confirm_reingest,
+                refresh=reread_source,
+                maintain=False,
+            )
         except SourceError as exc:
             # Extraction quality is visible rather than assumed (LS-7): a scanned PDF, an encrypted
             # one or a URL that would not load fails loudly here rather than producing a confident
@@ -1402,7 +1855,8 @@ def ingest_source_tool(host: IngestHost, agent_id: str) -> BaseTool:
             "Use it instead of drafting a reference by hand whenever the material will not fit in "
             "one turn. If the source is already ingested here you are told so and asked to check "
             "with the human before re-reading it; call again with confirm_reingest=true once they "
-            "agree."
+            "agree. Set reread_source=true as well when the human says the file itself has changed "
+            "since it was last read — a corrected draft, a new edition, added chapters."
         ),
     )
 

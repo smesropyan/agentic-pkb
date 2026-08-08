@@ -336,8 +336,15 @@ base accumulates.
 ## As built (2026-08-07)
 
 Built as `src/pkb/sources.py` (a leaf module: extraction and staging, no harness import) and
-`src/pkb/agents/ingestion.py` (the loop). 1270 tests pass; ruff, mypy-strict and the three import
+`src/pkb/agents/ingestion.py` (the loop). 1302 tests pass; ruff, mypy-strict and the three import
 contracts are green. Everything above holds as designed except where noted here.
+
+An adversarial audit on 2026-08-07 — eight lenses, each required to reproduce what it claimed, then
+three skeptics per finding told to refute it — confirmed **19 defects, three of them critical**, plus
+four more from a completeness sweep. All are fixed, and each fix carries a test that fails without
+it (verified by mutation: 22 mutations of the fixed code, 22 killed). The three critical ones are
+recorded below in full, because each was a *silent* failure of the exact property this design exists
+to provide.
 
 **The staging layout.** `<kb>/.inbox/<slug>/` holds exactly four files:
 
@@ -372,17 +379,118 @@ Both defects were found by **running the loop end to end and validating the resu
 tests, which is the same lesson the earlier layers recorded: a suite that exercises the pieces can be
 completely green while the composition writes the wrong bytes.
 
-**Verified on a real book.** Pro Git, 501 pages, 18.8 MB: `pdf-outline` recovers **123 sections in
-2.3 s**, re-staging is a cache hit at ~0 s, two topics each ingest it and get their own copy, and
-`validate_tree` reports no errors afterwards. Every section is accounted for in the reading record —
-`covered ∪ nothing ∪ held ∪ unread` names all 123 — which is the property the whole design exists to
-produce.
+**Verified on a real book, after the audit.** Pro Git, 501 pages, 18.8 MB: `pdf-outline` recovers
+**123 sections in 2.4 s**, re-staging is a cache hit at ~0 s, two topics each ingest it and get their
+own copy, and `validate_tree` and `find_orphans` both report nothing afterwards. The expert is asked
+**161 questions** and every one of the 123 sections is named in the reading record —
+`covered ∪ nothing ∪ held ∪ unread` covers all 123 *headings*, which is the property the whole design
+exists to produce. Before the audit the same run asked 113 questions and reported the same success.
 
-**Section identity, resolved.** Sections are keyed by their **title**, taken from the source's own
-structure, which is what makes the reconciliation of LS-5 a per-section comparison rather than the
-two-long-documents question this design exists to avoid. Duplicate titles within one source collapse
-to one key; that is visible (123 sections, 111 distinct titles in Pro Git) and accepted, since the
-alternative is a machine id in a file a human reads.
+### The three critical defects, and what they change
+
+**A repeated section title meant the section was never opened — and the file said otherwise.** The
+resume frontier was a set of section *titles*, so the second section called "Summary" was already
+accounted for before the loop reached it: never windowed, never asked about, never read. `unread` was
+computed by the same membership test, so it was not reported missing either — `complete` was set and
+the file wrote *"Pass complete: every section of this reading was opened."* The skip was
+deterministic, so re-ingesting skipped it again.
+
+This was live on the run this document cited as proof the design worked. **Pro Git has 123 sections
+and 111 distinct titles, so eleven chapters were never opened**, and the acceptance criterion stated
+here — "covered ∪ nothing ∪ held ∪ unread names all 123" — was met only because it counted titles.
+"Summary", "Exercises", "Notes", "Discussion" are what real books call their sections.
+
+So **a section's identity is its heading in the file, and two sections may not share one**: a repeat
+is numbered (`Summary`, then `Summary (2)`), and the file's own structural headings are reserved the
+same way, which also stops a source section called "Provenance" from writing its arguments into the
+provenance block. Still no machine ids in a file a human reads (LS-10), and still positional, so the
+same source extracts to the same headings every time and a second pass reconciles chapter against
+chapter. Re-verified on Pro Git: **123 distinct headings, 161 model questions where there were 113,
+and all 123 sections named in the reading record.**
+
+**An unreadable source file was read as "no file", so the whole file was overwritten.** `_read`
+returned `None` both for "not there" and for "could not be decoded", and those send the loop opposite
+ways — the second opens pass 1 again and writes a new document over the old one. The gate could not
+stop it, because `gates._read` swallowed the same exception and saw no current content to diff
+against, so `REFERENCE_REWRITE` never fired. A human editing their own reference file in an editor
+whose default encoding is not UTF-8 lost that edit and every argument of every previous pass, with a
+report that read like a normal first pass. This is the one write the design says can never be walked
+back (D6). Both readers now distinguish three states; the gate's third state is a sentinel no
+proposed content can extend, so every content rule fires and the write stops for a human.
+
+**A reference folder's name came from a cache the spec says may be deleted.** The slug came off the
+staging directory, whose name is decided by what happens to be in `.inbox` — the first source to slug
+to `report` gets `report`, the next gets `report-2`. LS-9 declares `.inbox` clearable, so after
+`rm -rf .inbox` two sources swapped names and each one's arguments were appended to the *other's*
+file as a fresh pass: a provenance block naming a different document, beside a copy of a different
+original, `validate_tree` reporting nothing, and no undo. **Identity now resolves against the tree**
+— a folder whose source file records this origin wins, whatever it is called — so it survives a cache
+clear, a re-stage, and a different spelling of the path. A folder holding a file with a different
+origin is never joined, which also covers a hand-filed reference that happens to share a slug.
+
+### The rest, by what they were
+
+*Silent wrongness in what reached the model.* PDF outline anchors were placed by unanchored substring
+search, so a short title ("5", "VI") matched inside the previous chapter's prose and one chapter's
+body was filed under the next — on the `pdf-outline` path, the one this document reports as verified.
+A UTF-16 text source was decoded by cp1252 (which almost never fails) into mojibake and passed the
+"fails loudly" guard, NUL bytes and all. An EPUB chapter's own `encoding=` declaration was discarded,
+so every non-English book arrived as `Kierkegaardï¿½s rï¿½sumï¿½`. A UTF-8 BOM stopped the first
+heading matching `^#`, so the opening chapter became `(front matter)` and the title became the
+filename. A multi-line section title — an ordinary wrapped EPUB `navLabel` — grew a duplicate heading
+block per pass. All fixed at the extraction seam, once, rather than at each consumer.
+
+*The cache outliving what it cached.* Keyed on the origin string alone, a re-ingestion re-read the
+bytes staged the first time — so the corrected draft the human re-ingested *because* they had
+corrected it was never seen. The manifest now carries the original's digest, and `refresh` is
+reachable from the tool (`reread_source`). A failed re-stage used to leave the new original beside
+the old extraction under a manifest asserting they were one document; staging is now written aside
+and swapped in only on success.
+
+*Reporting success for work not done.* LS-1's copy was made before the first write was validated or
+gated, so a refused write left an orphan copy, a `MISSING_MAIN_FILE` in a tree that is supposed to
+stay valid, and a report saying "Filed to …" — triggered by any source whose slug is one of Layer 1's
+reserved names, an ordinary `…/guides/index.html`. The copy now follows the write. A gate firing
+mid-loop did not stop the loop: it kept reading, kept appending to `covered`, and reported every
+chapter filed while the later half was never written. It now stops and names what it did not reach.
+
+*Rules that were not mechanical.* LS-6's "no trace at all" depended on the model spelling `NOTHING`
+exactly — "Nothing relevant to this topic." was filed as an *argument*, and one argument is what
+earns the folder and the copy. LS-3 was not implemented at all and had zero citations anywhere: a
+grilling book carried only `topic.cooking`, so packs and searches for `topic.cooking.grilling` never
+returned it. Sections now answer `TAGS:`; a tag the tree already knows is written, one it does not is
+proposed for the human (RT-25). A re-ingestion landing new content on a file the human had moved to
+`status.approved` left it approved; it is re-marked `status.draft`. And a bullet the human *deleted*
+came back on the next pass, un-gated, recorded as a fresh discovery — the reading record now carries
+how many arguments each pass filed, which is what tells "removed by hand" from "never seen", and the
+withheld text is reported to the expert rather than written back into the file.
+
+*Reads nobody had bounded.* `origin` is a string the **model** chooses, and it reached
+`Path(origin).read_bytes()` with no confinement while every other read an expert can make is
+confined to the knowledge base by the backend. One `ingest_source` call read any file the daemon's
+user could read and copied it into the tree — reproduced with `~/.ssh/id_rsa`. The URL branch had no
+host restriction, so cloud-metadata and loopback addresses were reachable from inside a turn.
+`RuntimeConfig.source_roots` bounds the filesystem (defaulting to the human's home) and
+`allow_url_sources` plus a private-address guard bound the network.
+
+*One thing that was simply forgotten.* The loop built its model with `init_chat_model` directly and
+so was the only path in the system with no fallback (RG-21) — on the operation that makes 100+
+sequential calls and is by far the most quota-exposed. It goes through the registry now, which is
+what RG-21 said all along; `AgentRegistry.chat_model_for` is the public seam a third consumer needed.
+
+**Six claims were refuted** by the skeptics and are *not* defects: MW-26 coverage of a mid-book model
+failure, the accounting of sections with no extracted text, the reachability of the copied original
+through a model's own `write_file`, the concurrency of two ingestions of one source into one topic
+(RT-60/RT-61 already serialise them), the gate sequence on a re-ingestion, and the import contract's
+coverage of `pkb.sources`.
+
+### Section identity, resolved
+
+Sections are keyed by the **heading they take in the file**, derived from the source's own title and
+numbered on a repeat. That is what makes LS-5's reconciliation a per-section comparison rather than
+the two-long-documents question this design exists to avoid. A source whose sections are *reordered*
+between extractor versions is the one case this cannot survive, and it is the case the reading record
+makes visible rather than silent.
 
 ## Open items
 

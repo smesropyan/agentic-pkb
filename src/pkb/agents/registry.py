@@ -396,6 +396,18 @@ class AgentRegistry:
         deployment's choice, and a failover is a runtime event, not a different configuration."""
         return model_id_of(self._model_for(agent_id))
 
+    def chat_model_for(self, agent_id: str) -> str | BaseChatModel:
+        """The model an agent runs on, failover included — for callers outside the two factories.
+
+        Public because the ingestion loop is a third consumer. It reached for
+        ``init_chat_model(config.default_model)`` directly and so became the one path in the system
+        with no fallback: a 300-page book is 100+ sequential calls, by far the most quota-exposed
+        operation there is, and it was the one that could not survive a 429. RG-21's argument is
+        exactly this — the model is a registry property because otherwise every new consumer has to
+        remember — so the fix is to give consumers something to call rather than a rule to follow.
+        """
+        return self._chat_model_for(agent_id)
+
     def _chat_model_for(self, agent_id: str) -> str | BaseChatModel:
         """What a factory is handed: the configured model, wrapped in its fallback (RG-21).
 

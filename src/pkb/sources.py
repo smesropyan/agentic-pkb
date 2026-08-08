@@ -33,16 +33,20 @@ implementation that already exists rather than a second one (§0.2). It imports 
 
 from __future__ import annotations
 
+import codecs
+import hashlib
 import json
 import re
+import shutil
 import unicodedata
 import zipfile
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from html import entities as _html_entities
+from ipaddress import ip_address
 from pathlib import Path, PurePosixPath
 from typing import Any, Final
 from urllib.parse import unquote, urlparse
@@ -74,13 +78,17 @@ __all__ = [
     "StagedSource",
     "StructureMethod",
     "UnsupportedSourceError",
+    "canonical_origin",
+    "check_fetchable",
     "detect_kind",
     "extract",
     "find_staged",
     "inbox_root",
+    "is_url",
     "load_extraction",
     "render_markdown",
     "save_extraction",
+    "slug_for",
     "stage",
 ]
 
@@ -193,12 +201,25 @@ class Section:
     """One chapter, one paper section, one article — the unit the ingestion loop windows on.
 
     ``level`` is 1 for a chapter or top-level section and 2+ for a subsection. ``title`` is the key
-    LS-10 reconciles on, so it is taken verbatim from the source wherever the source supplies one.
+    LS-10 reconciles on, so it is taken from the source wherever the source supplies one — with its
+    whitespace collapsed to single spaces, which is the one liberty taken with it.
+
+    That normalisation is load-bearing rather than tidy. A title is written into the source file as
+    ``## <title>``, into the reading record as ``**<title>**``, and compared against both to decide
+    what a later pass has already read. All three break on an embedded newline, and an embedded
+    newline is ordinary real-world data: a pretty-printed EPUB ``navLabel`` wraps its text, and PDF
+    bookmarks carry whatever the typesetter put in them. Left alone, such a section grew a duplicate
+    heading block in the file on every pass and a duplicate reading-record entry on every write,
+    while ``validate_tree`` reported nothing. Normalising once, here, fixes every path at the source
+    rather than at each of the three places that assume one line.
     """
 
     title: str
     level: int
     text: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "title", _WHITESPACE_RUN.sub(" ", self.title).strip())
 
     @property
     def char_count(self) -> int:
@@ -283,6 +304,9 @@ class StagedSource:
     from_cache: bool
     """True when this call reused an earlier extraction instead of redoing the work (LS-9)."""
 
+    digest: str = ""
+    """SHA-256 of the original, so a cache hit can tell "same document" from "same path" (LS-5)."""
+
 
 @dataclass(frozen=True, slots=True)
 class Fetched:
@@ -325,6 +349,15 @@ Version 1 wrote the rendered markdown over the original for markdown sources, so
 cannot be trusted to be the original. Re-staging costs one extraction and restores the invariant.
 """
 
+_BOM_ENCODINGS: Final = (
+    (codecs.BOM_UTF32_LE, "utf-32"),
+    (codecs.BOM_UTF32_BE, "utf-32"),
+    (codecs.BOM_UTF8, "utf-8-sig"),
+    (codecs.BOM_UTF16_LE, "utf-16"),
+    (codecs.BOM_UTF16_BE, "utf-16"),
+)
+"""Byte-order marks, longest first — UTF-32 LE starts with the UTF-16 LE mark, so order decides."""
+
 _MAX_HEADING_LEVEL: Final = 6
 
 # Provisional. The ratio was measured against a different extraction library's output, so treat the
@@ -344,6 +377,7 @@ _ATX_HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
 _FENCE = re.compile(r"^\s*(```|~~~)")
 _WHITESPACE_RUN = re.compile(r"\s+")
 _NAMED_ENTITY = re.compile(r"&([a-zA-Z][a-zA-Z0-9]{1,31});")
+_XML_DECLARED_ENCODING = re.compile(r"""<\?xml[^>]*?encoding=["']([\w.\-]+)["'][^>]*\?>""")
 _XML_ENTITIES: Final = frozenset({"amp", "lt", "gt", "quot", "apos"})
 
 _TEXT_SUFFIXES: Final = frozenset({".txt", ".text", ".md", ".markdown", ".rst", ".org"})
@@ -447,19 +481,32 @@ def stage(
     if not kb_root.is_dir():
         raise SourceNotFoundError(f"knowledge-base root does not exist: {kb_root}")
 
-    recorded = str(origin)
+    recorded = canonical_origin(origin)
     staging = _staging_dir(kb_root, recorded)
 
     if not refresh:
         cached = _load_staged(staging, recorded)
-        if cached is not None:
+        if cached is not None and not _origin_has_changed(recorded, cached):
             return cached
 
     slug = staging.name
-    staging.mkdir(parents=True, exist_ok=True)
-    original = _acquire(recorded, staging, slug, fetch=fetch)
-    extracted = extract(original, origin=recorded)
-    return _write_staged(staging, slug, recorded, original, extracted, from_cache=False)
+    pending = staging.with_name(f".{staging.name}.staging")
+    _clear(pending)
+    pending.mkdir(parents=True, exist_ok=True)
+    try:
+        original = _acquire(recorded, pending, slug, fetch=fetch)
+        extracted = extract(original, origin=recorded)
+        staged = _write_staged(pending, slug, recorded, original, extracted, from_cache=False)
+    except BaseException:
+        _clear(pending)
+        raise
+    # Everything succeeded, so the new staging replaces the old one in one move. Writing in place
+    # would leave a directory holding edition two's bytes beside edition one's extraction whenever
+    # a re-stage failed — a manifest whose two halves describe different documents, served forever
+    # after as a clean cache hit.
+    _clear(staging)
+    pending.rename(staging)
+    return _rebase(staged, staging)
 
 
 def find_staged(kb_root: Path, origin: str | Path) -> StagedSource | None:
@@ -470,9 +517,81 @@ def find_staged(kb_root: Path, origin: str | Path) -> StagedSource | None:
     """
     if not kb_root.is_dir():
         return None
-    recorded = str(origin)
+    recorded = canonical_origin(origin)
     staging = _staging_dir(kb_root, recorded)
     return _load_staged(staging, recorded)
+
+
+def canonical_origin(origin: str | Path) -> str:
+    """The recorded identity of a source: one string per document, however it was spelled.
+
+    ``stage`` records this rather than the caller's string, because the recorded origin is what
+    every later question about the source is answered from — is this already staged, is this already
+    ingested, which reference folder does it belong to. Left uncanonicalised, ``~/book.pdf``,
+    ``./book.pdf`` and ``/home/me/books/../books/book.pdf`` are three sources: the same book is read
+    three times, lands in three reference folders, and reconciliation never runs because no pass has
+    anything to reconcile against.
+
+    Paths resolve through symlinks and ``..`` and are made absolute; a path that does not exist
+    still normalises, so the caller gets :class:`SourceNotFoundError` from the acquisition rather
+    than a confusing failure here. URLs lower-case the scheme and host — which are defined to be
+    case-insensitive — and keep the path, query and fragment exactly as given, because those are
+    case-sensitive and a server may well distinguish them.
+    """
+    text = str(origin)
+    if _is_url(text):
+        parsed = urlparse(text)
+        host = parsed.netloc.lower()
+        return parsed._replace(scheme=parsed.scheme.lower(), netloc=host).geturl()
+    return str(Path(text).expanduser().resolve())
+
+
+def _origin_has_changed(origin: str, cached: StagedSource) -> bool:
+    """True when the file at ``origin`` is no longer the document that was staged (LS-5, LS-9).
+
+    The cache is what makes re-ingestion affordable, and it is also what makes a re-ingestion read
+    the wrong bytes: the most common reason a human re-ingests a local source is that they changed
+    it — corrected it, added a chapter, replaced a draft — and an origin-keyed cache hands back the
+    superseded text with a reading dated today. Comparing the digest costs one read of a file that
+    is about to be read anyway on a miss, and nothing on the hit path that matters.
+
+    A URL cannot be checked without re-fetching, so it is never invalidated here; ``refresh=True``
+    is the way to force one, and :func:`pkb.agents.ingestion.ingest_source_tool` exposes it.
+    """
+    if _is_url(origin):
+        return False
+    source = Path(origin)
+    if not source.is_file():
+        # The human moved or deleted it. The staged copy is now the only one there is, so serving it
+        # is strictly better than failing — LS-8's whole reason for keeping the original.
+        return False
+    return _digest(source) != cached.digest
+
+
+def _digest(path: Path) -> str:
+    reader = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            reader.update(block)
+    return reader.hexdigest()
+
+
+def _clear(path: Path) -> None:
+    if path.is_dir():
+        shutil.rmtree(path)
+    elif path.exists():
+        path.unlink()
+
+
+def _rebase(staged: StagedSource, root: Path) -> StagedSource:
+    """The same staged source, with its paths pointing at where the directory ended up."""
+    return replace(
+        staged,
+        root=root,
+        original=root / staged.original.name,
+        extraction_path=root / staged.extraction_path.name,
+        text_path=root / staged.text_path.name,
+    )
 
 
 def detect_kind(path: Path) -> str:
@@ -605,7 +724,7 @@ def _staging_dir(kb_root: Path, origin: str) -> Path:
     record that the first source had been replaced. The manifest's recorded origin is what tells
     them apart, so the answer is stable across calls and across processes.
     """
-    base = _slug_for(origin)
+    base = slug_for(origin)
     inbox = inbox_root(kb_root)
     for attempt in range(1, 100):
         slug = base if attempt == 1 else f"{base}-{attempt}"
@@ -616,7 +735,12 @@ def _staging_dir(kb_root: Path, origin: str) -> Path:
     raise SourceError(f"too many staged sources named {base!r} in {inbox}")
 
 
-def _slug_for(origin: str) -> str:
+def slug_for(origin: str) -> str:
+    """The staging-directory name an origin prefers, before any collision is considered.
+
+    Public because the runtime needs the same answer to find a topic's reference folder *before*
+    staging anything — asking "have I read this?" must not cost a download.
+    """
     if _is_url(origin):
         parsed = urlparse(origin)
         name = PurePosixPath(unquote(parsed.path)).name
@@ -672,6 +796,7 @@ def _load_staged(staging: Path, origin: str) -> StagedSource | None:
         text_path=text_path,
         extracted=load_extraction(extraction_path),
         from_cache=True,
+        digest=str(payload.get("digest", "")),
     )
 
 
@@ -696,6 +821,7 @@ def _write_staged(
         "extraction": extraction_path.name,
         "text": text_path.name,
         "kind": extracted.kind,
+        "digest": _digest(original),
         "staged": datetime.now(UTC).isoformat(timespec="seconds"),
     }
     (staging / _MANIFEST_NAME).write_text(
@@ -710,6 +836,7 @@ def _write_staged(
         text_path=text_path,
         extracted=extracted,
         from_cache=from_cache,
+        digest=str(manifest["digest"]),
     )
 
 
@@ -718,16 +845,33 @@ def _acquire(origin: str, staging: Path, slug: str, *, fetch: Fetcher | None) ->
     if _is_url(origin):
         fetched = (fetch or _http_fetch)(origin)
         suffix = _suffix_for_fetch(fetched, origin)
-        destination = staging / f"{slug}{suffix}"
+        destination = staging / _original_name(slug, suffix)
         destination.write_bytes(fetched.body)
         return destination
 
     source = Path(origin).expanduser()
     if not source.is_file():
         raise SourceNotFoundError(f"source does not exist: {source}")
-    destination = staging / f"{slug}{source.suffix.lower()}"
+    destination = staging / _original_name(slug, source.suffix.lower())
     destination.write_bytes(source.read_bytes())
     return destination
+
+
+def _original_name(slug: str, suffix: str) -> str:
+    """``<slug><suffix>``, stepped aside when that is a name this directory already uses.
+
+    The derived files were made defensive by construction — both carry ``.extracted.`` — but the
+    manifest's name is a fixed literal, and a source called ``source.json`` slugs to ``source`` and
+    lands on exactly it. So did every stem that slugifies to nothing: ``!!!.json``, ``Source.JSON``.
+    The manifest is written last, so the preserved original was overwritten by the manifest and then
+    served as the original forever, ``_load_staged`` being satisfied that a file by that name exists.
+
+    One line of defence for a whole class rather than a check per name: if the original would take a
+    name this module writes, it becomes ``<slug>.original<suffix>``.
+    """
+    name = f"{slug}{suffix}"
+    reserved = {_MANIFEST_NAME, f"{slug}{_EXTRACTION_SUFFIX}", f"{slug}{_TEXT_SUFFIX}"}
+    return f"{slug}.original{suffix}" if name in reserved else name
 
 
 def _suffix_for_fetch(fetched: Fetched, origin: str) -> str:
@@ -742,8 +886,51 @@ def _suffix_for_fetch(fetched: Fetched, origin: str) -> str:
     return ".html"
 
 
+def is_url(origin: str) -> bool:
+    """True when this origin is fetched rather than read from disk. See :func:`check_fetchable`."""
+    return _is_url(origin)
+
+
+def check_fetchable(url: str) -> None:
+    """Refuse a URL that points back inside the machine — the cloud-metadata class (LS-7).
+
+    ``origin`` is chosen by the *model*, and a fetch is a read the knowledge base then keeps: a
+    prompt-injected turn asking for ``http://169.254.169.254/latest/meta-data/iam/…`` would put
+    credentials in front of the model and copy them into a topic. Loopback, link-local, private and
+    reserved ranges are refused, and so is any scheme that is not HTTP.
+
+    Deliberately a check on the literal host rather than a resolve-and-compare: DNS can answer
+    differently between this check and the request, so treating a name as safe because it resolved
+    to a public address once is a guarantee that does not hold. What this does buy is that the
+    obvious spellings are refused with a clear message, and it composes with
+    :attr:`~pkb.agents.runtime.RuntimeConfig.allow_url_sources` for a deployment that wants no
+    network reads at all.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise FetchError(f"{url}: only http and https sources can be fetched")
+    host = (parsed.hostname or "").strip("[]")
+    if not host:
+        raise FetchError(f"{url}: no host to fetch from")
+    if host.lower() in _BLOCKED_HOSTNAMES:
+        raise FetchError(f"{url}: refusing to fetch from this machine")
+    try:
+        address = ip_address(host)
+    except ValueError:
+        return
+    if not address.is_global or address.is_link_local:
+        raise FetchError(
+            f"{url}: {host} is a private, loopback or link-local address — refusing to fetch a "
+            f"source from inside the network this runs on"
+        )
+
+
+_BLOCKED_HOSTNAMES: Final = frozenset({"localhost", "metadata", "metadata.google.internal"})
+
+
 def _http_fetch(url: str) -> Fetched:
     """The default :data:`Fetcher`. Never called by the test suite — no network, no API key."""
+    check_fetchable(url)
     try:
         response = httpx.get(url, follow_redirects=True, timeout=30.0)
         response.raise_for_status()
@@ -812,13 +999,42 @@ def _looks_like_text(head: bytes) -> bool:
 
 
 def _read_text_file(path: Path) -> str:
+    """Decode a text source, honouring its byte-order mark and refusing what decoded to noise.
+
+    Three things here are each a defect that shipped:
+
+    * ``utf-8-sig`` must be tried **before** ``utf-8``. ``utf-8`` never fails on BOM-prefixed
+      content — it decodes the mark to ``U+FEFF`` and keeps going — so listing it first meant the
+      BOM survived into the text, the first ATX heading no longer matched ``^#``, and a markdown
+      book saved by any Windows editor silently lost its opening chapter and its title.
+    * A **UTF-16** file must be decoded as UTF-16. cp1252 has almost no undefined bytes, so it
+      "succeeds" on UTF-16 input and yields ``ÿþ#\\x00 \\x00D\\x00…`` — not empty, so
+      :func:`_guard_text` passes it, and the expert is asked to find arguments in mojibake. The BOM
+      is what distinguishes it, and it is checked first.
+    * Text that still holds a **NUL** after decoding is not text. ``_looks_like_text`` already knew
+      that, but :func:`detect_kind` short-circuits on a ``.txt`` or ``.md`` extension and never
+      reaches it — so identical bytes were refused when the file had no extension and accepted when
+      it was called ``notes.txt``. Refusing here closes the gap for every path.
+    """
     raw = path.read_bytes()
-    for encoding in ("utf-8", "utf-8-sig", "cp1252", "latin-1"):
+    for mark, encoding in _BOM_ENCODINGS:
+        if raw.startswith(mark):
+            return _guard_decoded(raw.decode(encoding, errors="replace"), path)
+    for encoding in ("utf-8", "cp1252", "latin-1"):
         try:
-            return raw.decode(encoding)
+            return _guard_decoded(raw.decode(encoding), path)
         except UnicodeDecodeError:
             continue
-    return raw.decode("utf-8", errors="replace")
+    return _guard_decoded(raw.decode("utf-8", errors="replace"), path)
+
+
+def _guard_decoded(text: str, path: Path) -> str:
+    if "\x00" in text:
+        raise MalformedSourceError(
+            f"{path.name} is named as text but holds NUL bytes — it is binary, or text in an "
+            f"encoding with no byte-order mark that nothing here can identify"
+        )
+    return text
 
 
 # --------------------------------------------------------------------------------------
@@ -914,9 +1130,17 @@ def _pdf_date(info: Any) -> str | None:
 
 
 def _clean_meta(value: Any) -> str | None:
+    """A PDF metadata or outline string as one clean line, or ``None``.
+
+    Whitespace is collapsed rather than merely stripped: a bookmark title or a ``/Title`` holding an
+    embedded newline reaches the source file's heading, its frontmatter ``description`` and the
+    reading record, and each of those is a single line by construction. Layer 1 has a rule for the
+    frontmatter case (VA-26 ``MULTILINE_DESCRIPTION``) which turned an ordinary PDF into a refused
+    write, and none for the other two, which silently grew duplicate blocks.
+    """
     if value is None:
         return None
-    text = str(value).strip()
+    text = _WHITESPACE_RUN.sub(" ", str(value)).strip()
     return text or None
 
 
@@ -1072,9 +1296,9 @@ def _find_title(page_text: str, title: str) -> int | None:
     """
     if not page_text or not title:
         return None
-    direct = page_text.find(title)
-    if direct >= 0:
-        return direct
+    heading = _find_as_heading(page_text, title)
+    if heading is not None:
+        return heading
 
     wanted = _WHITESPACE_RUN.sub("", title).casefold()
     if not wanted:
@@ -1087,6 +1311,30 @@ def _find_title(page_text: str, title: str) -> int | None:
             positions.append(index)
     found = "".join(compact).find(wanted)
     return positions[found] if found >= 0 else None
+
+
+def _find_as_heading(page_text: str, title: str) -> int | None:
+    """Offset of ``title`` where it stands as a **heading**, not merely as a substring.
+
+    A bare ``page_text.find(title)`` was the first thing tried, and it is wrong in a way that only
+    shows up on real books: outline titles are routinely short — a bare chapter number, a Roman
+    numeral, a single word — and several chapters share a page. "6" then matches inside chapter 5's
+    prose at "6 months", the section is cut there, chapter 5 keeps one sentence, and chapter 6 is
+    handed the tail of chapter 5. The expert is asked what chapter 6 argues while reading chapter 5,
+    and on the next pass reconciles it against the wrong chapter's bullets. Nothing detects it:
+    ``_drop_colliding_anchors`` only fires on exactly equal offsets, so ``warnings`` comes back
+    empty and the reading looks clean.
+
+    Requiring the match to begin a line is what a heading actually looks like in extracted PDF text,
+    and it costs nothing when the title is long enough to be unambiguous. The whitespace-insensitive
+    fallback in :func:`_find_title` still runs when no line starts with the title, so a heading
+    broken across lines by the layout is found as before.
+    """
+    for match in re.finditer(re.escape(title), page_text):
+        start = match.start()
+        if start == 0 or page_text[start - 1] == "\n":
+            return start
+    return None
 
 
 def _pdf_font_anchors(
@@ -1463,7 +1711,10 @@ def _walk_nav_points(
         label = point.find("./{*}navLabel/{*}text")
         content = point.find("./{*}content")
         src = content.get("src") if content is not None else None
-        title = (label.text or "").strip() if label is not None else ""
+        # `_element_text`, not `label.text`: an NCX label may hold markup, and a pretty-printed one
+        # wraps its text across lines. `Section` normalises too, but the title is also compared and
+        # resolved before it ever becomes one.
+        title = _element_text(label) if label is not None else ""
         if title and src:
             out.append((title, level, _resolve_href(base_dir, src)))
         _walk_nav_points(point, level + 1, base_dir, out)
@@ -1503,8 +1754,20 @@ def _parse_xml(payload: bytes, where: str) -> ET.Element:
 
 
 def _expand_entities(payload: bytes) -> bytes:
-    """Replace HTML named entities XML does not define — ``&nbsp;`` is the usual EPUB offender."""
-    text = payload.decode("utf-8", errors="replace")
+    """Replace HTML named entities XML does not define — ``&nbsp;`` is the usual EPUB offender.
+
+    The decode has to honour the document's **own** declaration. ``payload.decode("utf-8",
+    errors="replace")`` discarded it, which ElementTree would otherwise have read: a chapter
+    declared ``ISO-8859-1`` had every accented byte turned into ``U+FFFD``, re-encoded, and read
+    back as ``Kierkegaardï¿½s rï¿½sumï¿½`` — silent, permanent (Layer 1 never deletes), and applied
+    to every non-English book. A UTF-16 chapter, which both OPS 2.0.1 and EPUB 3 permit, was
+    destroyed outright and reported as ``not well-formed XML``, sending whoever debugged it at the
+    wrong file.
+
+    Re-encoding to UTF-8 without the declaration is what keeps the round trip honest: the returned
+    bytes say nothing about their encoding, so ElementTree's default — UTF-8 — is now correct.
+    """
+    text = _decode_xml(payload)
 
     def substitute(match: re.Match[str]) -> str:
         name = match.group(1)
@@ -1513,7 +1776,24 @@ def _expand_entities(payload: bytes) -> bytes:
         replacement = _html_entities.html5.get(f"{name};")
         return replacement if replacement is not None else match.group(0)
 
-    return _NAMED_ENTITY.sub(substitute, text).encode("utf-8")
+    expanded = _NAMED_ENTITY.sub(substitute, text)
+    # The declaration described the bytes that arrived; these bytes are UTF-8. Leaving it in place
+    # would make ElementTree decode UTF-8 as latin-1 — the same corruption, one step later.
+    return _XML_DECLARED_ENCODING.sub("", expanded, count=1).encode("utf-8")
+
+
+def _decode_xml(payload: bytes) -> str:
+    """Decode an XML part the way an XML parser must: BOM, then declaration, then the UTF-8 default."""
+    for mark, encoding in _BOM_ENCODINGS:
+        if payload.startswith(mark):
+            return payload.decode(encoding, errors="replace")
+    declared = _XML_DECLARED_ENCODING.search(payload[:200].decode("ascii", errors="replace"))
+    if declared:
+        try:
+            return payload.decode(declared.group(1))
+        except (LookupError, UnicodeDecodeError):
+            pass
+    return payload.decode("utf-8", errors="replace")
 
 
 class _TextBuilder:
