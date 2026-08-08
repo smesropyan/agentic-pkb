@@ -283,6 +283,13 @@ unchanged and still hold. Probe sources are under `/tmp/l4/spec/`.
 
 Ranked by blast radius. **Every one has a default already encoded in §1**, so implementation is not blocked.
 
+> **RULED 2026-08-08.** Q9, Q12, Q14 and Q16 were put to the human and **all four recommended
+> defaults were confirmed**: one interleaved transcript with branches collapsing once they end; a
+> manual "try again" button and never an automatic retry; a reject reason invited but not required;
+> and the routing menu as plain text the human answers as their next message. Q10, Q11, Q13, Q15 and
+> Q17 stand at their recommended defaults and were not escalated — each is one widget or one
+> constant, and each is reversible.
+
 | # | Question | Options | Recommended default | Blast radius if changed later |
 |---|----------|---------|---------------------|-------------------------------|
 | **Q9** | **How is a fan-out presented — one interleaved transcript grouped by agent, or a pane per expert?** | (a) one transcript with a per-agent block opened by `subagent.start` and closed by `subagent.end`; (b) a pane or tab per `thread_id`; (c) a collapsed progress line per expert, expandable. | **(a), collapsing a branch once it ends** — i.e. (a) with (c) as the resting state. SS-12 requires brackets over concurrent branches rather than nesting, and (a) is the honest rendering. It also degrades correctly: on reopening the thread, replay has only the merged reply (TU-19), so a layout whose whole structure is per-expert panes comes back empty in a way (a) does not. (b) also makes it easy to lose the only ordering guarantee the wire gives — *within* one `(run_id, agent_id)`. (c) alone throws away the routing visibility `SubagentStart` was added for. | The main pane's widget tree — the largest single UI decision in step 4. Per-expert panes and one interleaved log are not refactors of each other, so this is worth settling before the transcript widget is written. The decoder and transport are unaffected either way. |

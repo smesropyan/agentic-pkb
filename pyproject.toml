@@ -104,7 +104,15 @@ forbidden_modules = [
 name = "I1/I2 layering — core < packs < agents < service < server|tui|clients"
 type = "layers"
 layers = [
-    "(pkb.server)",
+    "(pkb.server) | (pkb.tui)",
+    # `pkb.clients` gets its OWN layer rather than sharing one with the transports. The `|` form is
+    # import-linter's *independent* delimiter, so siblings may not import each other — and it would
+    # forbid the one import `pkb.clients` exists for (arch §6: the approval helper "is imported by
+    # the TUI and the Telegram adapter"). Verified BROKEN on both `pkb.tui -> pkb.clients` and
+    # `pkb.server -> pkb.clients` before this was corrected. Sitting below `pkb.agents` also makes
+    # "the approval helper never touches the harness" a layers fact, and catches
+    # `pkb.clients -> pkb.tui` for free.
+    "(pkb.clients)",
     "(pkb.service)",
     "(pkb.agents)",
     "(pkb.packs)",
@@ -119,9 +127,7 @@ type = "forbidden"
 # STRICT: indirect imports ARE checked. This is the contract that catches
 # `pkb.server.app -> pkb.agents.runtime -> langgraph`; `allow_indirect_imports` here would keep it
 # green while deleting exactly the check that matters (decision B, P-8).
-# `pkb.tui` and `pkb.clients` join this list in step 4 — import-linter errors on a module that
-# does not exist, so they cannot be listed before they are written.
-source_modules = ["pkb.contracts", "pkb.packs", "pkb.server"]
+source_modules = ["pkb.contracts", "pkb.packs", "pkb.server", "pkb.tui", "pkb.clients"]
 forbidden_modules = ["deepagents", "langgraph", "langchain", "langchain_core", "pkb.agents"]
 
 [[tool.importlinter.contracts]]
@@ -133,3 +139,13 @@ type = "forbidden"
 source_modules = ["pkb.service"]
 forbidden_modules = ["deepagents", "langgraph", "langchain", "langchain_core"]
 allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "I2 — the shared client layer is transport-free and UI-free"
+type = "forbidden"
+# Step 5's Telegram adapter lives INSIDE the daemon and calls PkbService directly, with no HTTP
+# round trip (D9) — MC-7's built test asserts it pulls no HTTP client. If any module under
+# `pkb.clients` imported one, that assertion would degrade from a structural fact into a discipline
+# about which submodule you happen to import. The httpx2 wrapper lives in `pkb.tui.client`.
+source_modules    = ["pkb.clients"]
+forbidden_modules = ["httpx", "httpx2", "textual", "fastapi", "starlette", "uvicorn"]
