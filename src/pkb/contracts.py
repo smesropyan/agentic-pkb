@@ -32,6 +32,7 @@ from pkb.core.models import FlushReport, ScanRequest
 
 __all__ = [
     "CANCELLED_CODE",
+    "CANCELLED_MESSAGE",
     "ERROR_CODES",
     "EVENT_NAMES",
     "EXPERT_THREAD_SEPARATOR",
@@ -84,6 +85,7 @@ __all__ = [
     "is_retryable",
     "is_scan_thread",
     "librarian_thread_id",
+    "terminal_status",
     "validate_decisions",
 ]
 
@@ -731,3 +733,35 @@ def code_for(exc: BaseException) -> str:
 def is_retryable(exc: BaseException) -> bool:
     """Whether retrying the same call later could succeed. See :data:`RETRYABLE_CODES`."""
     return code_for(exc) in RETRYABLE_CODES
+
+
+CANCELLED_MESSAGE: Final = "the run was cancelled"
+"""The message a supervisor synthesizes for a cancelled run (AP-11).
+
+Here rather than in ``pkb.server.sse`` because it is the string that decides *cancelled* from *the
+provider failed*, and more than one consumer has to make that call. An in-process consumer — the
+Telegram adapter calls ``PkbService`` directly (D9) and never sees a wire frame — gets a bare
+``RunError`` with no ``code`` field at all, so without a shared name it would either import a
+private ``_CANCELLED_MESSAGE`` or keep a second copy of the string. That is the drift the error-code
+table was moved here to stop, one channel later: a cancelled turn rendering as a failure on a phone
+and as a cancellation in the terminal.
+"""
+
+
+def terminal_status(event: RunEnd | RunError, *, interrupted: bool) -> str:
+    """One of :data:`RUN_STATUSES`, from a terminal event and what the consumer saw (SS-9).
+
+    The derivation, in the seam, because **every** consumer needs it and they do not all see the
+    same thing. A wire client reads ``status`` off the envelope; an in-process one has only the
+    dataclass, which carries no status at all — ``RunEnd`` is ``(run_id, final_text)`` and
+    ``RunError`` is ``(run_id, message, retryable)``. Both must answer identically, and the answer
+    that matters most is ``interrupted``: a thread parked on a human decision rendered as "done" is
+    the failure SS-9 exists to prevent, whichever channel renders it.
+
+    ``interrupted`` is the consumer's own observation — whether an :class:`InterruptEvent` arrived
+    earlier on this run — because the terminal event cannot say: the harness returns normally when a
+    graph interrupts, so ``RunEnd`` is emitted either way.
+    """
+    if isinstance(event, RunError):
+        return "cancelled" if event.message == CANCELLED_MESSAGE else "error"
+    return "interrupted" if interrupted else "completed"

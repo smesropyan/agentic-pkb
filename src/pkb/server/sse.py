@@ -52,6 +52,7 @@ from pkb.contracts import (
     RunError,
     RunHandle,
     expert_thread_id,
+    terminal_status,
 )
 
 __all__ = [
@@ -74,9 +75,6 @@ same value, and a *third* meaning appearing under one of these names is the fail
 
 RunStatus = str
 """``completed`` | ``interrupted`` | ``cancelled`` — computed by Layer 3 from what it saw (SS-9)."""
-
-_CANCELLED_MESSAGE: Final = "the run was cancelled"
-"""The message :class:`~pkb.service.runs.RunSupervisor` synthesizes for a cancelled run (AP-11)."""
 
 # `CANCELLED_CODE` and `RUN_ERROR_CODE` come from the seam (decision P): four things have to agree
 # on these strings and two of them may not import this module.
@@ -232,9 +230,7 @@ class SseEncoder:
         Layer 3 computes it from what it saw on the stream, because Layer 2 cannot: ``astream``
         returns normally on an interrupt and the harness has no notion of "parked".
         """
-        if isinstance(event, RunError):
-            return "cancelled" if event.message == _CANCELLED_MESSAGE else "error"
-        return "interrupted" if self._interrupted else "completed"
+        return terminal_status(event, interrupted=self._interrupted)
 
     def cancelled(self) -> ServerSentEvent:
         """The farewell frame a stream writes when the daemon is shutting down (AP-11, AP-12).

@@ -292,7 +292,17 @@ P-1 … P-21 are unchanged and still hold. Probe sources are under `/tmp/l5/`.
 ## 4. Open questions for the human
 
 Ranked by blast radius. **Every one has a default already encoded in §1**, so implementation is not
-blocked. None of Q18 … Q26 has been put to the human yet.
+blocked.
+
+> **RULED 2026-08-08.** Q18, Q19, Q23 and Q24 were put to the human and **all four recommended
+> defaults were confirmed**: raw `httpx` behind the `BotApi` Protocol with no Telegram library; a
+> pull-only `/pending` command rather than a poller; the full description as an uploaded document
+> immediately before the buttons; and one current thread per chat, rotated explicitly by `/new`.
+> Q20, Q21, Q22, Q25 and Q26 stand at their recommended defaults and were not escalated — each is
+> one keyboard, one table or one config line, and each is reversible. **Decision X (the owner
+> allow-list) was reported to the human as an applied decision rather than asked**, on the ground
+> that there is no defensible alternative: a bot token is a public inbound path into a process that
+> writes to a knowledge base with no undo.
 
 | # | Question | Options | Recommended default | Blast radius if changed later |
 |---|----------|---------|---------------------|-------------------------------|

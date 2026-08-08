@@ -42,7 +42,15 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequenc
 from dataclasses import dataclass
 from typing import Final
 
-from pkb.contracts import AgentEvent, RunEnd, RunError, RunHandle, code_for, is_retryable
+from pkb.contracts import (
+    CANCELLED_MESSAGE,
+    AgentEvent,
+    RunEnd,
+    RunError,
+    RunHandle,
+    code_for,
+    is_retryable,
+)
 from pkb.service import RunSubscription
 
 __all__ = [
@@ -312,7 +320,7 @@ class RunSupervisor:
             hub.publish(
                 RunError(
                     run_id=hub.handle.run_id,
-                    message="the run was cancelled",
+                    message=CANCELLED_MESSAGE,
                     retryable=True,
                 )
             )
