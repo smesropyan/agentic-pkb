@@ -137,6 +137,7 @@ class RuntimeService:
         supervisor: RunSupervisor | None = None,
     ) -> None:
         self._runtime = runtime
+        self._connection = connection
         self._threads = ThreadStore(connection)
         self._proposals = ProposalStore(connection)
         self._runs = supervisor or RunSupervisor()
@@ -146,6 +147,17 @@ class RuntimeService:
     def runs(self) -> RunSupervisor:
         """The supervisor, for ``/health`` and for shutdown. Not part of the Protocol."""
         return self._runs
+
+    @property
+    def connection(self) -> aiosqlite.Connection:
+        """Layer 3's own SQLite connection, for a transport that needs a table of its own.
+
+        The Telegram adapter keeps durable per-chat state (ST-7's ``pkb_`` prefix), and the
+        composition root is the only place that has both the service and the connection. Exposed
+        rather than passed around because ``open_service`` owns the connection's lifetime and a
+        second one would defeat AP-4's ordering assertion.
+        """
+        return self._connection
 
     @property
     def proposals_store(self) -> ProposalStore:

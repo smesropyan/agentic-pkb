@@ -24,13 +24,14 @@ one router so a prefix is a one-line change later.
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pkb.server.app import ServerConfig, create_app
 from pkb.server.health import HealthState
+from pkb.server.telegram import TelegramConfig
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from fastapi import FastAPI
@@ -43,7 +44,13 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 
 
-def build_app(kb_root: Path, db_path: Path, *, config: Any | None = None) -> FastAPI:
+def build_app(
+    kb_root: Path,
+    db_path: Path,
+    *,
+    config: Any | None = None,
+    telegram: TelegramConfig | None = None,
+) -> FastAPI:
     """Wire the runtime, the service and the app together.
 
     Imports of ``pkb.agents`` happen **inside** this function rather than at module scope. That is
@@ -83,6 +90,7 @@ def build_app(kb_root: Path, db_path: Path, *, config: Any | None = None) -> Fas
     async def opener() -> AsyncIterator[Any]:
         async with open_service(kb_root, db_path, config=runtime_config) as service:
             state["service"] = service
+            state["connection"] = getattr(service, "connection", None)
             health.db_path = str(db_path)
             health.durability = str(getattr(runtime_config, "durability", ""))
             health.fanout_limit = int(getattr(runtime_config, "fanout_limit", 0))
@@ -93,6 +101,37 @@ def build_app(kb_root: Path, db_path: Path, *, config: Any | None = None) -> Fas
     # running daemon and a pack built from a stale snapshot is a pack of files that may not exist.
     app.state.snapshot = lambda: scan(kb_root)
     return app
+
+
+def _telegram_task(
+    config: TelegramConfig, state: dict[str, Any]
+) -> Callable[[Any], Awaitable[None]]:
+    """The supervised bot (D9, AP-17).
+
+    Built here rather than in ``pkb.server`` because it needs the service *and* the store, and the
+    composition root is the one place that has both. The task itself owns everything it spawns —
+    ``_supervise`` awaits it and has no handle on a detached child, so a task that leaked one would
+    get a second poller on every restart, which Telegram answers with ``409 Conflict``.
+    """
+
+    async def start(service: Any) -> None:
+        from pkb.server.telegram import TelegramAdapter
+        from pkb.server.telegram_api import HttpBotApi
+        from pkb.service.telegram import SqliteTelegramStore
+
+        connection = state.get("connection")
+        if connection is None:  # pragma: no cover - the lifespan opens it before workers start
+            raise RuntimeError("Layer 3's SQLite connection is not open")
+        async with HttpBotApi(token=config.token) as api:
+            adapter = TelegramAdapter(
+                service=service,
+                store=SqliteTelegramStore(connection),
+                api=api,
+                config=config,
+            )
+            await adapter.run()
+
+    return start
 
 
 def main(argv: list[str] | None = None) -> int:

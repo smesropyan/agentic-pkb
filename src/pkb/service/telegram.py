@@ -27,8 +27,10 @@ Layer 3 already reserves the ``pkb_`` prefix for its own tables (ST-7), and ``db
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Final, Protocol
+from typing import TYPE_CHECKING, Any, Final, Protocol
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import aiosqlite
@@ -36,12 +38,14 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 __all__ = [
     "BINDINGS_TABLE",
     "LEDGER_TABLE",
+    "PROMPTS_TABLE",
     "SqliteTelegramStore",
     "TelegramStore",
 ]
 
 BINDINGS_TABLE: Final = "pkb_telegram_bindings"
 LEDGER_TABLE: Final = "pkb_telegram_updates"
+PROMPTS_TABLE: Final = "pkb_telegram_prompts"
 
 _SCHEMA: Final = f"""
 CREATE TABLE IF NOT EXISTS {BINDINGS_TABLE} (
@@ -56,6 +60,17 @@ CREATE TABLE IF NOT EXISTS {LEDGER_TABLE} (
     kind        TEXT NOT NULL,
     seen_at     TEXT NOT NULL,
     dispatched  INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS {PROMPTS_TABLE} (
+    handle       TEXT PRIMARY KEY,
+    chat_id      INTEGER NOT NULL,
+    thread_id    TEXT NOT NULL,
+    interrupt_id TEXT NOT NULL,
+    message_ids  TEXT NOT NULL,
+    answers_json TEXT NOT NULL DEFAULT '{{}}',
+    action_count INTEGER NOT NULL,
+    created_at   TEXT NOT NULL,
+    resolved     INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -78,6 +93,18 @@ class TelegramStore(Protocol):
     async def dispatched(self, update_id: int) -> None: ...
 
     async def orphans(self) -> list[int]: ...
+
+    async def open_prompt(
+        self, handle: str, chat_id: int, thread_id: str, interrupt_id: str, action_count: int
+    ) -> None: ...
+
+    async def prompt(self, handle: str) -> Mapping[str, Any] | None: ...
+
+    async def record_message(self, handle: str, message_id: int) -> None: ...
+
+    async def record_answer(self, handle: str, index: int, verb: str) -> Mapping[int, str]: ...
+
+    async def resolve_prompt(self, handle: str) -> None: ...
 
 
 class SqliteTelegramStore:
@@ -162,6 +189,82 @@ class SqliteTelegramStore:
             f"SELECT update_id FROM {LEDGER_TABLE} WHERE dispatched = 0 ORDER BY update_id"
         )
         return [int(row[0]) for row in await cursor.fetchall()]
+
+    # -- approval prompts (TG-57, TG-58, TG-60) -------------------------------------
+
+    async def open_prompt(
+        self, handle: str, chat_id: int, thread_id: str, interrupt_id: str, action_count: int
+    ) -> None:
+        """Record an approval the human is being shown.
+
+        Durable because a button pressed after the daemon restarted arrives into an adapter with no
+        memory of the message — Telegram redelivers an unconfirmed update for 24 hours, and RT-38
+        makes the interrupt itself durable. Making this the *only* path means the restart case is
+        exercised by every test rather than by an incident.
+        """
+        await self._connection.execute(
+            f"INSERT OR REPLACE INTO {PROMPTS_TABLE} "
+            f"(handle, chat_id, thread_id, interrupt_id, message_ids, answers_json, "
+            f" action_count, created_at, resolved) VALUES (?,?,?,?,?,?,?,?,0)",
+            (handle, chat_id, thread_id, interrupt_id, "[]", "{}", action_count, _now()),
+        )
+        await self._connection.commit()
+
+    async def prompt(self, handle: str) -> Mapping[str, Any] | None:
+        cursor = await self._connection.execute(
+            f"SELECT handle, chat_id, thread_id, interrupt_id, message_ids, answers_json, "
+            f"action_count, resolved FROM {PROMPTS_TABLE} WHERE handle = ?",
+            (handle,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        return {
+            "handle": str(row[0]),
+            "chat_id": int(row[1]),
+            "thread_id": str(row[2]),
+            "interrupt_id": str(row[3]),
+            "message_ids": json.loads(str(row[4])),
+            "answers": {int(k): v for k, v in json.loads(str(row[5])).items()},
+            "action_count": int(row[6]),
+            "resolved": bool(row[7]),
+        }
+
+    async def record_message(self, handle: str, message_id: int) -> None:
+        """Remember every message of this approval, so all of them lose their keyboard (TG-63)."""
+        current = await self.prompt(handle)
+        if current is None:
+            return
+        ids = [*current["message_ids"], message_id]
+        await self._connection.execute(
+            f"UPDATE {PROMPTS_TABLE} SET message_ids = ? WHERE handle = ?",
+            (json.dumps(ids), handle),
+        )
+        await self._connection.commit()
+
+    async def record_answer(self, handle: str, index: int, verb: str) -> Mapping[int, str]:
+        """Accumulate one action's answer and return the set so far (TG-60).
+
+        Durable because a partial answer must survive a restart: CL-6 forbids padding a missing one,
+        so a lost accumulator means the human's earlier taps are gone and the approval can only be
+        finished from the TUI.
+        """
+        current = await self.prompt(handle)
+        if current is None:
+            return {}
+        answers = {**current["answers"], index: verb}
+        await self._connection.execute(
+            f"UPDATE {PROMPTS_TABLE} SET answers_json = ? WHERE handle = ?",
+            (json.dumps({str(k): v for k, v in answers.items()}), handle),
+        )
+        await self._connection.commit()
+        return answers
+
+    async def resolve_prompt(self, handle: str) -> None:
+        await self._connection.execute(
+            f"UPDATE {PROMPTS_TABLE} SET resolved = 1 WHERE handle = ?", (handle,)
+        )
+        await self._connection.commit()
 
 
 def _now() -> str:
