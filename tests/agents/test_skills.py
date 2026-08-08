@@ -32,8 +32,32 @@ rule's literal two-name list would fail on correct code:
   glob covers, and it correctly takes **no** write lock: RT-51 scopes the lock to ``pkb.core.flush``
   and ``pkb.core.scaffold_topic`` only, so taking it here would violate RT-51 rather than honour it.
 
-The carve-out is scoped to ``adopt_skill`` by name, not to ``skills.py``, so a future direct write
-anywhere else in that module still fails the audit.
+**A third and fourth writer, added 2026-08-07 with large-source ingestion**, and named here because
+the design that adds them says in as many words that a rule silently violated is worse than a rule
+changed. ``ingestion.py``'s ``_write`` lands the source file and ``_copy_original`` lands LS-1's copy
+of the original beside it. Both are the amendment RT-18 was always going to need: its *intent* was
+"no ad-hoc writers" — a middleware or a scan pass deciding to fix up an index — not "one writer
+forever", and the design names the chunked ingestion workflow as the writer explicitly, because the
+copy is a binary (``write_file`` takes text, and MW-7 intercepts exactly ``write_file``/``edit_file``)
+and because the copy is a *deterministic consequence* of LS-6 rather than a judgement, so routing it
+through a tool call the model must remember to make buys nothing.
+
+What makes them safe is that they meet every property that made ``adopt_skill``'s carve-out safe,
+and two more the copy needs:
+
+* they write only under ``<topic>/references/<slug>/``, never a derived file and never outside the
+  topic that is doing the reading (RT-15's scope, kept structurally rather than by permission);
+* ``_write`` calls :func:`pkb.core.validate_content` and refuses on an error finding, so nothing
+  lands that the tool layer would have refused (MW-9/MW-13), and it calls
+  :func:`pkb.agents.gates.requires_approval` and refuses on a gate, so nothing lands that a human
+  would have had to approve (RT-21);
+* both take the process-wide write lock, exactly as the scaffolder does (RT-51);
+* both record what they wrote in ``kb_touched``, so MW-17 … MW-20's single flush stamps and indexes
+  it — a copy made any other way is invisible to the flush, and LS-1's second amendment names that
+  precise hole.
+
+The carve-outs are scoped by function name, not by module, so a future direct write anywhere else in
+``skills.py`` or ``ingestion.py`` still fails the audit.
 """
 
 from __future__ import annotations
@@ -51,8 +75,12 @@ from tests.agents.conftest import TODAY
 AGENTS_ROOT = Path(skills_module.__file__).parent
 """``src/pkb/agents``, found through the package rather than through the working directory."""
 
-SANCTIONED_WRITE_SITES = {("skills.py", "adopt_skill")}
-"""The only ``pkb.agents`` code that writes to a file itself (SK-4's carve-out; see the docstring)."""
+SANCTIONED_WRITE_SITES = {
+    ("skills.py", "adopt_skill"),
+    ("ingestion.py", "_write"),
+    ("ingestion.py", "_copy_original"),
+}
+"""The only ``pkb.agents`` code that writes to a file itself (see the docstring for each carve-out)."""
 
 SANCTIONED_LAYER1_WRITERS = {
     "middleware/maintenance.py": {"flush"},
@@ -260,8 +288,8 @@ def test_only_the_sanctioned_function_writes_a_file_itself_rt18() -> None:
 
     If this fails, the fix is almost never to widen ``SANCTIONED_WRITE_SITES``: it is to route the
     write through a ``pkb.core`` entry point, which is the only thing that stamps, validates and
-    regenerates. Widening is right only for a second human-initiated, agent-unreachable copy like
-    ``adopt_skill``, and then the docstring above must say why.
+    regenerates. Widening is right only for a writer the design named and argued for — ``adopt_skill``
+    and the two ingestion sites are the three that exist — and then the docstring above must say why.
     """
     assert _write_sites() == SANCTIONED_WRITE_SITES
 

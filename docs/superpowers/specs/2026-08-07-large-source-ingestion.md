@@ -333,12 +333,60 @@ un-gated; a re-ingestion that rewrites one is gated.** Without that split, "huma
 for notes and quietly fails for everything derived from a source — which is most of what a knowledge
 base accumulates.
 
+## As built (2026-08-07)
+
+Built as `src/pkb/sources.py` (a leaf module: extraction and staging, no harness import) and
+`src/pkb/agents/ingestion.py` (the loop). 1270 tests pass; ruff, mypy-strict and the three import
+contracts are green. Everything above holds as designed except where noted here.
+
+**The staging layout.** `<kb>/.inbox/<slug>/` holds exactly four files:
+
+| File | What it is |
+|---|---|
+| `source.json` | the manifest — origin, slug, kind, schema version, and the three names below |
+| `<slug><ext>` | **the original, byte for byte**, under the extension it arrived with |
+| `<slug>.extracted.json` | the structured extraction: the section tree the loop walks |
+| `<slug>.extracted.md` | the same extraction rendered, so `.inbox` is readable without a JSON parser |
+
+Both *derived* files carry `.extracted.`, and the original keeps its own name. That asymmetry is the
+fix for a defect the first implementation shipped: the rendered text was written to `<slug>.md`,
+which is also what a markdown source is called once staged, so **staging a `.md` file overwrote the
+preserved original with its own re-rendering** while the manifest went on calling it the original.
+Every LS-1 copy into a topic then carried the extraction while claiming to carry the source. The
+whole suite was green — nothing staged a markdown source, and for a PDF the two names differ so the
+collision could not occur. Naming the derived files defensively closes it for every suffix at once.
+The manifest carries a schema version and a directory at another version is re-staged rather than
+trusted, so no `.inbox` written by the broken layout can serve a bad original.
+
+**LS-1's copy is renamed for exactly one kind of source.** A copied original normally keeps its
+extension: `references/progit/progit.pdf` beside `progit.md`. A **markdown** original cannot, because
+a `.md` file inside the tree is an *authored* file to Layer 1 — it requires the seven frontmatter
+fields, and a raw source has none, so `validate_tree` reports `MISSING_FRONTMATTER` in the topic that
+did the ingesting. PDF, EPUB and HTML copies are assets and exempt (FM-14, VA-7); markdown is not. So
+a markdown original is copied as `<slug>.source.txt`: the bytes are unchanged, only the name is, and
+`.txt` is in the class Layer 1 already leaves alone. The two alternatives were both worse — adding
+frontmatter would make the copy no longer the source, and exempting `.md` inside reference folders
+would change the layer this feature promised not to touch.
+
+Both defects were found by **running the loop end to end and validating the result**, not by the unit
+tests, which is the same lesson the earlier layers recorded: a suite that exercises the pieces can be
+completely green while the composition writes the wrong bytes.
+
+**Verified on a real book.** Pro Git, 501 pages, 18.8 MB: `pdf-outline` recovers **123 sections in
+2.3 s**, re-staging is a cache hit at ~0 s, two topics each ingest it and get their own copy, and
+`validate_tree` reports no errors afterwards. Every section is accounted for in the reading record —
+`covered ∪ nothing ∪ held ∪ unread` names all 123 — which is the property the whole design exists to
+produce.
+
+**Section identity, resolved.** Sections are keyed by their **title**, taken from the source's own
+structure, which is what makes the reconciliation of LS-5 a per-section comparison rather than the
+two-long-documents question this design exists to avoid. Duplicate titles within one source collapse
+to one key; that is visible (123 sections, 111 distinct titles in Pro Git) and accepted, since the
+alternative is a machine id in a file a human reads.
+
 ## Open items
 
-- **Section identity within the file.** Matching is a smaller problem than it was, but not zero: the
-  comparison still has to line up "the same argument, said differently" across two versions. It is
-  now bounded by one document rather than a directory, and a stable section anchor would make it
-  cheaper still.
+- ~~**Section identity within the file.**~~ Resolved by the section title — see *As built*.
 - **Progress visibility.** A twenty-argument ingestion is minutes of work; the human should see it
   progress and be able to stop it. Layer 3/4, once the loop exists.
 - **Very large sources.** Nothing bounds the size. A 900-page reference work may want the "consult,

@@ -1,6 +1,6 @@
 """The shipped skills: where they live, how one is adopted, and how a broken one is reported.
 
-Eight starter skills ship as package data under ``pkb/agents/skills/<name>/SKILL.md`` (SK-1). They
+Ten starter skills ship as package data under ``pkb/agents/skills/<name>/SKILL.md`` (SK-1). They
 are **mounted**, not seeded: the runtime routes ``/skills/`` at :func:`packaged_skills_root` and
 puts it first in every agent's skill source list, so an untouched shipped skill is whatever the
 installed version says (SK-3, RT-6, RT-17).
@@ -56,6 +56,8 @@ _PACKAGE: Final = "pkb.agents"
 DEFAULT_SKILL_NAMES: Final[tuple[str, ...]] = (
     "conflict-detection",
     "discovery",
+    "ingest-book",
+    "ingest-paper",
     "ingestion-classification",
     "research",
     "sub-topic-proposal",
@@ -63,7 +65,12 @@ DEFAULT_SKILL_NAMES: Final[tuple[str, ...]] = (
     "tag-proposal",
     "voice",
 )
-"""The eight starter skills (SK-1), in directory-listing order.
+"""The ten starter skills (SK-1), in directory-listing order.
+
+Eight until the large-source ingestion design landed; ``ingest-book`` and ``ingest-paper`` are the
+two it adds, and they move with this constant rather than after it. A skill directory shipped
+without its name here is package data no expert's prompt ever reaches, and a name here without a
+directory makes :func:`adopt_skill` fail on a skill the model can already see.
 
 README §2.4's "others as needed (e.g. interviewing)" is deliberately deferred. Names are singular
 and effectively permanent: renaming one after a human has adopted it breaks the override link
@@ -81,7 +88,7 @@ moment your copy replaces this text and later shipped improvements no longer rea
 copy brings this one back."""
 """The shared closing footer every shipped body ends with (SK-12).
 
-Kept here rather than only in the files so the suite can assert all eight carry it byte-for-byte —
+Kept here rather than only in the files so the suite can assert all ten carry it byte-for-byte —
 a footer that drifts per skill is how "the human is expected to rewrite this" quietly stops being
 said. Plain prose on purpose: the audience is the person rewriting the skill, not a programmer.
 """
@@ -135,7 +142,7 @@ class AdoptResult:
 
 @lru_cache(maxsize=1)
 def packaged_skills_root() -> Path:
-    """The directory holding the eight shipped skills, as a real filesystem path (SK-3, RT-6).
+    """The directory holding the ten shipped skills, as a real filesystem path (SK-3, RT-6).
 
     Resolved through :mod:`importlib.resources` so it works from an editable checkout and from an
     installed wheel alike. The runtime mounts the result read-only at ``/skills/`` and passes it as

@@ -1,4 +1,4 @@
-"""The eight shipped skills, tested as package data (SK-1 … SK-18).
+"""The ten shipped skills, tested as package data (SK-1 … SK-18).
 
 Skill *quality* is not testable without a model (SK-18), so nothing here asserts what a skill makes
 an agent do. What is testable is everything that decides whether a skill loads at all, whether it
@@ -44,7 +44,7 @@ from tests.agents.conftest import TODAY
 SKILL_FILE = "SKILL.md"
 
 APPROVAL_HEADING = "## The approval gate"
-"""Every shipped body carries this section (SK-11). One shared heading rather than eight wordings,
+"""Every shipped body carries this section (SK-11). One shared heading rather than ten wordings,
 so "does this skill say where it stops?" is a grep rather than a reading."""
 
 _DEEPAGENTS_KEYS = frozenset({"name", "description", "license", "compatibility"})
@@ -78,7 +78,7 @@ def _sentences(text: str) -> list[str]:
 
 @pytest.fixture(params=DEFAULT_SKILL_NAMES)
 def skill(request: pytest.FixtureRequest) -> str:
-    """Every rule below that is per-skill runs eight times, named after the skill that failed."""
+    """Every rule below that is per-skill runs ten times, named after the skill that failed."""
     return str(request.param)
 
 
@@ -87,13 +87,21 @@ def skill(request: pytest.FixtureRequest) -> str:
 # --------------------------------------------------------------------------------------
 
 
-def test_ships_exactly_the_eight_starter_skills_sk1() -> None:
-    """SK-1: eight skills, one directory each, and the constant matches what is on disk."""
+def test_ships_exactly_the_ten_starter_skills_sk1() -> None:
+    """SK-1: ten skills, one directory each, and the constant matches what is on disk.
+
+    Eight until large-source ingestion landed. ``ingest-book`` and ``ingest-paper`` are pinned here
+    for the same reason as the other eight: a directory without the constant is package data no
+    expert's prompt reaches, and a constant without the directory is a name the model can ask to
+    adopt and never get.
+    """
     assert set(DEFAULT_SKILL_NAMES) == {
         "summarization",
         "conflict-detection",
         "tag-proposal",
         "ingestion-classification",
+        "ingest-book",
+        "ingest-paper",
         "sub-topic-proposal",
         "voice",
         "discovery",
@@ -191,6 +199,8 @@ _GATE_PHRASES = {
     "conflict-detection": "conflict-resolution gate",
     "tag-proposal": "new-tag gate",
     "ingestion-classification": "show-before-write step",
+    "ingest-book": "re-ingestion gate",
+    "ingest-paper": "re-ingestion gate",
     "sub-topic-proposal": "Creating a sub-topic pauses",
     "voice": "pauses",
     "discovery": "hand-off",
@@ -447,3 +457,72 @@ def test_each_topic_resolves_its_own_voice_sk16(kb: Path) -> None:
     assert "Dates, sizes" not in resolve_skills(kb, kb / "Cooking")["voice"].read_text(
         encoding="utf-8"
     ), "the Trading voice leaked into Cooking"
+
+
+# --------------------------------------------------------------------------------------
+# The two extraction skills — the judgement large-source ingestion needs written down
+# --------------------------------------------------------------------------------------
+
+
+def test_ingest_book_carries_the_source_structured_shape_sk1() -> None:
+    """`ingest-book` groups arguments under the chapter that introduced them (LS-10, LS-2).
+
+    The chapter heading is the anchor a re-ingestion matches on — chapter 3 is chapter 3 on every
+    reading — so a body that described a flat list of arguments would leave reconciliation with no
+    stable key and quietly reintroduce the identity problem one-file-per-source exists to avoid.
+    """
+    body = _flat(_body("ingest-book"))
+    assert "## Across the book" in _body("ingest-book"), "no section for the ideas no chapter owns"
+    assert "one bullet per argument, not one per chapter" in body, "arguments are argument-scoped"
+    assert "you do not decide when the reading is finished" in body, (
+        "the loop drives the reading; a body that lets the model judge its own progress is the "
+        "failure this design exists to prevent"
+    )
+
+
+def test_ingest_book_says_an_empty_chapter_is_a_result_sk1() -> None:
+    """The most common failure is a bullet per chapter, produced by an agent that feels obliged.
+
+    A chapter holding nothing for this topic yields nothing, and the body has to say so outright —
+    otherwise the file fills with near-misses and a reader cannot tell which entries are real. It
+    must also keep "read and took nothing" distinct from "never opened": both leave no section, and
+    only one of them means somebody still has to go back.
+    """
+    body = _flat(_body("ingest-book"))
+    assert "A chapter that gives this topic nothing yields nothing" in body
+    assert "Padding is not thoroughness" in body
+    assert "Read and took nothing is not the same as never opened" in body
+    assert "no folder, no stub" in body, "zero insights must leave no trace at all (LS-6)"
+
+
+def test_ingest_paper_carries_the_five_part_skeleton_in_order_sk1() -> None:
+    """`ingest-paper` is question · method · results · limitations · does this apply to me.
+
+    The last part is the one that earns its place: a result is knowledge here only once someone has
+    said whether it applies to this human's circumstances. Order matters as much as presence — the
+    applicability judgement is made against the method and the limitations, so it comes last.
+    """
+    body = _body("ingest-paper")
+    parts = ["## Question", "## Method", "## Results", "## Limitations", "## Does this apply to me"]
+    positions = [body.find(part) for part in parts]
+    assert all(position >= 0 for position in positions), dict(zip(parts, positions, strict=True))
+    assert positions == sorted(positions), "the five parts are out of order"
+    assert body.count("## Does this apply to me") >= 2, (
+        "the applicability judgement needs its own section, not just a line in the skeleton"
+    )
+
+
+def test_ingest_paper_keeps_a_finding_out_of_the_humans_mouth_sk1() -> None:
+    """A paper's claims are what the paper found, never what happened when someone tried it.
+
+    README §1.3 makes notes human-authored. An extraction that writes "we tried this and it worked"
+    manufactures experience the human never had, and "human content wins" stops meaning anything
+    once there is no human side left to win.
+    """
+    body = _flat(_body("ingest-paper"))
+    assert "This file is a reference" in body
+    assert "is the human's to write" in body
+    assert "an argument you are making, not a finding the paper reports" in body, (
+        "the applicability judgement must present itself as a judgement"
+    )
+    assert "One study is one study" in body

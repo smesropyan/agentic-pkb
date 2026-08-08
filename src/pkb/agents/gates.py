@@ -20,6 +20,14 @@ Two properties with teeth:
   the three attempts (MW-14) on something they already said yes to. Labelling the draft lets them
   reject or edit instead.
 
+**Amended 2026-08-07 (large-source ingestion).** RT-31's "no gate on a reference depth file" splits.
+The first write of a ``references/<src>/<src>.md`` is still un-gated, and so is every later write
+that only *adds* to it — that is LS-12's line, and it is what lets a re-ingestion's new arguments
+land unattended. A write that would **remove or alter** a line already in one stops for a human
+(:attr:`GateReason.REFERENCE_REWRITE`), because it replaces an extraction they have already read and
+there is no undo. The test is a diff, not an authorship claim, which is why the same rule covers a
+model's ``write_file``, a human-driven ``edit_file`` and the ingestion loop's own write alike.
+
 Paths arriving at :func:`requires_approval` are already KB-relative POSIX strings. Normalisation is
 ``pkb.agents.paths.to_kb_relative``'s job (RT-8/RT-9) and the ``/kb/`` mount prefix is spelled in
 exactly one module, which is not this one; :class:`GateEnv` carries the normaliser as a field so
@@ -147,6 +155,23 @@ class GateReason(StrEnum):
     EXTENSION_FOLDER = "extension-folder"
     """Minting a new non-structural directory directly under a topic root (RT-28)."""
 
+    REFERENCE_REWRITE = "reference-rewrite"
+    """A write to an existing ``references/<src>/<src>.md`` that would **remove or alter** text
+    already in it (RT-31, amended 2026-08-07 for large-source ingestion).
+
+    RT-31 put no gate on reference depth files, and that was right while a source was written once
+    and never touched again. Re-ingestion (LS-5) makes a second reading of the same source routine,
+    and an un-gated write then overwrites an extraction the human has already read and relied on.
+    So the rule splits, exactly where LS-12 draws the destructiveness line: the **first** write of a
+    source file stays un-gated, and every later write is un-gated too *for as long as it only adds*
+    — a new argument, a new chapter section, another reading's record all land unattended, because
+    nothing is lost. A write that deletes or edits a line that is already there stops for a human,
+    with the whole reconciled file as one proposal rather than one gate per argument.
+
+    Without the split, "human content wins" holds for notes and quietly fails for everything derived
+    from a source, which is most of what a knowledge base accumulates.
+    """
+
     NEW_TAG = "new-tag"
     """The frontmatter introduces a ``topic.*``/``domain.*`` tag no file in the KB carries. Layer 1
     keeps no approved-tag list, so this gate is the only mechanical backing for README §1.5's
@@ -179,6 +204,7 @@ GATE_DECISIONS: Final[Mapping[GateReason, tuple[DecisionType, ...]]] = MappingPr
         GateReason.EXPERT_OVERLOAD: WRITE_DECISIONS,
         GateReason.SKILL_OVERLOAD: WRITE_DECISIONS,
         GateReason.EXTENSION_FOLDER: WRITE_DECISIONS,
+        GateReason.REFERENCE_REWRITE: WRITE_DECISIONS,
         GateReason.NEW_TAG: WRITE_DECISIONS,
         GateReason.STATUS_APPROVED: WRITE_DECISIONS,
         GateReason.HUMAN_CONTENT_EDIT: WRITE_DECISIONS,
@@ -245,8 +271,10 @@ def requires_approval(
     ``snapshot`` supplies the current tree; ``snapshot.root`` is the knowledge-base root.
 
     Returns the first matching :class:`GateReason` in member-declaration order, or ``None`` when
-    the action may proceed unattended. Filing a plain note, writing a reference depth file, and
-    every read return ``None`` — capture must be frictionless (RT-31).
+    the action may proceed unattended. Filing a plain note, writing a **new** reference depth file,
+    adding to an existing one, and every read return ``None`` — capture must be frictionless
+    (RT-31). What does *not* return ``None``, since the 2026-08-07 amendment, is a write that would
+    remove or alter text already in a source file: see :attr:`GateReason.REFERENCE_REWRITE`.
 
     **Two ways this function used to answer "no gate" without deciding anything**, both of which
     put an unapproved write onto one of the three compact approval surfaces, and both of which are
@@ -304,6 +332,13 @@ def requires_approval(
         return GateReason.SKILL_OVERLOAD
     if topic is not None and inner is not None and _mints_extension_folder(topic, inner):
         return GateReason.EXTENSION_FOLDER
+    if (
+        current is not None
+        and proposed is not None
+        and _is_reference_depth_file(inner)
+        and not _extends_body(current, proposed)
+    ):
+        return GateReason.REFERENCE_REWRITE
     if proposed is not None and new_tags(proposed, snapshot):
         return GateReason.NEW_TAG
     if proposed is not None and _is_curated(inner) and _introduces_approved(current, proposed):
@@ -501,13 +536,52 @@ def _mints_extension_folder(topic: _OwningTopic, inner: tuple[str, ...]) -> bool
     )
 
 
+def _is_reference_depth_file(inner: tuple[str, ...] | None) -> bool:
+    """Is this the one file per source — ``references/<src>/<src>.md`` (README §1.2, RT-31)?
+
+    The folder-hosted form is the shape README's tree diagram shows and the only one the ingestion
+    loop writes. The flat ``references/<name>.md`` form is included too, because Layer 1 tolerates it
+    (VA-25 is a *warning*: a URL-only reference has nothing to put in a folder), and a rewrite of one
+    replaces exactly the same kind of text. ``references/summary.md`` is deliberately excluded — it
+    is a breadth file with its own, stronger gate (RT-23), which fires earlier.
+    """
+    if inner is None or not inner or inner[0] != REFERENCES_DIR:
+        return False
+    if len(inner) == 2:
+        return inner[1] != SUMMARY_FILE
+    return len(inner) == 3 and inner[2] == f"{inner[1]}.md"
+
+
+def _extends_body(current: str, proposed: str) -> bool:
+    """Does the proposal keep every existing body line, in order (RT-31 as amended, LS-12)?
+
+    This is the destructiveness test, and it is deliberately a *diff* question rather than a
+    "who wrote it" question. Additive writes — a new argument under an existing chapter, a new
+    chapter, another pass appended to the reading record — land unattended because nothing is lost;
+    a write that removes or edits a line replaces text the human may have read, and arch D6 leaves
+    no undo, so it stops for them.
+
+    Frontmatter is excluded on purpose: a tag, a ``review_note`` or an ``updated`` stamp is how the
+    agent does its ordinary maintenance job, and the two frontmatter changes that *do* matter
+    already have their own gates (RT-25's new tag, RT-26's conflict resolution). This mirrors
+    :func:`_changes_body`, which draws the same line for notes.
+    """
+    before = parse(current).body.splitlines()
+    after = parse(proposed).body.splitlines()
+    opcodes = difflib.SequenceMatcher(a=before, b=after, autojunk=False).get_opcodes()
+    return all(tag in {"equal", "insert"} for tag, *_ in opcodes)
+
+
 def _is_curated(inner: tuple[str, ...] | None) -> bool:
     """Is this a file class the human curates — notes and extension-folder content (RT-24, RT-27)?
 
     Reference depth files are deliberately excluded: README §1.3 makes them AI-generated with human
     curation happening one level up, at ``references/summary.md``, which has its own gate (Q4/C6).
-    The three breadth files are curated too but are caught earlier by
-    :data:`GateReason.BREADTH_APPROVAL`, so they never reach here.
+    They are not therefore un-gated — a *rewrite* of one is caught by
+    :attr:`GateReason.REFERENCE_REWRITE` a few lines earlier, under RT-31 rather than under RT-24,
+    which is the split the large-source-ingestion amendment introduced. The three breadth files are
+    curated too but are caught earlier by :data:`GateReason.BREADTH_APPROVAL`, so they never reach
+    here.
     """
     if not inner or len(inner) < 2:
         return False

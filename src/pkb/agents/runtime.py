@@ -74,6 +74,7 @@ from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.backends.state import StateBackend
+from langchain.chat_models import init_chat_model
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -89,7 +90,17 @@ from pkb.agents.approval import (
     validate_decisions,
 )
 from pkb.agents.events import stream_events
+from pkb.agents.expert import expert_prompt
 from pkb.agents.gates import requires_approval
+from pkb.agents.ingestion import (
+    Asker,
+    IngestionReport,
+    SourceFile,
+    ingest,
+    ingest_tools,
+    model_asker,
+    reference_file_path,
+)
 from pkb.agents.middleware.maintenance import (
     FlushSink,
     KbMaintenanceMiddleware,
@@ -137,14 +148,18 @@ from pkb.contracts import (
     ScanRequest,
     ScanResult,
     ThreadBusyError,
+    UnknownAgentError,
 )
 from pkb.core import regenerate_all
+from pkb.core.models import TopicRecord
 from pkb.core.paths import LIBRARIAN_AGENT_ID
 from pkb.core.scan import scan
+from pkb.sources import StagedSource, find_staged, stage
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from pathlib import Path
 
+    from langchain_core.language_models import BaseChatModel
     from langchain_core.messages import BaseMessage
     from langchain_core.runnables import RunnableConfig
     from langchain_core.tools import BaseTool
@@ -438,10 +453,16 @@ class RuntimeConfig:
     human-approval workflow.
     """
 
-    default_model: str = DEFAULT_MODEL
-    """The model every agent runs on unless :attr:`models` names another (RG-21)."""
+    default_model: str | BaseChatModel = DEFAULT_MODEL
+    """The model every agent runs on unless :attr:`models` names another (RG-21).
 
-    models: Mapping[str, str] = field(default_factory=dict)
+    A deployment configures a spec string; a :class:`~langchain_core.language_models.BaseChatModel`
+    is accepted so a test can drive the whole runtime — including the graph-free ingestion loop,
+    which reaches the model directly rather than through a compiled graph — with one scripted model
+    and no key.
+    """
+
+    models: Mapping[str, str | BaseChatModel] = field(default_factory=dict)
     """Per-agent-id overrides, e.g. ``{"topic/cooking": "ollama:qwen4:32b-thinking"}``."""
 
     fallback_model: str | None = DEFAULT_FALLBACK_MODEL
@@ -535,6 +556,14 @@ class PkbRuntime:
         self._stack: AsyncExitStack | None = None
         self._snapshot: KbSnapshot | None = None
         self._snapshot_lock = threading.Lock()
+        self._reading_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        """One ingestion at a time per ``(agent, source)`` — see :meth:`_reading_lock`."""
+
+        self._staging_lock = asyncio.Lock()
+        """Serializes :func:`pkb.sources.stage` (LS-8). Deliberately *not* the knowledge-base write
+        lock: staging writes only inside ``<kb>/.inbox/``, which no flush and no generator touches,
+        and it can spend thirty seconds on a download — holding the process-wide lock across that
+        would stall every other thread's flush for the duration (RT-52's argument)."""
         self._active: dict[tuple[str, str], str] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._proposals: list[PendingProposal] = []
@@ -924,6 +953,184 @@ class PkbRuntime:
         return await run_scan(self, request)
 
     # ----------------------------------------------------------------------------------
+    # Large-source ingestion (LS-1 … LS-12)
+    # ----------------------------------------------------------------------------------
+
+    async def ingest(
+        self,
+        agent_id: str,
+        origin: str,
+        *,
+        confirm: bool = False,
+        refresh: bool = False,
+        maintain: bool = True,
+        asker: Asker | None = None,
+    ) -> IngestionReport:
+        """Read one source into one topic, section by section (LS-1 … LS-12).
+
+        The workflow, not a graph run — the same shape as the Librarian's routing turn, and for the
+        same reason. A model that decides when a book has been read enough will decide it has, and
+        say so convincingly; a loop in code cannot. :func:`pkb.agents.ingestion.ingest` is where that
+        loop lives; this method supplies it with the four things only the runtime has: the staged
+        source, the expert's own model and prompt, the cached tree the gates read, and the flush.
+
+        **A source already here produces an offer, never a silent re-read or a silent skip
+        (LS-11).** Re-reading a book is expensive and skipping it is surprising, so when the topic
+        already holds a *complete* reading of this origin the method reads nothing and returns a
+        report saying so. An **incomplete** reading is a different case and is resumed without
+        asking: nobody chose to stop at chapter 14, and continuing loses nothing.
+
+        Args:
+            agent_id: The topic expert doing the reading. The Librarian cannot ingest — it holds no
+                write capability (RT-16) and no lens to read through (LB-5).
+            origin: A filesystem path or a URL. Staged into ``<kb>/.inbox/`` (LS-8), extracted if it
+                is binary, and **both are kept** (LS-7).
+            confirm: The human said yes to a re-reading. Only meaningful when a complete reading is
+                already on disk.
+            refresh: Extract the source again rather than reusing the cached extraction (LS-9) —
+                for after an extractor upgrade.
+            maintain: Flush this run's writes here. The tool path passes ``False`` and hands the
+                paths to ``kb_touched`` instead, so the graph's own single flush stamps them
+                (MW-20); a direct caller has no graph and needs this.
+            asker: Overrides how the expert is reached. The default puts one section in front of
+                the agent's configured model with the expert's own system prompt.
+
+        Raises:
+            UnknownAgentError: ``agent_id`` names no topic (RG-13).
+            pkb.sources.SourceError: The source could not be staged or extracted — a scanned PDF, an
+                encrypted one, a URL that would not load. Loud at the start rather than a confident
+                summary of nothing (LS-7).
+        """
+        async with self._reading_lock(agent_id, origin):
+            return await self._ingest(
+                agent_id, origin, confirm=confirm, refresh=refresh, maintain=maintain, asker=asker
+            )
+
+    async def _ingest(
+        self,
+        agent_id: str,
+        origin: str,
+        *,
+        confirm: bool,
+        refresh: bool,
+        maintain: bool,
+        asker: Asker | None,
+    ) -> IngestionReport:
+        """One reading, with the ``(agent, source)`` slot already held. See :meth:`ingest`."""
+        topic = self._topic_for(agent_id)
+        staged, offered = await self._stage(topic, origin, confirm=confirm, refresh=refresh)
+        if staged is None:
+            return IngestionReport(
+                agent_id=agent_id,
+                topic_path=topic.path,
+                origin=origin,
+                slug=offered,
+                path=reference_file_path(topic.path, offered),
+                offered_reingest=True,
+            )
+        report = await ingest(
+            self.kb_root,
+            topic,
+            staged,
+            ask=asker or self._asker(agent_id, topic),
+            snapshot=self.snapshot,
+            today=self.clock(),
+            agent_id=agent_id,
+            lock=self.write_lock,
+        )
+        if maintain and report.touched:
+            await self._maintenance.aflush_pending(list(report.touched))
+        return report
+
+    def _reading_lock(self, agent_id: str, origin: str) -> asyncio.Lock:
+        """One reading of one source into one topic at a time (RT-60, RT-61).
+
+        Narrow on purpose. The knowledge-base write lock cannot serve here: the loop spends most of
+        its life awaiting a model, and RT-52 forbids holding that lock across a model call — an
+        approval on another thread would sit behind a book. But two readings of the *same* source
+        into the *same* topic genuinely race, because each one reads the file, appends to it and
+        writes it back, and the write lock only makes the last step atomic. The loser's whole pass
+        would be silently overwritten, which for a 300-page book is an expensive kind of nothing.
+
+        Keyed on ``(agent, origin)``, so two topics ingesting one book still run concurrently — that
+        is decision G's whole point (LS-4) — and one topic ingesting two books does too.
+        """
+        return self._reading_locks.setdefault((agent_id, origin), asyncio.Lock())
+
+    def _topic_for(self, agent_id: str) -> TopicRecord:
+        """The topic an agent id addresses, or a typed 404 (RG-11, RG-13)."""
+        topic = self._topic_or_none(agent_id)
+        if topic is None:
+            raise UnknownAgentError(f"no topic answers to the id {agent_id!r}")
+        return topic
+
+    def _topic_or_none(self, agent_id: str) -> TopicRecord | None:
+        """The topic record behind an agent id, read off the snapshot Layer 1 produced (RG-2).
+
+        ``None`` for the Librarian — which is not a topic and holds no write capability at all
+        (RT-16, LB-5) — and for an id the current snapshot does not know, which is how
+        :meth:`tools_for` stays silent about a stale catalog entry rather than failing the graph
+        build the registry is in the middle of.
+        """
+        if agent_id == LIBRARIAN_AGENT_ID:
+            return None
+        for record in self.snapshot().topics.values():
+            if record.agent_id == agent_id:
+                return record
+        return None
+
+    async def _stage(
+        self, topic: TopicRecord, origin: str, *, confirm: bool, refresh: bool
+    ) -> tuple[StagedSource | None, str]:
+        """Stage the source, or answer ``(None, slug)`` when the human should be asked (LS-11).
+
+        The "already here?" question is answered from the manifest, before anything is fetched:
+        :func:`pkb.sources.find_staged` reads ``<kb>/.inbox/<slug>/source.json`` and nothing else, so
+        offering a re-ingestion costs no network and no extraction. A source that was never staged
+        cannot have been ingested, which is what makes that check sufficient.
+
+        Staging itself runs off the event loop and under the staging lock rather than the
+        knowledge-base write lock: it writes only inside ``<kb>/.inbox/``, which no flush and no
+        generator touches, and holding the KB lock across a thirty-second download would freeze
+        every other thread's flush for that long (RT-52's argument, applied to I/O rather than to an
+        approval).
+        """
+        known = await asyncio.to_thread(find_staged, self.kb_root, origin)
+        if known is not None and not refresh and not confirm and self._is_read(topic, known.slug):
+            return None, known.slug
+        async with self._staging_lock:
+            staged = await asyncio.to_thread(stage, self.kb_root, origin, refresh=refresh)
+        return staged, staged.slug
+
+    def _is_read(self, topic: TopicRecord, slug: str) -> bool:
+        """Does this topic already hold a *complete* reading of this source (LS-5, LS-11)?
+
+        Complete is the operative word, and the reading record on disk is the only place it is
+        recorded — the file is the resume state, and a second store of progress is a second thing
+        that can be wrong. An interrupted pass therefore resumes silently while a finished one asks.
+        """
+        target = self.kb_root / reference_file_path(topic.path, slug)
+        try:
+            text = target.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return False
+        records = SourceFile.load(text).passes()
+        return bool(records) and records[-1].complete
+
+    def _asker(self, agent_id: str, topic: TopicRecord) -> Asker:
+        """How the expert answers one section: its own model, its own system prompt.
+
+        The prompt is :func:`pkb.agents.expert.expert_prompt` — the non-overridable standards
+        preamble with the topic's ``expert.md`` or the shipped template beneath it (EX-4) — so the
+        lens is the topic's own even though no graph runs. The model is the one the deployment
+        configured for this agent (RG-21); nothing here selects a model, and nothing reads one from
+        the tree.
+        """
+        chosen = self.config.models.get(agent_id, self.config.default_model)
+        model = init_chat_model(chosen) if isinstance(chosen, str) else chosen
+        return model_asker(model, expert_prompt(self.kb_root, topic))
+
+    # ----------------------------------------------------------------------------------
     # Wiring the pieces the factories and the gates need
     # ----------------------------------------------------------------------------------
 
@@ -950,11 +1157,12 @@ class PkbRuntime:
         return reason.value if reason is not None else DEFAULT_REASON
 
     def tools_for(self, agent_id: str) -> Sequence[BaseTool]:
-        """The extra tools one agent carries: ``create_topic`` or ``create_subtopic`` (LB-7, EX-12).
+        """The extra tools one agent carries (LB-7, EX-12, LS-11).
 
-        Passed to the registry as its ``tool_factory``. The expert's tool is genuinely per-topic —
-        it may create sub-topics only under its own root — so one shared instance cannot serve every
-        agent, and the agent id is the only thing that says which topic is being built.
+        Passed to the registry as its ``tool_factory``. Every one of them is genuinely per-agent —
+        ``create_subtopic`` may only build inside its own root, and ``ingest_source`` reads into its
+        own topic — so one shared instance cannot serve every agent, and the agent id is the only
+        thing that says which topic is being written into.
         """
         env = TopicToolEnv(
             kb_root=self.kb_root,
@@ -963,7 +1171,10 @@ class PkbRuntime:
             registry=self,
             clock=self.clock,
         )
-        return topic_tools(env, agent_id)
+        return [
+            *topic_tools(env, agent_id),
+            *ingest_tools(self, agent_id, is_expert=self._topic_or_none(agent_id) is not None),
+        ]
 
     # ----------------------------------------------------------------------------------
     # The Librarian's routing workflow (LB-12 … LB-19)

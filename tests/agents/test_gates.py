@@ -375,7 +375,14 @@ def test_body_edit_gates_and_frontmatter_edit_does_not_rt24(snapshot: KbSnapshot
 
 
 def test_reference_depth_file_is_exempt_from_body_gate_rt24(gated_kb: Path) -> None:
-    """RT-24 covers `notes/` and extension folders only — references are AI-owned (Q4/C6)."""
+    """RT-24 covers `notes/` and extension folders only — references are AI-owned (Q4/C6).
+
+    **Amended 2026-08-07 (large-source ingestion).** The edit still gates, and the *reason* is the
+    whole point of the amendment: not `HUMAN_CONTENT_EDIT`, because a reference is not the human's
+    writing, but `REFERENCE_REWRITE` under RT-31, because a second reading replacing the first
+    overwrites an extraction the human has already read and there is no undo. Before the amendment
+    this asserted `None`, which was right while a source was written once and never touched again.
+    """
     snap = scan(gated_kb)
     assert (
         gate(
@@ -385,7 +392,7 @@ def test_reference_depth_file_is_exempt_from_body_gate_rt24(gated_kb: Path) -> N
             old_string="Sear it hot.",
             new_string="Sear it very hot.",
         )
-        is None
+        is GateReason.REFERENCE_REWRITE
     )
 
 
