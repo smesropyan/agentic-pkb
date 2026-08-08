@@ -39,7 +39,13 @@ from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Footer, Header, Input, Label, ListItem, ListView, Static, Tree
 
 from pkb.clients.sse import Frame
-from pkb.contracts import ApprovalRequest, is_scan_thread
+from pkb.contracts import (
+    ERROR_CODES,
+    ApprovalRequest,
+    StaleInterruptError,
+    ThreadBusyError,
+    is_scan_thread,
+)
 from pkb.tui.client import PkbClient, PkbHttpError, StreamEndedError
 from pkb.tui.modal import ApprovalModal
 from pkb.tui.state import Entry, RunView, offers_from_children, replay
@@ -47,6 +53,16 @@ from pkb.tui.state import Entry, RunView, offers_from_children, replay
 __all__ = ["PkbApp", "main"]
 
 LIBRARIAN: Final = "librarian"
+
+THREAD_BUSY: Final = ERROR_CODES[ThreadBusyError]
+STALE_INTERRUPT: Final = ERROR_CODES[StaleInterruptError]
+"""Read from the seam's table, never spelled here (DC-15, decision P).
+
+The table lives in ``pkb.contracts`` precisely so the daemon, the MCP adapter, this client and step
+5's Telegram adapter cannot each keep a copy. A literal here is a copy: renaming the code in the
+seam would leave these comparisons silently false, and the branch they guard is the one that tells a
+human "the previous turn is still finishing" instead of showing them an error.
+"""
 
 UNTITLED: Final = "Untitled thread"
 """What a ``title is None`` row shows (TU-15).
@@ -88,6 +104,8 @@ class PkbApp(App[None]):
         # is the failure this binding exists to close.
         ("p", "pending", "Needs you"),
         ("n", "new_thread", "New thread"),
+        ("R", "rename", "Rename"),
+        ("P", "proposals", "Proposals"),
         ("c", "cancel", "Cancel run"),
         ("q", "quit", "Quit"),
     ]
@@ -265,7 +283,7 @@ class PkbApp(App[None]):
                     self.approvals.put_nowait(request)
                 self._render()
         except PkbHttpError as exc:
-            if exc.code == "thread_busy":
+            if exc.code == THREAD_BUSY:
                 self._say(BUSY_HINT)  # TU-35: correct behaviour, said as such
                 return
             self._say(f"{exc.code}: {exc.detail}")
@@ -295,7 +313,7 @@ class PkbApp(App[None]):
                 async for frame in self.client.resolve(resolution.thread_id, resolution.body()):
                     self._absorb(frame)
             except PkbHttpError as exc:
-                if exc.code == "stale_interrupt":
+                if exc.code == STALE_INTERRUPT:
                     # Another channel answered it. Do not retry — retrying either spins or applies
                     # answers the human gave to a different write.
                     self._say("another channel answered that approval")
@@ -332,6 +350,64 @@ class PkbApp(App[None]):
             return
         await self.client.cancel(self.view.run_id)
 
+    async def action_rename(self) -> None:
+        """Offered on a ``kind == "user"`` thread only (TU-16).
+
+        A derived thread's title states where it came from and the server refuses a ``PATCH`` on
+        one. Offering a rename the server refuses is a dead control, and a dead control teaches the
+        human to distrust every other one.
+        """
+        thread = self._current_row()
+        if thread is None:
+            return
+        if thread.get("kind") == "routed":
+            self._say("a routed thread's name says where it came from, and is not editable")
+            return
+        composer = self.query_one("#compose", Input)
+        composer.value = f"/rename {thread.get('title') or ''}"
+        composer.focus()
+
+    async def action_proposals(self) -> None:
+        """Writes that needed a human and could not get one (TU-20, TU-21).
+
+        **Not** "what agents wanted to write". The gate table is the same for every channel, and it
+        leaves plain note writes and first-write reference files ungated — so an MCP or scan-
+        originated note lands with no human, no proposal and no entry here. A false belief about
+        coverage is worse than no view at all, so the copy says what this list actually is and
+        points at the thread list for the rest.
+
+        Dismiss only: applying a proposal needs a Layer 2 entry point that does not exist, and a
+        greyed-out "apply" would say "not now" when the truth is "there is nothing to resume".
+        """
+        try:
+            proposals = await self.client.proposals()
+        except PkbHttpError as exc:
+            self._say(f"{exc.code}: {exc.detail}")
+            return
+        pane = self.query_one("#transcript", VerticalScroll)
+        pane.remove_children()
+        pane.mount(
+            Static(
+                "Writes that needed your approval and could not get it.\n"
+                "Applying one is not available yet — dismiss to clear it. Everything an agent filed "
+                "without needing you is in the thread list.",
+                markup=False,
+                classes="hint",
+            )
+        )
+        for proposal in proposals:
+            pane.mount(Static(proposal_line(proposal), markup=False))
+        if not proposals:
+            pane.mount(Static("nothing is waiting on you here", markup=False, classes="hint"))
+        self._say(f"{len(proposals)} proposal(s)")
+
+    def _current_row(self) -> dict[str, Any] | None:
+        listing = self.query_one("#threads", ListView)
+        index = listing.index
+        if index is None or index >= len(self.threads):
+            return None
+        return self.threads[index]
+
     async def action_new_thread(self) -> None:
         if self.selected_agent is None:
             self._say("pick an agent first")
@@ -366,6 +442,20 @@ def thread_label(thread: dict[str, Any]) -> str:
     badge = "● " if thread.get("pending_interrupt_id") else "  "
     kind = " (routed)" if thread.get("kind") == "routed" else ""
     return f"{badge}{name}{kind}"
+
+
+def proposal_line(proposal: dict[str, Any]) -> str:
+    """One proposal row. A ``scan:`` thread is labelled and is **not** a link (TU-20).
+
+    Scan threads are filtered out of every list by rule (RT-58), so a navigation affordance on one
+    is a dead end — and a background maintenance write is not a conversation the human can open.
+    """
+    action = dict(proposal.get("action") or {})
+    path = str(action.get("args", {}).get("file_path", "")) or "(no path)"
+    origin = (
+        " · background maintenance" if is_scan_thread(str(proposal.get("thread_id", ""))) else ""
+    )
+    return f"  {action.get('reason', '?')}  {path}{origin}"
 
 
 def _line(entry: Entry) -> str:

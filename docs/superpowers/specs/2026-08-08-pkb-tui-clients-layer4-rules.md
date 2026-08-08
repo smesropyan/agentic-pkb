@@ -1,8 +1,9 @@
 # PKB TUI + Clients (Layer 4) — Requirements and Rules
 
 **Date**: 2026-08-08
-**Status**: **Designed.** Every package assumption below was **executed** in this repo's venv on
-2026-08-08; no line of `pkb.tui` or `pkb.clients` exists yet. See §2 for the executed evidence and
+**Status**: **Built (2026-08-08).** 1684 tests, ruff, mypy-strict and five import contracts green.
+Every package assumption below was **executed** in this repo's venv on 2026-08-08, before a line was
+written; see §8 for what the build and its suite then found. See §2 for the executed evidence and
 §3 for what the Layer 3 spec says that the built code does not do.
 **Scope**: `pkb.clients` (`approval.py`, `sse.py`) and `pkb.tui` — build-order step 4 of the
 [architecture design](2026-08-06-pkb-architecture-design.md), written against the wire contract in
@@ -610,3 +611,50 @@ pytest -m live   # collects ZERO tests from tests/tui/ and tests/clients/
   (DC-16).
 - **Running the SSE pump outside a Textual worker**, or awaiting a human decision inside it
   (TU-22, TU-23).
+
+---
+
+## 8. As built (2026-08-08)
+
+Built as `pkb/clients/{sse,approval}.py` and `pkb/tui/{client,state,modal,app}.py`, with **147 new
+tests** across `tests/clients/test_{sse,approval}.py` and `tests/tui/test_{client,state,app}.py`.
+The suite is **1684 tests**, and five import contracts hold — the two added here both verified to
+*break* on a planted violation before being trusted.
+
+### What the build found
+
+The grounding was written before any code existed, and every one of its five load-bearing findings
+held up. Two things it could not have known surfaced during the build:
+
+* **`httpx2.EventSource` raises from its iterator, not its constructor.** DC-11's wording implied
+  the naive form fails at construction; `_check_content_type()` actually runs from
+  `__iter__`/`__aiter__`, so it fails on the first frame awaited — later, and harder to attribute to
+  the 204. Corrected in place. The rule is unchanged: check the status code before constructing one.
+* **`sse_starlette.sse.AppStatus.should_exit` is process-global and sticky**, and the sticky part is
+  worse than the grounding measured: clearing that one flag is not enough between servers. A suite
+  spinning one uvicorn per streaming test truncates every run from the second test onward, which
+  reads as a daemon bug and is not one.
+
+### What the suite found
+
+Two source defects, both fixed, both now covered by the test that first demonstrated them as a
+strict xfail:
+
+| | The defect | Why it mattered |
+|---|---|---|
+| **CL-19** | `_decode_action` passed `allowed_decisions` through **verbatim** instead of filtering to the `DecisionType` literal, which is what Layer 2 does on the way out. | The field is typed `tuple[DecisionType, ...]` and a UI builds its controls from it, so an unrecognised string from the wire became **a button the client drew** on an approval the server can only answer with a 400. A decoder that trusts the wire trusts whatever is between it and the daemon. |
+| **DC-15** | `pkb/tui/app.py` spelled `thread_busy` and `stale_interrupt` as bare literals rather than reading `pkb.contracts.ERROR_CODES`. | The table lives in the seam precisely so four consumers cannot each keep a copy (decision P). A rename in the seam would leave these comparisons silently false — and the branch they guard is the one that says *"the previous turn is still finishing"* instead of showing an error for correct behaviour. |
+
+### Deviations, recorded
+
+* **TU-16 and TU-20/TU-21 shipped after the first pass.** The suite reported them as rules with no
+  implementation; a spec ahead of its code is a spec nobody trusts, so the rename affordance and the
+  proposals pane were built rather than deferred. The pane's copy is asserted verbatim, because
+  TU-21 is a rule about *wording*: "what agents wanted to write" would tell a human they had seen
+  everything an agent did, when the same gate table leaves plain notes ungated on every channel.
+* **Thread titles remain deterministic**, inherited from Layer 3 — the TUI renders `None` and `""`
+  differently and never falls back to a first line, which is the whole of what TU-15 asks of it.
+* **`pkb.tui` has no conflict-scan trigger and no conflict inbox** (Q17's default). There is no
+  route: the scan worker is a daemon timer, `scan:` threads are excluded from every list by rule,
+  and none of the thirteen routes exposes `run_scan`. Adding one needs an `RO-*` id and a Layer 3
+  amendment, not a TUI feature.

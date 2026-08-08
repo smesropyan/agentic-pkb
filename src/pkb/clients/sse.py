@@ -30,7 +30,7 @@ import dataclasses
 import json
 import logging
 from collections.abc import Mapping
-from typing import Any, Final
+from typing import Any, Final, get_args
 
 from pkb.contracts import (
     EVENT_NAMES,
@@ -38,6 +38,7 @@ from pkb.contracts import (
     ActionView,
     AgentEvent,
     ApprovalRequest,
+    DecisionType,
     InterruptEvent,
     RunEnd,
     RunError,
@@ -162,12 +163,28 @@ def decode_request(raw: Mapping[str, Any]) -> ApprovalRequest:
     )
 
 
+_DECISION_TYPES: Final[frozenset[str]] = frozenset(get_args(DecisionType))
+"""The closed vocabulary. Anything else on the wire is dropped rather than trusted — see below."""
+
+
 def _decode_action(raw: Mapping[str, Any]) -> ActionView:
+    """One :class:`~pkb.contracts.ActionView`, with its decisions **filtered to the literal** (CL-19).
+
+    ``allowed_decisions`` is typed ``tuple[DecisionType, ...]`` and is what a UI builds its controls
+    from. Passing the wire through verbatim puts an arbitrary string into that typed slot, and the
+    client then draws a button for it — on an approval the server can only answer with a 400 the
+    human caused by pressing a control the client invented. Layer 2 filters on the way out for the
+    same reason; this is the mirror of it, and a decoder that trusts the wire is a decoder that
+    trusts whatever is between it and the daemon.
+    """
+    decisions = tuple(
+        value for value in raw.get("allowed_decisions", ()) if value in _DECISION_TYPES
+    )
     return ActionView(
         tool=str(raw["tool"]),
         args={str(k): str(v) for k, v in dict(raw.get("args", {})).items()},
         description=str(raw.get("description", "")),
-        allowed_decisions=tuple(raw.get("allowed_decisions", ())),
+        allowed_decisions=decisions,
         reason=str(raw.get("reason", "")),
     )
 
