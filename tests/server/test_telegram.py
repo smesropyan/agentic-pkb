@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -51,9 +52,11 @@ from pkb.contracts import (
     InterruptEvent,
     MessageComplete,
     MessageDelta,
+    MessageView,
     RunEnd,
     RunError,
     RunHandle,
+    StaleInterruptError,
     SubagentEnd,
     SubagentStart,
     ThreadBusyError,
@@ -66,11 +69,17 @@ from pkb.server.telegram import (
     TelegramAdapter,
     TelegramConfig,
     callback_data,
+    fit,
     keyboard_for,
     split_message,
     utf16_len,
 )
-from pkb.server.telegram_api import CALLBACK_DATA_LIMIT, MESSAGE_LIMIT, TelegramError
+from pkb.server.telegram_api import (
+    CALLBACK_DATA_LIMIT,
+    MESSAGE_LIMIT,
+    POLL_TIMEOUT,
+    TelegramError,
+)
 from pkb.service import RunSubscription, Thread, ThreadDetail
 from pkb.service.telegram import PROMPTS_TABLE, SqliteTelegramStore
 from tests.server.stub import AGENTS, COOKING, GRILLING, LIBRARIAN, NOW, StubService
@@ -121,13 +130,40 @@ class FakeBotApi:
     journal: Journal = field(default_factory=list)
     next_message_id: int = 1000
     rejected: list[str] = field(default_factory=list)
+    pending: list[Mapping[str, Any]] = field(default_factory=list)
+    """What Telegram is still holding. Confirmed the way the real API confirms: by the next offset."""
+
+    errors: list[BaseException | None] = field(default_factory=list)
+    """Scripted refusals, one per ``get_updates`` call, popped in order (a ``None`` slot is a 200)."""
+
+    send_error: BaseException | None = None
+    """What every ``sendMessage`` raises, for the outbound failures nothing else can observe."""
 
     async def get_me(self) -> Mapping[str, Any]:
         return {"id": 1, "username": "pkb_test_bot"}
 
-    async def get_updates(self, offset: int | None) -> Sequence[Mapping[str, Any]]:
-        self.journal.append(("get_updates", {"offset": offset}))
-        return []
+    async def get_updates(
+        self, offset: int | None, *, timeout: int = POLL_TIMEOUT
+    ) -> Sequence[Mapping[str, Any]]:
+        """``offset=-1`` returns the **last** update only, exactly as Telegram documents it.
+
+        The negative form is how a cold start learns where the backlog ends without receiving it,
+        so a fake that ignored the sign would let TG-30's whole mechanism be a no-op and still pass.
+        """
+        # A real poll is a network round trip that suspends; a fake that never suspends turns the
+        # adapter's `while True` into a tight loop that starves the test driving it.
+        await asyncio.sleep(0)
+        self.journal.append(("get_updates", {"offset": offset, "timeout": timeout}))
+        if self.errors:
+            error = self.errors.pop(0)
+            if error is not None:
+                raise error
+        if offset is not None and offset < 0:
+            return self.pending[offset:]
+        if offset is not None:
+            self.pending = [u for u in self.pending if int(u["update_id"]) >= offset]
+        held, self.pending = list(self.pending), []
+        return held
 
     async def send_message(
         self,
@@ -136,6 +172,8 @@ class FakeBotApi:
         *,
         keyboard: Sequence[Sequence[Mapping[str, str]]] | None = None,
     ) -> Mapping[str, Any]:
+        if self.send_error is not None:
+            raise self.send_error
         self._check_text("sendMessage", text)
         self._check_keyboard(keyboard)
         self.journal.append(("send_message", {"chat_id": chat_id, "text": text, "kb": keyboard}))
@@ -154,14 +192,22 @@ class FakeBotApi:
         self.next_message_id += 1
         return {"message_id": self.next_message_id}
 
-    async def answer_callback(self, callback_id: str, text: str = "") -> None:
-        self.journal.append(("answer_callback", {"id": callback_id, "text": text}))
+    async def answer_callback(
+        self, callback_id: str, text: str = "", *, show_alert: bool = False
+    ) -> None:
+        self.journal.append(
+            ("answer_callback", {"id": callback_id, "text": text, "alert": show_alert})
+        )
 
     async def edit_message(self, chat_id: int, message_id: int, text: str) -> None:
         self._check_text("editMessageText", text)
         self.journal.append(
             ("edit_message", {"chat_id": chat_id, "message_id": message_id, "text": text})
         )
+
+    async def clear_keyboard(self, chat_id: int, message_id: int) -> None:
+        """``editMessageReplyMarkup`` — the buttons go, the text the human read stays (TG-63)."""
+        self.journal.append(("clear_keyboard", {"chat_id": chat_id, "message_id": message_id}))
 
     # -- what the tests read ----------------------------------------------------------
 
@@ -193,8 +239,16 @@ class FakeBotApi:
         return self.of("edit_message")
 
     @property
+    def cleared(self) -> list[dict[str, Any]]:
+        return self.of("clear_keyboard")
+
+    @property
     def answers(self) -> list[dict[str, Any]]:
         return self.of("answer_callback")
+
+    @property
+    def polls(self) -> list[dict[str, Any]]:
+        return self.of("get_updates")
 
     # -- the two limits ---------------------------------------------------------------
 
@@ -210,6 +264,28 @@ class FakeBotApi:
                 if not 1 <= len(data.encode()) <= CALLBACK_DATA_LIMIT:
                     self.rejected.append(data)
                     raise TelegramError("sendMessage", 400, "Bad Request: BUTTON_DATA_INVALID")
+
+
+@dataclass
+class FakeHealth:
+    """The ``telegram`` block of ``/health``, reduced to what the adapter is allowed to touch.
+
+    Layer 3 owns the real :class:`~pkb.server.health.SubsystemState`; the adapter only ever stamps
+    connectivity (TG-12) and outbound failures (TG-13) onto it, and ``restarts`` is here to be
+    asserted **unchanged** — a failed send is not the subsystem being down, and the day it starts
+    incrementing that counter is the day the number arch §8 asks to be visible becomes noise.
+    """
+
+    last_error: str | None = None
+    polls_ok: int = 0
+    send_errors: list[str] = field(default_factory=list)
+    restarts: int = 0
+
+    def poll_ok(self) -> None:
+        self.polls_ok += 1
+
+    def send_failed(self, exc: BaseException) -> None:
+        self.send_errors.append(f"{type(exc).__name__}: {exc}")
 
 
 class ScriptedService(StubService):
@@ -522,19 +598,24 @@ def local_subscription(events: Sequence[AgentEvent], *, closes: list[int]) -> Ru
 
 
 @pytest.mark.asyncio
-async def test_an_unmapped_chat_learns_its_own_id_and_no_agent_id_tg9(
+async def test_an_unmapped_chat_learns_its_own_id_and_no_agent_id_tg21(
     service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
 ) -> None:
-    """A stranger is told the one datum they cannot get elsewhere, and nothing about the tree.
+    """The owner is told the one datum they cannot get elsewhere, and nothing about the tree.
 
     A bot's username is discoverable, so anybody can produce an unmapped chat — and the **topic
     titles are the sensitive part** of a private knowledge base. A reply that listed the agents
     would hand the shape of somebody's notes to whoever typed ``/start``. The chat id is worthless
     to a stranger and is the only thing the owner cannot look up any other way.
+
+    The sender is an **owner** because TG-20 now runs the allow-list before the mapping: a stranger
+    gets silence on every path (see ``..._tg20`` below), and the only person who ever needs this
+    reply is the owner opening a chat they have not mapped yet. The rule id in this test's name was
+    ``tg9`` — the 409 rule — which is a different rule about a different failure.
     """
     bot = adapter(service, store, api)
 
-    await deliver(bot, message_update(chat_id=STRANGER_CHAT, sender=STRANGER))
+    await deliver(bot, message_update(chat_id=STRANGER_CHAT, sender=OWNER))
 
     assert len(api.sent) == 1
     reply = api.texts[0]
@@ -546,7 +627,7 @@ async def test_an_unmapped_chat_learns_its_own_id_and_no_agent_id_tg9(
 
 
 @pytest.mark.asyncio
-async def test_an_unmapped_chat_runs_nothing_and_says_the_message_was_dropped_tg10(
+async def test_an_unmapped_chat_runs_nothing_and_says_the_message_was_dropped_tg22(
     service: ScriptedService,
     store: SqliteTelegramStore,
     api: FakeBotApi,
@@ -561,7 +642,7 @@ async def test_an_unmapped_chat_runs_nothing_and_says_the_message_was_dropped_tg
     """
     bot = adapter(service, store, api)
 
-    await deliver(bot, message_update(chat_id=STRANGER_CHAT, sender=STRANGER, text="steak notes"))
+    await deliver(bot, message_update(chat_id=STRANGER_CHAT, sender=OWNER, text="steak notes"))
 
     assert service.calls == []
     assert await store.bound_thread(STRANGER_CHAT) is None
@@ -575,24 +656,33 @@ async def test_an_unmapped_chat_runs_nothing_and_says_the_message_was_dropped_tg
 
 
 @pytest.mark.asyncio
-async def test_a_stranger_in_a_mapped_chat_runs_nothing_decision_x(
-    service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
+async def test_three_updates_leave_one_run_and_two_silences_tg20(
+    service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi, journal: Journal
 ) -> None:
-    """The mapping says *which expert*; it never says *who may write*.
+    """The rule's own table: mapped+allowed runs; mapped+other and unmapped+other say **nothing**.
 
     TG-1's mapping was ruled about addressing. A chat id is a guessable integer and a bot token is a
     public inbound path into a process with no authentication that writes to a tree with no undo, so
     the sender is checked independently of the chat — one comparison that cannot be retrofitted
     after a token leaks.
+
+    *Silently* is the part that was wrong and the part that matters. The build replied "this
+    knowledge base does not accept messages from this account" to a stranger in a mapped chat, and
+    the full unmapped explanation to a stranger anywhere else — a guaranteed response on every
+    path, which is both a reply amplifier against the owner's per-chat send budget and an existence
+    oracle for anyone who guesses a chat id. The previous version of this test asserted
+    ``len(api.sent) == 1`` and ``"does not accept" in api.texts[0]``: it encoded the defect.
     """
     bot = adapter(service, store, api)
 
-    await deliver(bot, message_update(sender=STRANGER, text="file this under Cooking"))
+    await deliver(bot, message_update(1, text="file this under Cooking"))
+    sent_after_owner = len(api.sent)
+    await deliver(bot, message_update(2, sender=STRANGER, text="and this"))
+    await deliver(bot, message_update(3, chat_id=STRANGER_CHAT, sender=STRANGER, text="and this"))
 
-    assert service.calls == []
-    assert await store.bound_thread(CHAT) is None
-    assert len(api.sent) == 1
-    assert "does not accept" in api.texts[0]
+    assert kinds(journal).count("start_run") == 1
+    assert len(api.sent) == sent_after_owner, "the second and third updates produced no reply"
+    assert await store.bound_thread(STRANGER_CHAT) is None
 
 
 @pytest.mark.asyncio
@@ -620,26 +710,26 @@ async def test_a_stranger_pressing_a_button_resolves_nothing_decision_x(
 
     assert "resume" not in kinds(journal)
     assert (await prompt_rows(connection))[0]["resolved"] is False
-    assert api.edits == [], "a stranger's press must not clear the owner's keyboard either"
+    assert api.edits == [], "a stranger's press must not rewrite the owner's approval either"
+    assert api.cleared == [], "a stranger's press must not clear the owner's keyboard either"
 
 
-@pytest.mark.xfail(
-    reason="TG-20: a non-allowed callback gets no refusal — answer_callback is sent with empty "
-    "text, so the button simply goes quiet and the presser learns nothing",
-    strict=True,
-)
 @pytest.mark.asyncio
 async def test_a_stranger_pressing_a_button_is_told_why_decision_x(
     service: ScriptedService,
     store: SqliteTelegramStore,
     api: FakeBotApi,
     connection: aiosqlite.Connection,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Silence and success look identical on a phone, so a refused press has to say it was refused.
 
     Telegram shows a spinner until the query is answered and then shows whatever text came back —
     nothing if it was empty. A stranger who presses approve and sees the spinner stop has every
-    reason to believe the write happened, and the owner is never told somebody tried.
+    reason to believe the write happened, and the owner is never told somebody tried. An **alert**
+    rather than a toast, because a toast is missable and what is being refused is an irreversible
+    write; and a log line at warning, because the allow-list is this system's only authentication
+    boundary and an attempt against it is the one event its operator has to see (decision X).
     """
     await bind(service, store)
     bot = adapter(service, store, api)
@@ -647,13 +737,16 @@ async def test_a_stranger_pressing_a_button_is_told_why_decision_x(
     await bot._post_approval(CHAT, approval())
     handle = (await handles(connection))[0]
 
-    await press(bot, handle, 0, "a", sender=STRANGER)
+    with caplog.at_level(logging.WARNING, logger="pkb.server.telegram"):
+        await press(bot, handle, 0, "a", sender=STRANGER)
 
     assert api.answers[-1]["text"] != ""
+    assert api.answers[-1]["alert"] is True, "a toast is missed; this one has to be acknowledged"
+    assert str(STRANGER) in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_a_group_chat_runs_nothing_tg8(
+async def test_a_group_chat_runs_nothing_tg19(
     service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
 ) -> None:
     """A group is many senders with no identity check, in front of a knowledge base with no undo.
@@ -901,6 +994,13 @@ async def test_the_subscription_is_closed_even_when_the_stream_raises_tg52(
     Closing detaches and never cancels (AP-7), so the cost of forgetting it is not a dead run — it
     is a subscriber that is never removed and a hub that is never freed, in a daemon whose whole
     value proposition is staying up for weeks.
+
+    The exception is **not** asserted to escape any more, and that change is TG-51's: a stream that
+    raises has closed without a terminal frame just as surely as one that stopped, so it takes the
+    same "outcome unknown" branch. Letting it propagate meant it landed in the poll loop's blanket
+    suppression, and the chat was left holding half a reply with no re-sync and no notice —
+    indistinguishable from success, on a turn that may already have written. This test pinned that
+    propagation, so it pinned the gap; ``closes == [1]`` is the part that was about TG-52.
     """
     service = ScriptedService(journal, events=[])
     service.rows[THREAD] = thread_row()
@@ -917,10 +1017,13 @@ async def test_the_subscription_is_closed_even_when_the_stream_raises_tg52(
     )
     bot = adapter(service, store, api)
 
-    with pytest.raises(RuntimeError, match="the hub went away"):
-        await bot._consume(CHAT, subscription)
+    await bot._consume(CHAT, subscription)
+    await drain(bot)
 
     assert closes == [1]
+    assert kinds(journal).count("get_thread") == 1, "one re-sync, exactly as for a clean stop"
+    assert "do not know how it finished" in api.transcript
+    assert "start_run" not in kinds(journal) and "resume" not in kinds(journal)
 
 
 @pytest.mark.asyncio
@@ -1432,7 +1535,11 @@ async def test_every_message_of_an_approval_loses_its_buttons_tg63(
 
     Without removal the human scrolls back a week later, presses approve on a write that already
     happened, and either gets a stale answer (lucky) or answers whatever interrupt is pending now
-    (not lucky). Every message of the approval has to be edited, not just the one that was pressed.
+    (not lucky). Every message of the approval loses its keyboard, not just the one that was
+    pressed — and every one **keeps its text**: this chat is the only surviving record of what was
+    approved, so replacing the description with an outcome line answers "was this answered?" by
+    destroying the answer to "what did I approve?", for a write with no undo. The outcome is a new
+    message instead.
     """
     request = approval(
         actions=(action(description="first write"), action(description="second write"))
@@ -1448,8 +1555,10 @@ async def test_every_message_of_an_approval_loses_its_buttons_tg63(
     await press(bot, handle, 0, "a")
     await press(bot, handle, 1, "a")
 
-    assert len({entry["message_id"] for entry in api.edits}) == 2
-    assert all("answered" in entry["text"] for entry in api.edits)
+    assert len({entry["message_id"] for entry in api.cleared}) == 2
+    assert api.edits == [], "the description the human decided against is not overwritten"
+    assert "first write" in api.transcript and "second write" in api.transcript
+    assert "Answered:" in api.transcript
 
 
 @pytest.mark.asyncio
@@ -1566,11 +1675,6 @@ async def test_an_action_nobody_can_answer_is_a_hand_off_not_an_empty_keyboard_t
     assert "TUI" in api.transcript
 
 
-@pytest.mark.xfail(
-    reason="TG-55: the hand-off message names neither the thread id nor the agent, so the human "
-    "cannot find the parked approval in the TUI it points them at",
-    strict=True,
-)
 @pytest.mark.asyncio
 async def test_the_hand_off_names_the_thread_it_parked_on_tg55(
     service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
@@ -1579,13 +1683,17 @@ async def test_the_hand_off_names_the_thread_it_parked_on_tg55(
 
     A knowledge base has many threads and this approval is now invisible from the phone. Without the
     thread id the message describes a problem the human cannot act on, which is the same outcome as
-    not sending it.
+    not sending it. The agent goes with it, because in a fan-out the parked thread is a delegate's
+    derived id and the agent is what the human recognises.
     """
     bot = adapter(service, store, api)
 
-    await bot._post_approval(CHAT, approval(thread_id=THREAD, actions=(action(allowed=()),)))
+    await bot._post_approval(
+        CHAT, approval(thread_id=THREAD, agent_id=COOKING, actions=(action(allowed=()),))
+    )
 
     assert THREAD in api.transcript
+    assert COOKING in api.transcript
 
 
 def test_callback_data_carries_a_handle_and_fits_the_budget_tg57() -> None:
@@ -1680,12 +1788,6 @@ def test_a_character_budget_is_not_a_telegram_budget_tg44() -> None:
     assert all(utf16_len(part) <= MESSAGE_LIMIT for part in split_message(text))
 
 
-@pytest.mark.xfail(
-    reason="TG-44/TG-45: split_message spends the whole 4096-unit budget, then _send prepends a "
-    "'(1/2)\\n' counter — 4095 + 6 = 4101 units. Telegram 400s it and _pump_outbox suppresses "
-    "TelegramError, so the human silently receives only the second half of their reply",
-    strict=True,
-)
 @pytest.mark.asyncio
 async def test_an_all_emoji_reply_is_sent_within_the_utf16_budget_tg44(
     store: SqliteTelegramStore, api: FakeBotApi, journal: Journal
@@ -1939,3 +2041,1139 @@ async def test_the_preview_never_tells_the_human_to_open_the_tui_for_text_above_
     button_message = api.with_keyboard[0]["text"]
     assert TRUNCATION_MARKER.strip() not in button_message
     assert "full text above" in button_message
+
+
+# --------------------------------------------------------------------------------------
+# § the counter is part of what Telegram measures (TG-44, TG-45)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_reply_that_splits_on_the_boundary_is_sent_inside_the_limit_tg45(
+    store: SqliteTelegramStore, api: FakeBotApi, journal: Journal
+) -> None:
+    """The boundary case is the dangerous one, and it is the *last* part that carries the keyboard.
+
+    A reply whose lines pack flush against 4,096 units produces parts that are exactly the limit;
+    prepending ``(1/2)\\n`` afterwards puts them six units over, Telegram answers ``400 message is
+    too long``, and the pump swallows the error. On an ordinary reply the human silently loses half
+    of it; on an approval the refused message is the one carrying the buttons, so the write parks
+    with nobody able to answer it. Measured as sent, counter included.
+    """
+    line = "y" * 63 + "\n"  # 64 UTF-16 units, so 64 lines are exactly one full message
+    reply = line * 128
+    assert utf16_len(reply) == 2 * MESSAGE_LIMIT
+    service = ScriptedService(journal, events=reply_script(reply))
+    await bind(service, store)
+    bot = adapter(service, store, api)
+
+    await deliver(bot, message_update())
+
+    assert api.rejected == [], "Telegram refused a send, so the human received nothing"
+    assert len(api.sent) > 1
+    assert all(utf16_len(text) <= MESSAGE_LIMIT for text in api.texts)
+    bodies = [text.split("\n", 1)[1] for text in api.texts]
+    assert "".join(bodies) == reply, "the counter is the only thing added, and nothing is dropped"
+
+
+# --------------------------------------------------------------------------------------
+# § where the first poll starts (TG-29, TG-30)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_cold_ledger_discards_the_backlog_instead_of_running_it_tg30(
+    service: ScriptedService,
+    store: SqliteTelegramStore,
+    api: FakeBotApi,
+    journal: Journal,
+) -> None:
+    """A daemon that was down for a day must not come back and file a day of chat.
+
+    Telegram holds unconfirmed updates for 24 hours, so ``getUpdates(None)`` on a fresh ledger
+    returns all of it — and every one would be claimed *and dispatched*, running as a turn against a
+    tree with no undo. The human's model of a first start is "I turned it on", not "I have forty
+    messages to file", and the second run of a message is not even the same run: the model's output
+    differs, so they end up with two versions of a note they wrote once.
+    """
+    api.pending = [message_update(n, text=f"note {n}") for n in range(1, 41)]
+    bot = adapter(service, store, api)
+
+    offset = await bot._start_offset()
+
+    assert offset == 41, "the first real poll starts past everything Telegram was holding"
+    assert api.polls == [{"offset": -1, "timeout": 0}], "one probe, and never a long poll"
+    assert "start_run" not in kinds(journal)
+    assert "create_thread" not in kinds(journal)
+    assert await store.next_offset() == 41, "the discard survives the next restart"
+    assert [entry["chat_id"] for entry in api.sent] == [CHAT], "one notice per mapped chat"
+    assert "not filed" in api.texts[0]
+
+
+@pytest.mark.asyncio
+async def test_a_warm_ledger_resumes_and_drains_nothing_tg29(
+    service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """The backlog drain is for a *cold* ledger only; a warm one must not lose a message.
+
+    ``MAX(update_id) + 1`` is the at-most-once guarantee — a restart mid-turn resumes exactly after
+    what it recorded. Draining here would silently discard messages that arrived during the restart,
+    which is the same lost note the cold-start rule is willing to accept only because there is no
+    record that anything was ever expected.
+    """
+    await store.claim(100, CHAT, "message")
+    await store.dispatched(100)
+    bot = adapter(service, store, api)
+
+    offset = await bot._start_offset()
+
+    assert offset == 101
+    assert api.polls == [], "a warm ledger asks Telegram nothing before it starts polling"
+    assert api.sent == [], "and it does not tell anybody their messages were dropped"
+
+
+# --------------------------------------------------------------------------------------
+# § one poller per token (TG-9)
+# --------------------------------------------------------------------------------------
+
+
+async def spin(predicate: Any, *, ticks: int = 2000) -> None:
+    """Let the event loop run until ``predicate()`` holds, or give up."""
+    for _ in range(ticks):
+        if predicate():
+            return
+        await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_a_second_consumer_of_the_token_stops_the_poll_and_names_both_causes_tg9(
+    service: ScriptedService,
+    store: SqliteTelegramStore,
+    api: FakeBotApi,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``409`` is neither a blip nor a crash: it says somebody else is already holding the poll.
+
+    Telegram permits one ``getUpdates`` per token. Retrying spins against a condition no retry can
+    fix; raising restarts the task, and a restart against a *leaked* poller — the TG-7 failure —
+    adds a third, so the harder the supervisor tries the worse it gets. The two causes are named
+    because they need opposite fixes: stop the other daemon, or restart this one cleanly.
+    """
+    await store.claim(1, CHAT, "message")
+    await store.dispatched(1)
+    bot = adapter(service, store, api)
+    bot.conflict_interval = 0
+    bot.health = FakeHealth()
+    api.errors = [TelegramError("getUpdates", 409, "Conflict: terminated by other getUpdates")]
+
+    with caplog.at_level(logging.ERROR, logger="pkb.server.telegram"):
+        task = asyncio.create_task(bot._poll())
+        await spin(lambda: bool(caplog.records))
+        alive = not task.done()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    assert alive, "a 409 must not crash the task into the restart that adds another poller"
+    assert "second daemon" in caplog.text
+    assert "previous generation" in caplog.text
+    assert bot.health.last_error is not None and "second daemon" in bot.health.last_error
+    assert "000:fake" not in caplog.text, "the token never reaches a log record"
+
+
+@pytest.mark.asyncio
+async def test_polling_resumes_when_the_other_poller_goes_away_tg9(
+    service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi, journal: Journal
+) -> None:
+    """Stopping is not giving up — the human's other daemon gets killed and this one must recover.
+
+    The re-probe is on a slow fixed interval rather than a backoff, because a backoff is how six
+    blips leave the bot at a permanent delay for the life of the process (the defect ``_supervise``
+    already has), and because nothing about a 409 gets better by waiting longer each time.
+    """
+    await store.claim(1, CHAT, "message")
+    await store.dispatched(1)
+    bot = adapter(service, store, api)
+    bot.conflict_interval = 0
+    api.errors = [TelegramError("getUpdates", 409, "Conflict: terminated by other getUpdates")]
+    api.pending = [message_update(2, text="the note that was waiting")]
+
+    task = asyncio.create_task(bot._poll())
+    await spin(lambda: "start_run" in kinds(journal))
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    assert "start_run" in kinds(journal), "a later 200 resumes the poll it stopped"
+
+
+# --------------------------------------------------------------------------------------
+# § the mapping is validated, not trusted, and never fatal (TG-18)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_chat_mapped_to_a_missing_agent_is_answered_not_routed_tg18(
+    service: ScriptedService,
+    store: SqliteTelegramStore,
+    api: FakeBotApi,
+    journal: Journal,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A topic can be renamed under a running config, so a stale entry is an ordinary Tuesday.
+
+    Fatal-on-startup means one stale line takes the daemon down — every other chat, every parked
+    approval and the TUI with it. Routing it anyway is the mis-file TG-1 was ruled to stop. So the
+    entry is reported and that chat is answered exactly like an unmapped one, while the chats that
+    are still correct keep working.
+    """
+    bot = adapter(service, store, api, chats={CHAT: COOKING, OTHER_CHAT: "topic/nope"})
+
+    with caplog.at_level(logging.ERROR, logger="pkb.server.telegram"):
+        bot.check_mapping()
+
+    assert "topic/nope" in caplog.text and str(OTHER_CHAT) in caplog.text
+
+    await deliver(bot, message_update(chat_id=OTHER_CHAT, text="file this"))
+
+    assert "start_run" not in kinds(journal)
+    assert str(OTHER_CHAT) in api.texts[0], "answered like an unmapped chat (TG-2)"
+
+    await deliver(bot, message_update(update_id=2, text="and this"))
+
+    assert "start_run" in kinds(journal), "one typo must not stop the other chats working"
+
+
+# --------------------------------------------------------------------------------------
+# § the unmapped reply is rate limited (TG-23)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ten_updates_from_one_unknown_chat_produce_one_reply_tg23(
+    service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """Anyone who finds the bot can send it a hundred messages; answering each one costs the owner.
+
+    Telegram rate limits per chat and per bot, so a bot that replies to a flood spends the budget
+    its *owner's* approval keyboards need — the queue that goes slow is the one carrying an
+    irreversible write to a human who is holding their phone.
+    """
+    bot = adapter(service, store, api)
+
+    for update_id in range(1, 11):
+        await deliver(bot, message_update(update_id, chat_id=STRANGER_CHAT, sender=OWNER))
+
+    assert len(api.sent) == 1
+    assert str(STRANGER_CHAT) in api.texts[0]
+
+
+@pytest.mark.asyncio
+async def test_the_window_is_per_chat_so_a_second_chat_is_still_answered_tg23(
+    service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """Silencing a chat that has never been answered would hide the one thing it needs to be told.
+
+    The reply carries the chat id, which is the only datum the owner cannot look up any other way —
+    so a chat the bot has not yet explained itself to gets its explanation, whatever another chat
+    has been doing.
+    """
+    bot = adapter(service, store, api)
+
+    await deliver(bot, message_update(1, chat_id=STRANGER_CHAT, sender=OWNER))
+    await deliver(bot, message_update(2, chat_id=STRANGER_CHAT, sender=OWNER))
+    await deliver(bot, message_update(3, chat_id=OTHER_CHAT, sender=OWNER))
+
+    assert [entry["chat_id"] for entry in api.sent] == [STRANGER_CHAT, OTHER_CHAT]
+
+
+# --------------------------------------------------------------------------------------
+# § a stale press is an alert, not a toast (TG-62)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_press_on_an_answered_approval_raises_an_alert_tg62(
+    service: ScriptedService,
+    store: SqliteTelegramStore,
+    api: FakeBotApi,
+    connection: aiosqlite.Connection,
+    journal: Journal,
+) -> None:
+    """Two channels on one approval is the design; the phone finding out is the part that can fail.
+
+    A toast on a phone is missed — it appears over the keyboard for a second while the human is
+    already scrolling — and the state they then believe they are in is wrong: they think their tap
+    landed. An alert has to be dismissed, which is the point, because the decision they just tried
+    to make was applied by somebody else to a write with no undo.
+    """
+    await bind(service, store)
+    service.pending = approval(interrupt_id="i-live")
+    bot = adapter(service, store, api)
+    await bot._post_approval(CHAT, approval(interrupt_id="i-live"))
+    handle = (await handles(connection))[0]
+    await press(bot, handle, 0, "a")  # answered here
+    journal.clear()
+
+    await press(bot, handle, 0, "a", query_id="cbq-2")  # ... and pressed again a week later
+
+    assert api.answers[-1]["alert"] is True
+    assert api.answers[-1]["text"] != ""
+    assert "resume" not in kinds(journal)
+
+
+# --------------------------------------------------------------------------------------
+# § what the bot tells `/health` (TG-12, TG-13)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reachability_is_a_poll_that_returned_not_the_supervisors_state_tg12(
+    service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """``state == "running"`` is set *before* the first line of this class runs, so it proves nothing.
+
+    Executed against the real supervisor: ``_supervise`` marks the subsystem running before awaiting
+    the task, so a bot with a wrong token shows ``status: ok, restarts: 0`` for the whole first poll
+    and the human debugging it learns nothing. ``last_poll_ok_at`` is the only field that means
+    Telegram answered.
+    """
+    await store.claim(1, CHAT, "message")
+    await store.dispatched(1)
+    bot = adapter(service, store, api)
+    bot.health = FakeHealth()
+
+    task = asyncio.create_task(bot._poll())
+    await spin(lambda: bot.health.polls_ok > 0)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    assert bot.health.polls_ok > 0
+
+
+@pytest.mark.asyncio
+async def test_a_send_that_fails_is_reported_rather_than_swallowed_tg13(
+    service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """The outbox suppresses a failed send so one 500 cannot stop the bot — which makes it invisible.
+
+    That is the right call for the *task* and the wrong one for the human: a reply that never
+    arrived looks exactly like a turn that never ran. Recording it on ``/health`` is what turns a
+    silent drop into something answerable, and it deliberately does **not** make the daemon
+    ``degraded`` — a 503 there invites the restart D9 forbids, killing runs and approvals that are
+    perfectly healthy.
+    """
+    api.send_error = TelegramError("sendMessage", 403, "Forbidden: bot was blocked by the user")
+    bot = adapter(service, store, api)
+    bot.health = FakeHealth()
+
+    await bot._queue(CHAT, "filed under Cooking")
+    await drain(bot)
+
+    assert bot.health.send_errors, "a dropped reply that nothing records is a silent loss"
+    assert bot.health.restarts == 0, "a send failure is not the subsystem being down (TG-13)"
+
+
+# --------------------------------------------------------------------------------------
+# § addressing: which chat talks to which expert (TG-1, TG-4, TG-26)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_each_chat_runs_against_its_own_agent_tg1(
+    service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """The *pairing*, not the count — a mis-sent note landing in the wrong topic has no undo.
+
+    Every earlier addressing test mapped both chats to one agent, so an adapter that routed every
+    chat to the first agent in the mapping passed the whole suite: executed, replacing the routed
+    agent with ``next(iter(config.chats.values()))`` broke nothing across 142 tests. Two chats, two
+    different experts, and each chat's ``create_thread`` asserted against the expert it was
+    configured for is the only shape that bites.
+    """
+    bot = adapter(service, store, api, chats={CHAT: COOKING, OTHER_CHAT: GRILLING})
+
+    await deliver(bot, message_update(1, chat_id=CHAT, text="how long to rest a steak?"))
+    await deliver(bot, message_update(2, chat_id=OTHER_CHAT, text="what temperature for coals?"))
+
+    created = [call for call in service.calls if call[0] == "create_thread"]
+    assert [agent for _, (agent, _origin) in created] == [COOKING, GRILLING]
+
+
+@pytest.mark.asyncio
+async def test_a_thread_started_from_a_chat_is_stamped_telegram_tg4(
+    service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """D3's cross-channel resume is a *column*, and nothing was asserting it was written.
+
+    Executed: deleting ``origin_channel="telegram"`` from the adapter left 294 tests passing,
+    because the stub threw the keyword away. A conversation started on the phone would then be
+    indistinguishable from an HTTP one in the TUI's list — the whole point of the stamp — and
+    nothing anywhere would say so. Asserted at the call *and* on the stored row, since the row is
+    what the TUI reads.
+    """
+    bot = adapter(service, store, api)
+
+    await deliver(bot, message_update(text="where does the steak note go?"))
+
+    assert ("create_thread", (COOKING, "telegram")) in service.calls
+    thread_id = await store.bound_thread(CHAT)
+    assert thread_id is not None
+    assert service.rows[thread_id].origin_channel == "telegram"
+
+
+@pytest.mark.asyncio
+async def test_remapping_a_chat_starts_a_fresh_thread_on_the_new_expert_tg26(
+    service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """Editing the mapping must not keep filing into the previous expert (TG-26, TG-1).
+
+    ``bind`` wrote an ``agent_id`` column that nothing read, and ``_turn`` resolved the thread from
+    the chat alone. Executed: a chat bound under ``topic/cooking`` and then re-mapped to
+    ``topic/grilling`` issued **zero** ``create_thread`` calls and sent the new message to the
+    original Cooking thread — a write to the wrong topic, with no undo, invisible from the phone
+    and from ``/health``. That is precisely the mis-file TG-1 was ruled to eliminate.
+
+    The rotation is announced, because TG-27's reasoning is about *invisible* rotations rather than
+    about rotation: a split the human cannot see is the failure class.
+    """
+    await bind(service, store, agent_id=COOKING)
+    bot = adapter(service, store, api, chats={CHAT: GRILLING})
+
+    await deliver(bot, message_update(text="what temperature for coals?"))
+
+    assert ("create_thread", (GRILLING, "telegram")) in service.calls
+    assert await store.bound_thread(CHAT) != THREAD
+    assert GRILLING in api.transcript
+
+
+# --------------------------------------------------------------------------------------
+# § the guards cover every inbound kind, not just `message` (TG-19, TG-20, TG-23, TG-35)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ten_edits_from_a_stranger_in_a_group_are_answered_never_tg19(
+    service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """``edited_message`` used to be dispatched above every guard, so it bypassed all of them.
+
+    Executed against the build: ten ``edited_message`` updates from ``chat.id=-1001234567890,
+    type="supergroup"`` produced **ten** outbound replies, where TG-19 allows at most one refusal
+    and TG-20 allows none. ``ALLOWED_UPDATES`` subscribes to the kind, so this was reachable in
+    production by anyone who found the bot's username — an unauthenticated, unbounded reply
+    amplifier pointed at the owner's own per-chat send budget.
+    """
+    bot = adapter(service, store, api)
+
+    for update_id in range(1, 11):
+        await deliver(
+            bot,
+            {
+                "update_id": update_id,
+                "edited_message": {
+                    "message_id": update_id,
+                    "chat": {"id": -1001234567890, "type": "supergroup"},
+                    "from": {"id": STRANGER},
+                    "text": "file this",
+                },
+            },
+        )
+
+    assert api.sent == []
+    assert service.calls == []
+
+
+@pytest.mark.asyncio
+async def test_ten_edits_from_one_unmapped_chat_are_rate_limited_like_a_message_tg23(
+    service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """The per-chat send budget the rule protects cannot be drained by editing in a loop.
+
+    Ten edits in an unmapped private chat produced ten replies before the guards were hoisted,
+    where ten *messages* produced one. The window is what keeps a flood from spending the budget
+    the owner's approval keyboards need, so it has to sit in front of every update kind.
+    """
+    bot = adapter(service, store, api)
+
+    for update_id in range(1, 11):
+        await deliver(
+            bot,
+            {
+                "update_id": update_id,
+                "edited_message": {
+                    "message_id": update_id,
+                    "chat": {"id": STRANGER_CHAT, "type": "private"},
+                    "from": {"id": OWNER},
+                    "text": "file this",
+                },
+            },
+        )
+
+    assert len(api.sent) == 1
+    assert str(STRANGER_CHAT) in api.texts[0]
+
+
+# --------------------------------------------------------------------------------------
+# § the button verb table is read in both directions (TG-54, TG-64)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_verb_the_live_action_does_not_allow_is_refused_not_converted_tg54(
+    service: ScriptedService,
+    store: SqliteTelegramStore,
+    api: FakeBotApi,
+    connection: aiosqlite.Connection,
+) -> None:
+    """The resolver was ``"approve" if verb == "a" else "reject"`` — every other verb became reject.
+
+    A Telegram message lives in the chat forever with its buttons live, so a button drawn by an
+    adapter version that offered a decision this one narrows away is reachable weeks later. Under
+    the binary map that press became a **rejection** of a write the human never looked at, and when
+    ``validate_decisions`` refused it the ``finally`` marked the prompt resolved and cleared every
+    keyboard — the approval unanswerable from Telegram forever. Here the live action allows only
+    ``reject`` and the press carries ``approve``: refused, nothing recorded, prompt still open.
+    """
+    request = approval(actions=(action(allowed=("reject",)),))
+    await bind(service, store)
+    service.pending = request
+    bot = adapter(service, store, api)
+    await bot._post_approval(CHAT, request)
+    handle = (await handles(connection))[0]
+
+    await press(bot, handle, 0, "a")
+
+    assert service.resumed == []
+    assert (await prompt_rows(connection))[0]["resolved"] is False
+    assert api.cleared == []
+    assert "no longer matches" in api.transcript
+
+
+@pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_a_button_the_live_request_no_longer_offers_is_refused_not_recorded_tg60(
+    service: ScriptedService,
+    store: SqliteTelegramStore,
+    api: FakeBotApi,
+    connection: aiosqlite.Connection,
+    journal: Journal,
+) -> None:
+    """An index past the freshly-read action list is refused with the prompt left **open**.
+
+    ``prompt["action_count"]`` is the count from when the message was *posted*; TG-60 says the
+    accumulator is validated against the count the server hands back now. Executed against the
+    build: a stray index 7 on a one-action approval was recorded, ``resolve`` raised "every action
+    needs an answer", the ``finally`` set ``resolved = 1`` and every keyboard was cleared — and on
+    a two-action approval a genuine tap plus a stray index destroyed the human's real answer. A
+    stray index is reachable in production: a button from an older adapter version living in the
+    chat for weeks, or an approval whose action list shrank between the post and the press.
+    """
+    await bind(service, store)
+    service.pending = approval()
+    bot = adapter(service, store, api)
+    await bot._post_approval(CHAT, approval())
+    handle = (await handles(connection))[0]
+    journal.clear()
+
+    await press(bot, handle, 7, "a")
+
+    assert service.resumed == []
+    assert "resume" not in kinds(journal)
+    assert (await prompt_rows(connection))[0]["resolved"] is False
+    assert api.cleared == [], "the buttons the human can still use must stay usable"
+    assert "no longer matches" in api.transcript
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_destructive_confirm_answers_nothing_tg64(
+    service: ScriptedService,
+    store: SqliteTelegramStore,
+    api: FakeBotApi,
+    connection: aiosqlite.Connection,
+) -> None:
+    """*Cancel* means "I have not decided" — it used to mean **reject**, and closed the approval.
+
+    Executed against a real ``delete`` action: tap Approve, get "There is no undo for this.
+    Confirm?", tap **Cancel** — and the build issued ``Decision(type="reject")``, wrote ``{'0':
+    'x'}`` to the row, marked it resolved and told the chat "Answered: 1 rejected." A human backing
+    out of a delete had just rejected the write and closed the approval; on a multi-action approval
+    that press completes the set and fires the whole ``resume``, which also violates TG-60's
+    "a partial set submits nothing".
+    """
+    request = approval(actions=(action(reason="delete", allowed=("approve", "reject")),))
+    await bind(service, store)
+    service.pending = request
+    bot = adapter(service, store, api)
+    await bot._post_approval(CHAT, request)
+    handle = (await handles(connection))[0]
+
+    await press(bot, handle, 0, "a")  # first tap: the confirm step
+    await press(bot, handle, 0, "x")  # ... and back out of it
+
+    assert service.resumed == []
+    row = (await prompt_rows(connection))[0]
+    assert row["resolved"] is False, "backing out is not an answer, and must not close the prompt"
+    assert "Answered" not in api.transcript
+    assert "Nothing was answered" in api.transcript, (
+        "silence after a Cancel is indistinguishable from a tap that landed"
+    )
+    assert "still waiting" in api.transcript
+
+
+@pytest.mark.asyncio
+async def test_the_confirm_step_loses_its_keyboard_with_every_other_message_tg63(
+    service: ScriptedService,
+    store: SqliteTelegramStore,
+    api: FakeBotApi,
+    connection: aiosqlite.Connection,
+) -> None:
+    """ "All N messages" has to include the one the confirm step added.
+
+    ``_ask_confirm`` sent a live keyboard and never recorded its message id, so after the delete
+    resolved the row held one id and one id was cleared — the "Yes, do it" / "Cancel" pair sat live
+    in the chat forever, on a write that already happened. That is the scenario TG-63 opens with.
+    """
+    request = approval(actions=(action(reason="delete"),))
+    await bind(service, store)
+    service.pending = request
+    bot = adapter(service, store, api)
+    await bot._post_approval(CHAT, request)
+    handle = (await handles(connection))[0]
+
+    await press(bot, handle, 0, "a")  # the confirm step, which posts a second keyboard
+    row = await store.prompt(handle)
+    assert row is not None
+    posted = set(row["message_ids"])
+    await press(bot, handle, 0, "ca")  # confirmed
+
+    assert len(api.with_keyboard) == 2, "the action message and the confirm message both have one"
+    assert len(posted) == 2, "and both ids are recorded, or one keyboard is never cleared"
+    assert {entry["message_id"] for entry in api.cleared} == posted
+
+
+# --------------------------------------------------------------------------------------
+# § a stale interrupt the daemon reports rather than the adapter predicts (TG-62)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_resume_that_loses_the_race_still_raises_an_alert_tg62(
+    service: ScriptedService,
+    store: SqliteTelegramStore,
+    api: FakeBotApi,
+    connection: aiosqlite.Connection,
+) -> None:
+    """The rule names ``StaleInterruptError`` and the build caught it nowhere.
+
+    ``PkbService.resume`` raises it whenever the TUI answers between this adapter's ``get_thread``
+    and its ``resume`` — a genuinely concurrent window on a path with no network in it, and "two
+    channels on one approval is the design, not an edge case". Executed: the human got a blank,
+    non-alert callback answer plus a plain chat line, where the whole rationale of the rule is that
+    a toast on a phone is missed and a chat line scrolls away.
+    """
+    await bind(service, store)
+    service.pending = approval()
+    bot = adapter(service, store, api)
+    await bot._post_approval(CHAT, approval())
+    handle = (await handles(connection))[0]
+
+    async def refuse(*_args: Any, **_kwargs: Any) -> Any:
+        raise StaleInterruptError("that interrupt has already been answered")
+
+    service.resume = refuse  # type: ignore[method-assign]
+
+    await press(bot, handle, 0, "a")
+
+    assert api.answers[-1]["alert"] is True
+    assert api.answers[-1]["text"] != ""
+    assert "already answered" in api.transcript
+
+
+# --------------------------------------------------------------------------------------
+# § an approval nobody can read carries no buttons (TG-56, TG-66)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_failed_upload_hands_off_instead_of_attaching_buttons_to_a_fragment_tg56(
+    service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """TG-56's own assertion: no fixture attaches a keyboard to a cut description.
+
+    The build wrapped ``send_document`` in ``suppress(TelegramError)`` and then built the keyboard
+    unconditionally. Executed with a 413 against a 300-bullet description: **0 documents, 1
+    keyboard**, the full text absent from the transcript, and the button message ending
+    "… (full text above)" — a marker that was now a lie — over an irreversible Approve button
+    showing bullets 0-30 of 300. A 413 or a dropped tether is the first thing that goes wrong on a
+    phone, not an exotic case.
+    """
+    description = "\n".join(f"- bullet {n}: a thing the human wrote" for n in range(300))
+    request = approval(actions=(action(description=description),))
+
+    async def refuse(*_args: Any, **_kwargs: Any) -> Any:
+        raise TelegramError("sendDocument", 413, "Request Entity Too Large")
+
+    api.send_document = refuse  # type: ignore[method-assign]
+    bot = adapter(service, store, api)
+
+    await bot._post_approval(CHAT, request)
+    await drain(bot)
+
+    assert api.with_keyboard == []
+    assert "(full text above)" not in api.transcript
+    assert "the TUI" in api.transcript
+
+
+def test_the_preview_marker_is_the_one_the_caller_supplied_tg56() -> None:
+    """``fit`` passes ``marker=`` through instead of stripping a hand-copied literal.
+
+    The build called ``truncate(text, budget)`` with the **default** marker and then did
+    ``.removesuffix("\\n… (truncated — open the TUI for the whole diff)")`` — a duplicate of
+    ``TRUNCATION_MARKER`` living in the adapter. Reword the shared constant and the strip silently
+    no-ops, and the preview then prints "open the TUI for the whole diff" directly above the whole
+    diff, which is the outcome decision U added the parameter to prevent. Asserted against the
+    shared constant so a rewording moves both.
+    """
+    preview, was_cut = fit("x" * 400 + "\n" + "y" * 400, 200, marker="\n… (full text above)")
+
+    assert was_cut is True
+    assert preview.endswith("\n… (full text above)")
+    assert TRUNCATION_MARKER not in preview
+    assert "open the TUI for the whole diff" not in preview
+
+
+@pytest.mark.asyncio
+async def test_the_validation_findings_travel_with_their_header_tg66(
+    service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """The label is a **block**: a header line and one line per finding (``gates.py``).
+
+    ``_validation_label`` is ``"This draft currently fails validation:\\n" +
+    render_findings(errors_only(findings))``, so the rule ids are on lines 2..n. Hoisting only the
+    matching line put a bare "this draft currently fails validation:" at the top of the button
+    message with no indication of *what* fails, and left the findings at the bottom of a
+    description TG-56 may have just uploaded as a file — TG-66's own stated failure, for the half
+    that carries the information. The previous fixture put the findings inline on one line, a shape
+    ``describe_write`` never emits, so it matched the implementation rather than the server.
+    """
+    label = (
+        "This draft currently fails validation:\n"
+        "FM-3 topics/Cooking/notes/steak.md: frontmatter is missing 'title'\n"
+        "PA-7 topics/Cooking/notes/steak.md: the file name is not a slug"
+    )
+    request = approval(actions=(action(description=f"{label}\n\nProposed content:\n\n# Steak\n"),))
+    bot = adapter(service, store, api)
+
+    await bot._post_approval(CHAT, request)
+    await drain(bot)
+
+    button_message = api.with_keyboard[0]["text"]
+    assert button_message.splitlines()[:3] == label.splitlines()
+    assert "FM-3" in button_message and "PA-7" in button_message
+
+
+# --------------------------------------------------------------------------------------
+# § a rejection carries no prose (TG-65)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_one_tap_reject_carries_no_prose_tg65(
+    service: ScriptedService,
+    store: SqliteTelegramStore,
+    api: FakeBotApi,
+    connection: aiosqlite.Connection,
+) -> None:
+    """A phone is a bad place to demand a typed reason, and demanding one is a client-only refusal.
+
+    ``pkb.clients.approval`` holds no policy requiring prose precisely so both human channels
+    answer identically, and the harness substitutes its own "do not retry unless the user asks"
+    text. A bot that filled ``message`` in — even with something helpful like "rejected from
+    Telegram" — would be inventing content the human never wrote, onto the record of a decision
+    about a write with no undo. Nothing asserted this before, so the rule held only by accident of
+    a dataclass default.
+    """
+    await bind(service, store)
+    service.pending = approval()
+    bot = adapter(service, store, api)
+    await bot._post_approval(CHAT, approval())
+    handle = (await handles(connection))[0]
+
+    await press(bot, handle, 0, "r")
+
+    assert len(service.resumed) == 1
+    decisions = service.resumed[0][1]
+    assert [decision.type for decision in decisions] == ["reject"]
+    assert decisions[0].message is None
+
+
+# --------------------------------------------------------------------------------------
+# § `/cancel` reaches a live run, and gives its subscriber back (TG-39, TG-52)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cancel_gives_back_the_subscriber_it_attached_tg52(
+    service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """``attach`` holds a subscriber slot; ``/cancel`` walked away from it every single time.
+
+    ``attach`` replays the hub from ``seq 0`` and keeps the subscriber until somebody detaches, so
+    a ``/cancel`` with no ``finally`` leaked exactly the subscriber TG-52 exists to prevent — in
+    the daemon whose whole value proposition is staying up for weeks. Executed against an
+    attaching stub: after ``/cancel``, ``closed == []``.
+    """
+    closed: list[int] = []
+    await bind(service, store)
+
+    async def attaching(thread_id: str) -> Any:
+        service.calls.append(("attach", (thread_id,)))
+        return local_subscription([], closes=closed)
+
+    service.attach = attaching  # type: ignore[method-assign]
+    bot = adapter(service, store, api)
+
+    await deliver(bot, message_update(text="/cancel"))
+
+    assert service.cancelled == [RUN]
+    assert closed == [1], "the attached subscription must be detached before returning"
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_delivered_during_a_run_is_read_while_the_run_is_still_live_tg39(
+    service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """Polling must not stop for the length of a turn — 16 s on the cloud model, 284 s locally.
+
+    ``_poll`` awaited ``_dispatch``, and ``_dispatch`` awaits the whole run, so **no**
+    ``getUpdates`` was issued while a turn ran. Executed against the build: a ``/cancel`` delivered
+    half a second into a live run was not dispatched until the run had already finished, which is
+    exactly the window the rule exists to make interruptible. Here the message's run is held open
+    and the ``/cancel`` behind it must still be read and acted on.
+    """
+    gate = asyncio.Event()
+
+    async def held() -> Any:
+        await gate.wait()
+        yield RunEnd(run_id=RUN, final_text="done")
+
+    service.rows[THREAD] = thread_row()
+    await store.bind(CHAT, THREAD, COOKING)
+    holding = RunSubscription(
+        handle=RunHandle(run_id=RUN, agent_id=COOKING, thread_id=THREAD),
+        events=held(),
+        close=lambda: None,
+    )
+
+    async def start_run(*_args: Any, **_kwargs: Any) -> Any:
+        service.calls.append(("start_run", (THREAD, "")))
+        return holding
+
+    async def attaching(thread_id: str) -> Any:
+        return holding
+
+    service.start_run = start_run  # type: ignore[method-assign]
+    service.attach = attaching  # type: ignore[method-assign]
+    await store.claim(0, CHAT, "message")  # a warm ledger, so TG-30 does not drain the backlog
+    await store.dispatched(0)
+    api.pending = [
+        message_update(1, text="file the steak note"),
+        message_update(2, text="/cancel"),
+    ]
+    bot = adapter(service, store, api)
+
+    async with asyncio.TaskGroup() as group:
+        bot._group = group
+        runner = group.create_task(bot._poll())
+        await spin(lambda: bool(service.cancelled))
+        gate.set()
+        runner.cancel()
+
+    assert service.cancelled == [RUN], "the cancel was read while the run it stops was still live"
+
+
+# --------------------------------------------------------------------------------------
+# § a restart owes each chat something (TG-29, TG-31)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_crash_before_start_run_names_the_loss_to_the_chat_that_lost_it_tg29(
+    service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """The notice has to reach **the chat that lost the message**, with that chat's own count.
+
+    ``orphans()`` selected ``update_id`` alone, so the adapter had a total and no addressee: it
+    broadcast to every mapped chat whose id happened to be in ``owner_user_ids``, which for the
+    suite's own constants — mapping ``{770001: 'topic/cooking'}``, owners ``{42}`` — is **zero
+    notices** for a real orphan. A silent loss is the one outcome this rule names as unacceptable.
+    """
+    await store.claim(100, CHAT, "message")  # claimed, and the process died before `start_run`
+    bot = adapter(service, store, api)
+
+    await bot._report_orphans()
+    await drain(bot)
+
+    assert [entry["chat_id"] for entry in api.sent] == [CHAT]
+    assert "send them again" in api.texts[0]
+    assert service.calls == [], "a named loss is never a retry"
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_was_admitted_is_never_reported_as_lost_tg29(
+    service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """ "I lost your message — please re-send" for a turn that already ran is a duplicate write.
+
+    ``dispatched()`` was called only after the whole turn had been relayed, and a turn is 8-12
+    model calls, so a task cancelled mid-stream left a row indistinguishable from a crash before
+    ``start_run``. Executed: an update whose run was still streaming when the task was cancelled
+    gave ``orphans() == [100]`` with ``start_run`` already counted once — and re-sending produces
+    the divergent second write into a tree with no undo that decision T exists to stop. Three
+    states, and the middle one is what makes the notice honest.
+    """
+    await store.claim(100, CHAT, "message")
+    await store.started(100, THREAD, RUN)
+
+    assert await store.orphans() == []
+    assert await store.unfinished() == [(100, CHAT, THREAD)]
+
+    bot = adapter(service, store, api)
+    await bot._report_orphans()
+    await drain(bot)
+
+    assert api.sent == []
+
+
+@pytest.mark.asyncio
+async def test_a_restart_reposts_the_keyboard_of_a_parked_fan_out_gate_tg31(
+    service: ScriptedService,
+    store: SqliteTelegramStore,
+    api: FakeBotApi,
+    connection: aiosqlite.Connection,
+) -> None:
+    """After a supervised restart the human's approve/reject buttons were simply dead.
+
+    ``run()`` did ``setup`` → ``check_mapping`` → the orphan notice and went straight into the poll
+    loop; ``_repost_pending`` was reachable only when the human sent a *new* message. Executed: a
+    fresh adapter over a store whose bound thread carried a live ``pending`` sent **0 messages, 0
+    keyboards and made 0 service calls**, and RT-39 then refuses every later message in that chat.
+    The gate is parked on a *child* here, which is the LB-16 shape recovery has to walk (TG-53).
+    """
+    child_id = expert_thread_id(THREAD, COOKING)
+    await bind(service, store)
+    service.details[THREAD] = ThreadDetail(
+        thread=thread_row(),
+        messages=(),
+        pending=None,
+        children=(thread_row(child_id, COOKING),),
+    )
+    service.details[child_id] = ThreadDetail(
+        thread=thread_row(child_id, COOKING),
+        messages=(),
+        pending=approval(thread_id=child_id, interrupt_id="i-child"),
+        children=(),
+    )
+    await store.claim(100, CHAT, "message")
+    await store.started(100, THREAD, RUN)
+    bot = adapter(service, store, api)
+
+    await bot._recover()
+    await drain(bot)
+
+    assert len(api.with_keyboard) == 1
+    assert (await prompt_rows(connection))[0]["interrupt_id"] == "i-child"
+    assert await store.unfinished() == [], "a re-synced row is settled, not re-synced forever"
+
+
+@pytest.mark.asyncio
+async def test_a_restart_delivers_the_reply_the_chat_never_heard_tg31(
+    service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """Once the hub is closed, ``ThreadDetail.messages`` is the only place the reply still exists.
+
+    ``attach`` returns ``None`` after the run's hub goes away, so a late restart cannot reach the
+    reply through the supervisor at all. Branch (c) posts it from the thread instead, marked late —
+    a reply arriving hours after the question otherwise reads as a non-sequitur — and it is one
+    message, never a replay of everything the chat already holds.
+    """
+    await bind(service, store)
+    service.messages = [
+        MessageView(role="human", text="where does the steak note go?", created_at=None),
+        MessageView(role="assistant", text="Filed under Cooking.", created_at=None),
+    ]
+    await store.claim(100, CHAT, "message")
+    await store.started(100, THREAD, RUN)
+    bot = adapter(service, store, api)
+
+    await bot._recover()
+    await drain(bot)
+
+    assert len(api.sent) == 1
+    assert "Filed under Cooking." in api.texts[0]
+    assert "arriving late" in api.texts[0]
+    assert "start_run" not in [kind for kind, _ in service.calls]
+
+
+# --------------------------------------------------------------------------------------
+# § what the bot never drops, and what a startup notice may never do (TG-49, TG-13)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_reply_is_never_dropped_for_a_full_outbox_tg49(
+    service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """The drop path could only ever discard a frame the rule forbids dropping.
+
+    TG-43 already makes ``ToolStart``/``ToolEnd``/``SubagentEnd`` produce nothing, so the only
+    things that ever reach this queue are a ``MessageComplete``, the roster line and a terminal
+    note — every one of them on the never-drop list. Executed with the outbox at capacity (the
+    state a ``retry_after: 30`` inside the pump produces), a run ending in
+    ``MessageComplete(text="THE REPLY THE HUMAN NEEDS")`` lost it, logged as "dropping a **progress**
+    message". Filling the queue and asserting the reply still arrives is the shape that bites.
+    """
+    bot = adapter(service, store, api)
+
+    assert bot._outbox.maxsize == 0, "a bounded outbox has a drop path, and every frame here is one"
+    for index in range(200):  # far past the 64-slot cap the build shipped
+        await bot._queue(CHAT, f"earlier {index}")
+    await bot._queue(CHAT, "THE REPLY THE HUMAN NEEDS")
+    await drain(bot)
+
+    assert "THE REPLY THE HUMAN NEEDS" in api.texts
+    assert len(api.texts) == 201, "nothing queued was dropped on the way out"
+
+
+@pytest.mark.asyncio
+async def test_a_chat_that_blocked_the_bot_never_makes_the_daemon_degraded_tg13(
+    service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """A 403 on a startup notice used to raise straight into ``_supervise``.
+
+    ``_report_orphans`` ran before the task group and outside any suppression, and the cold-start
+    notice had the same shape. Executed against the real ``_supervise`` and the real
+    ``HealthState``: one mapped chat whose sends all return ``403 bot was blocked by the user``
+    plus one orphaned row gave ``restarts: 3`` and climbing, ``state: "restarting"`` and
+    ``status: "degraded"``, forever — the restart loop D9 forbids, for a send failure the rule says
+    must never change ``status``. Asserted against the real ``SubsystemState``, because the
+    ``FakeHealth`` used elsewhere has a ``restarts`` field nothing in the codebase increments.
+    """
+    from pkb.server.health import HealthState
+
+    health = HealthState(runtime_open=True)
+    health.telegram.running()
+    api.send_error = TelegramError("sendMessage", 403, "Forbidden: bot was blocked by the user")
+    await store.claim(100, CHAT, "message")
+    bot = adapter(service, store, api)
+    bot.health = health.telegram
+
+    await bot._report_orphans()
+
+    assert health.status == "ok"
+    assert health.telegram.restarts == 0
+    assert health.telegram.last_send_error is not None
+    assert "403" in health.telegram.last_send_error
+
+
+@pytest.mark.asyncio
+async def test_an_invalid_mapping_entry_is_visible_on_health_not_only_in_the_log_tg18(
+    service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """ "Reported, not fatal" has to mean somewhere a human looks.
+
+    The only report was one ERROR line at startup, which is exactly the thing that has scrolled
+    away by the time somebody reads ``/health`` — so a deployment naming a renamed topic served
+    ``telegram: {chats: 2, unmapped_agents: [...], last_error: null, state: "running"}``,
+    indistinguishable from a correct one, and the bad entry subtracted nothing from
+    ``unmapped_agents`` either. It never changes ``status``: the subsystem is running, one line of
+    configuration is wrong.
+    """
+    from pkb.server.health import HealthState
+
+    health = HealthState(runtime_open=True)
+    health.telegram.running()
+    bot = adapter(service, store, api, chats={CHAT: COOKING, OTHER_CHAT: "topic/nope"})
+    bot.health = health.telegram
+
+    bot.check_mapping()
+
+    assert health.telegram.payload()["invalid_chats"] == (OTHER_CHAT,)
+    assert health.status == "ok"
+
+
+@pytest.mark.asyncio
+async def test_two_experts_gating_at_once_both_get_their_keyboard_back_tg53(
+    service: ScriptedService,
+    store: SqliteTelegramStore,
+    api: FakeBotApi,
+    connection: aiosqlite.Connection,
+) -> None:
+    """ "Checks **each** child's ``pending``" — the loop returned at the first one it found.
+
+    A fan-out can gate two experts concurrently, and stopping at the first leaves the second
+    approval with no affordance on the phone: dead buttons, nothing logged, and RT-39 refusing
+    every later message on that thread. The parent's own ``pending`` is null throughout, which is
+    the LB-16 shape that makes a naive recovery conclude "no approval" (TG-53).
+    """
+    cooking_child = expert_thread_id(THREAD, COOKING)
+    grilling_child = expert_thread_id(THREAD, GRILLING)
+    await bind(service, store)
+    service.details[THREAD] = ThreadDetail(
+        thread=thread_row(),
+        messages=(),
+        pending=None,
+        children=(thread_row(cooking_child, COOKING), thread_row(grilling_child, GRILLING)),
+    )
+    for child_id, agent_id, interrupt_id in (
+        (cooking_child, COOKING, "i-cooking"),
+        (grilling_child, GRILLING, "i-grilling"),
+    ):
+        service.details[child_id] = ThreadDetail(
+            thread=thread_row(child_id, agent_id),
+            messages=(),
+            pending=approval(thread_id=child_id, interrupt_id=interrupt_id, agent_id=agent_id),
+            children=(),
+        )
+    bot = adapter(service, store, api)
+
+    await bot._repost_pending(CHAT, THREAD)
+    await drain(bot)
+
+    assert len(api.with_keyboard) == 2
+    assert {row["interrupt_id"] for row in await prompt_rows(connection)} == {
+        "i-cooking",
+        "i-grilling",
+    }
+
+
+# --------------------------------------------------------------------------------------
+# § the token is not in any repr (TG-16, TG-24)
+# --------------------------------------------------------------------------------------
+
+
+def test_the_token_is_absent_from_every_repr_tg24() -> None:
+    """``HttpBotApi`` was hardened for this; the object holding the same secret was not.
+
+    Executed against the build: ``repr(TelegramConfig(token="123456789:AAF-SECRET", ...))`` printed
+    the token whole, and ``repr(TelegramAdapter(...))`` embedded it because ``config`` is an
+    ordinary dataclass field that a generated ``repr`` recurses into. The config is held by the
+    adapter for the whole life of the supervised task, so it sits in a frame of every traceback the
+    bot produces, and a ``repr`` is what an f-string, a ``%r`` log call, ``logging.exception``'s
+    frame dump and pytest's locals dump all print — during the mutation run that produced this
+    work, pytest's assertion rewriting printed the full ``TelegramConfig(token=...)`` into the
+    failure output. The bot id survives masking because ``getMe`` publishes it anyway and an
+    operator running two bots needs to know which one this is.
+    """
+    token = "123456789:AAF-FAKE-TOKEN-DO-NOT-USE-abcdefghijkl"
+    config = TelegramConfig(token=token, chats={CHAT: COOKING}, owner_user_ids=frozenset({OWNER}))
+    bot = TelegramAdapter(service=StubService(), store=object(), api=object(), config=config)  # type: ignore[arg-type]
+
+    for rendered in (repr(config), f"{config!r}", str(config), repr(bot), f"{bot!r}"):
+        assert token not in rendered
+        assert "AAF-FAKE-TOKEN" not in rendered
+    assert "123456789:***" in repr(config), (
+        "the bot id stays, so two deployments stay tellable apart"
+    )

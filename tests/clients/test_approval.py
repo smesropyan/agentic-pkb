@@ -674,6 +674,47 @@ def test_a_line_longer_than_the_budget_is_still_marked_cl22() -> None:
     assert len(text) <= 200
 
 
+def test_a_channel_supplies_its_own_truncation_marker_cl22() -> None:
+    """The default marker sends the human to the TUI, which is a lie in a channel that has the text.
+
+    Under decision U / TG-56 a description too long for one Telegram message is uploaded whole as a
+    document and *then* previewed under the buttons — so ``"open the TUI for the whole diff"`` would
+    print directly above the whole diff it is telling them to open a terminal to read. The parameter
+    is what keeps that wording per-channel while the **cut** stays one implementation: the
+    alternative is a second truncation inside the adapter, which is the per-channel drift CL-22
+    exists to prevent, and it would drift on the line boundary, not just the wording.
+    """
+    marker = "\n… (full text in the document above)"
+    limit = DIFF.index("-Rest for 2 minutes.") + 6 + len(marker)
+
+    text, was_truncated = truncate(DIFF, limit, marker=marker)
+
+    assert was_truncated
+    assert text.endswith(marker)
+    assert TRUNCATION_MARKER not in text
+    assert len(text) <= limit, "the marker has to be budgeted for, whoever supplied it"
+
+    body = text[: -len(marker)]
+    assert body == DIFF[: DIFF.index("\n-Rest for 2 minutes.")], "still a line-boundary cut"
+    assert set(body.split("\n")) <= set(DIFF.split("\n")), "a partial line reached the human"
+
+
+def test_the_default_marker_is_unchanged_for_every_existing_caller_cl22() -> None:
+    """``marker`` is keyword-only with the shipped default, so no caller shifts by being recompiled.
+
+    The TUI's list rows and the service's own previews were written against
+    ``TRUNCATION_MARKER``; C-35 adds a knob for Telegram, and a knob that changes what everyone else
+    already renders is a channel divergence introduced by the fix meant to prevent one.
+    """
+    explicit, explicit_cut = truncate(DIFF, 120, marker=TRUNCATION_MARKER)
+
+    assert (explicit, explicit_cut) == truncate(DIFF, 120)
+    assert explicit.endswith(TRUNCATION_MARKER)
+
+    assert truncate(DIFF, 0, marker="!") == (DIFF, False), "no cut means no marker of any kind"
+    assert truncate("short", 4096, marker="!") == ("short", False)
+
+
 def test_a_resolution_is_a_frozen_value_object_cl7() -> None:
     """Two channels may hold the same approval; neither may mutate the other's answer in place.
 

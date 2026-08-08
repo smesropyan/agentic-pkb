@@ -18,8 +18,11 @@ units** and ``callback_data`` in **bytes**, because those two units are the whol
 and TG-57, and a fake that counted characters would let the constants drift to a value the real
 server rejects at the moment a human is waiting for an approval.
 
-Three tests are ``xfail(strict=True)``. They are not aspiration: each is a rule in §1 that the
-built transport does not yet keep, demonstrated rather than described.
+Nothing here is xfail any more. The last one to go was TG-16's log leak, and where its fix landed is
+the interesting part: on ``HttpBotApi`` itself rather than on the composition root. A shield the
+daemon installs protects only deployments the daemon assembled, and the leak is a property of
+*holding a token*, not of how the process was started — this file constructs a client directly and
+would have gone on printing the credential.
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import contextlib
+import dataclasses
 import inspect
 import json
 import logging
@@ -49,9 +53,12 @@ from pkb.server import telegram_api as transport
 from pkb.server.telegram_api import (
     ALLOWED_UPDATES,
     CALLBACK_DATA_LIMIT,
+    LINK_PREVIEW,
     MESSAGE_LIMIT,
     POLL_TIMEOUT,
     READ_BUDGET,
+    RETRY_CODES,
+    TRANSPORT_CODE,
     BotApi,
     HttpBotApi,
     TelegramError,
@@ -269,6 +276,32 @@ async def test_allowed_updates_is_sent_on_every_poll_not_just_the_first_tg34() -
     assert [poll.body.get("offset") for poll in polls] == [None, 1, 8]
 
 
+@pytest.mark.asyncio
+async def test_the_cold_start_drain_polls_without_waiting_and_still_subscribes_tg30() -> None:
+    """TG-30's drain is ``getUpdates(offset=-1)`` and it runs before the bot answers anything.
+
+    At the default 25 s it would park startup for a full poll timeout on an idle chat — the normal
+    case — so every restart would look like a hang and the human would reach for the process
+    manager. ``timeout=0`` is Telegram's documented short poll: answer with whatever is pending,
+    now.
+
+    The second assertion is the one that will actually regress: ``allowed_updates`` must ride along
+    on the drain too. It persists server-side, so a drain that omitted it would hand the
+    subscription to whatever the *previous* consumer of this token left behind, and the bot would
+    then poll forever against a narrowed one (see the test above for what that costs).
+    """
+    fake = FakeBotApi()
+    async with serving(fake) as api:
+        assert await api.get_updates(-1, timeout=0) == []
+        await api.get_updates(1)
+
+    drain, steady = fake.calls_to("getUpdates")
+    assert (drain.body["timeout"], drain.body["offset"]) == (0, -1)
+    assert steady.body["timeout"] == POLL_TIMEOUT
+    for call in (drain, steady):
+        assert call.body["allowed_updates"] == list(ALLOWED_UPDATES)
+
+
 def test_the_subscription_names_every_kind_the_bot_must_receive_tg34() -> None:
     """The bot's whole inbound surface, auditable in one line — and it must be a superset of what
     the adapter dispatches on.
@@ -276,7 +309,12 @@ def test_the_subscription_names_every_kind_the_bot_must_receive_tg34() -> None:
     ``callback_query`` carries every approval answer; ``message`` carries every turn. The third
     name is load-bearing too: TG-35 requires an ``edited_message`` to be acknowledged exactly once
     ("send the correction as a new message"), and an update kind that is not subscribed to is never
-    delivered — so a bot narrowed to the two names TG-34's prose lists could not keep TG-35 at all.
+    delivered — so a bot narrowed to the two names TG-34 originally listed could not keep TG-35 at
+    all. **The rule was amended to three names** rather than left to live in this docstring, and the
+    amendment states the cost it buys: ``edited_message`` is a public inbound kind, so TG-19,
+    TG-20 and TG-23's guards have to cover it, which is why every update now goes through one
+    admission check before ``_dispatch`` branches.
+
     Anything *not* named here still costs an offset slot and a ledger row, which is why the tuple is
     a closed list rather than ``None`` (Telegram's "everything except chat_member").
     """
@@ -437,12 +475,19 @@ async def test_a_429_is_waited_out_and_the_message_is_delivered_exactly_once_tg4
 
 @pytest.mark.asyncio
 async def test_a_persistent_429_gives_up_rather_than_hammering_tg48() -> None:
-    """A bounded number of attempts, and the wait comes from the payload rather than a constant.
+    """A bounded number of attempts — and a rate limit is never retried with **no wait** (TG-8).
 
-    ``retry_after: 0`` here, so three attempts complete in well under a tenth of a second — which
-    is only true if the sleep is the *stated* value. An unbounded retry against a rate limiter is
-    how a token gets a longer ban, and the supervisor's restart is the right escalation: it is
-    visible in ``/health``, whereas a loop inside one call is invisible everywhere.
+    ``parameters.retry_after`` is documented as optional, and a 429 that omits it parses as
+    ``0.0``. The shipped code slept ``min(retry_after, MAX_BACKOFF)``, so those three attempts went
+    out in 0.0001 s: a hot loop against a rate limiter, logged as "waiting 0.0s", which is how a
+    token earns a longer ban. The floor is ``backoff`` — the same wait every other transient
+    failure gets — so the absence of a stated number falls back to the ordinary retry rather than
+    to none at all. Asserted as elapsed time rather than by inspecting the sleep, because the sleep
+    is the only thing the rate limiter can see.
+
+    Still bounded: three attempts and then out, because the supervisor's restart is the right
+    escalation for a persistent rate limit — it is visible in ``/health``, whereas a loop inside
+    one call is invisible everywhere.
     """
     fake = FakeBotApi()
     fake.script(
@@ -451,13 +496,93 @@ async def test_a_persistent_429_gives_up_rather_than_hammering_tg48() -> None:
     async with serving(fake) as api:
         started = time.perf_counter()
         with pytest.raises(TelegramError) as caught:
-            await with_retry(lambda: api.send_message(CHAT, "filed under Cooking"))
+            await with_retry(lambda: api.send_message(CHAT, "filed under Cooking"), backoff=0.05)
         elapsed = time.perf_counter() - started
 
     assert caught.value.code == 429
     assert len(fake.calls_to("sendMessage")) == 3
     assert fake.delivered == []
+    assert elapsed >= 0.1, "a 429 with no stated wait must still wait, not hammer"
     assert elapsed < 0.5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", sorted(RETRY_CODES - {TRANSPORT_CODE, 429}))
+async def test_every_code_tg8_calls_transient_is_retried_not_restarted_tg8(code: int) -> None:
+    """TG-8 names ``408``, ``429``, ``5xx``, connection errors and read timeouts, and the shipped
+    ``with_retry`` retried exactly one of them.
+
+    Everything else re-raised, which does not mean "the send is dropped" — it means the exception
+    leaves the poll loop, kills the task group and restarts the bot. So a single 502 from a
+    Telegram gateway, the most ordinary blip there is, cost a restart. That is expensive twice
+    over: ``SubsystemState.restarts`` is the number arch §8 asks the human to trust, and a count
+    that ticks on dropped packets is a count that gets ignored; and ``_supervise`` initialises its
+    backoff *outside* its ``while``, so six blips over a day leave the bot permanently 60 s slow to
+    come back.
+
+    Parametrised over the list rather than a representative, because the defect was a membership
+    test — ``!= 429`` — and a single example would have passed against ``in (429, 500)`` too.
+    """
+    fake = FakeBotApi()
+    fake.script("sendMessage", refusal(code, f"transient {code}"))
+    async with serving(fake) as api:
+        sent = await with_retry(lambda: api.send_message(CHAT, "filed under Cooking"), backoff=0.01)
+
+    assert sent["message_id"]
+    assert len(fake.calls_to("sendMessage")) == 2
+    assert fake.delivered == ["filed under Cooking"]
+
+
+@pytest.mark.asyncio
+async def test_a_transport_failure_is_retried_rather_than_restarting_the_bot_tg8() -> None:
+    """A refused connection is the *most* transient failure TG-8 lists, and it has no HTTP code.
+
+    A laptop that slept, a DNS blip, Telegram dropping a keep-alive — none of them says anything
+    about the request, and all of them are gone by the next attempt. Retrying them here is what
+    keeps ``restarts`` meaning "the bot actually broke". The client is pointed at a dead port and
+    then at the live fake, so the retry is observed to *succeed*, not merely to happen.
+    """
+    fake = FakeBotApi()
+    async with serving(fake) as api:
+        dead = f"http://127.0.0.1:{_free_port()}"
+        live = api.base_url
+        attempts = 0
+
+        async def flaky() -> Any:
+            nonlocal attempts
+            attempts += 1
+            api.base_url = dead if attempts == 1 else live
+            return await api.send_message(CHAT, "filed under Cooking")
+
+        sent = await with_retry(flaky, backoff=0.01)
+
+    assert attempts == 2
+    assert sent["message_id"]
+    assert fake.delivered == ["filed under Cooking"]
+
+
+@pytest.mark.asyncio
+async def test_a_409_conflict_is_never_retried_tg9() -> None:
+    """A ``409`` means a second consumer of this token is already polling, and retrying is the
+    thing that makes it worse.
+
+    Telegram allows one ``getUpdates`` consumer per token; a second daemon, an orphaned poller from
+    a previous generation (TG-7), or a leftover webhook produces this. Both pollers then take turns
+    stealing each other's updates, and the more often each one re-asks, the more updates are
+    delivered to the process that is not going to file them. It is also not fatal: TG-9 has the
+    adapter stop polling and re-probe slowly, which only works if the error reaches it immediately
+    and unchanged instead of after three retries.
+    """
+    assert 409 not in RETRY_CODES
+
+    fake = FakeBotApi()
+    fake.script("getUpdates", refusal(409, "Conflict: terminated by other getUpdates request"))
+    async with serving(fake) as api:
+        with pytest.raises(TelegramError) as caught:
+            await with_retry(lambda: api.get_updates(None), backoff=0.01)
+
+    assert caught.value.code == 409
+    assert len(fake.calls_to("getUpdates")) == 1
 
 
 @pytest.mark.asyncio
@@ -568,10 +693,6 @@ async def test_an_ok_false_body_on_a_200_is_still_a_refusal_tg15() -> None:
     assert caught.value.retry_after == 0.0
 
 
-@pytest.mark.xfail(
-    reason="TG-15: telegram_api catches no transport error; raw httpx errors reach _supervise",
-    strict=True,
-)
 @pytest.mark.asyncio
 async def test_a_transport_failure_becomes_a_typed_error_too_tg15() -> None:
     """TG-15 is "no raw ``httpx`` exception reaches ``_supervise``", and connection errors are the
@@ -584,8 +705,61 @@ async def test_a_transport_failure_becomes_a_typed_error_too_tg15() -> None:
     harmless. Converting it here is the only place the conversion can happen.
     """
     async with HttpBotApi(token=TOKEN, base_url=f"http://127.0.0.1:{_free_port()}") as api:
-        with pytest.raises(TelegramError):
+        with pytest.raises(TelegramError) as caught:
             await api.get_me()
+
+    error = caught.value
+    assert (error.method, error.code) == ("getMe", TRANSPORT_CODE)
+    assert "ConnectError" in error.description
+
+
+@pytest.mark.asyncio
+async def test_a_transport_failure_is_a_code_no_http_status_can_collide_with_tg15() -> None:
+    """The caller branches on ``code``, so "never reached Telegram" needs a value of its own.
+
+    ``with_retry`` and the adapter's 409 handling both read the integer rather than the prose. A
+    transport failure given, say, ``503`` would be indistinguishable from Telegram genuinely
+    answering 503 — which matters because the two want different diagnoses in ``/health``: one is
+    "this machine's network", the other is "Telegram is having an afternoon". Zero is not an HTTP
+    status, and it is in :data:`RETRY_CODES` because a refused connection is the most transient
+    failure there is (TG-8).
+    """
+    transient = {TRANSPORT_CODE, 408, 429, 500, 502, 503, 504}
+
+    assert TRANSPORT_CODE == 0
+    assert TRANSPORT_CODE in RETRY_CODES
+    assert set(RETRY_CODES) == transient
+
+
+@pytest.mark.asyncio
+async def test_a_transport_failure_cannot_carry_the_token_in_any_form_tg15() -> None:
+    """The token is a **path segment** of the URL, and httpx errors interpolate URLs.
+
+    That is the whole reason this conversion cannot forward ``str(exc)``: several httpx subclasses
+    put the request URL in their message, and ``HTTPStatusError`` does so verbatim ("Client error
+    '401 Unauthorized' for url 'https://api.telegram.org/bot<TOKEN>/getUpdates'"). From here the
+    string travels to ``SubsystemState.last_error`` and out of the unauthenticated ``/health`` body
+    (AP-20) — so a leak here is a leak to anyone who can reach the daemon, on the failure a fresh
+    deployment hits first.
+
+    All three surfaces are checked because they diverge: ``args`` is what a logging call formats,
+    ``repr`` is what a traceback and pytest's locals dump print, and ``str`` is what ``/health``
+    publishes. The bare secret is checked separately from the whole token so that splitting it on
+    the colon — the shape of a real credential — does not slip through.
+    """
+    async with HttpBotApi(token=TOKEN, base_url=f"http://127.0.0.1:{_free_port()}") as api:
+        with pytest.raises(TelegramError) as caught:
+            await api.send_message(CHAT, "filed under Cooking")
+
+        with pytest.raises(TelegramError) as document:
+            await api.send_document(CHAT, "approval.diff", b"--- a/x\n+++ b/x\n")
+
+    for error in (caught.value, document.value):
+        rendered = (str(error), repr(error), repr(error.args), str(error.__cause__))
+        for surface in rendered:
+            assert TOKEN not in surface
+            assert TOKEN.split(":")[1] not in surface
+            assert "://" not in surface
 
 
 # --------------------------------------------------------------------------------------
@@ -593,9 +767,6 @@ async def test_a_transport_failure_becomes_a_typed_error_too_tg15() -> None:
 # --------------------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    reason="TG-16: HttpBotApi is a dataclass with a plain `token` field", strict=True
-)
 def test_the_token_is_not_in_the_clients_repr_tg16() -> None:
     """TG-16: the token never appears in a ``repr``.
 
@@ -603,14 +774,33 @@ def test_the_token_is_not_in_the_clients_repr_tg16() -> None:
     a ``TaskGroup`` traceback and pytest's own assertion-locals dump all print. The client is held
     for the whole life of the daemon by the supervised task, so it is in the frame of every
     traceback the bot ever produces.
+
+    Masked rather than omitted: an operator reading a traceback needs to know *which* bot this is,
+    and the numeric id in front of the colon is what ``getMe`` publishes to anyone who asks. Only
+    the half after the colon is a secret, and it is the half that never appears.
     """
-    assert TOKEN not in repr(HttpBotApi(token=TOKEN))
+    rendered = repr(HttpBotApi(token=TOKEN))
+
+    assert TOKEN not in rendered
+    assert TOKEN.split(":")[1] not in rendered
+    assert TOKEN.split(":")[0] in rendered
 
 
-@pytest.mark.xfail(
-    reason="TG-16: nothing filters logging.getLogger('httpx'); it logs the token URL at INFO",
-    strict=True,
-)
+def test_the_token_survives_no_route_out_of_the_dataclass_machinery_tg16() -> None:
+    """The explicit ``__repr__`` is one line from being deleted; the field marker is the backstop.
+
+    Somebody simplifying this class, or a refactor to ``@dataclass(slots=True)``, drops the custom
+    ``__repr__`` and the generated one comes straight back — printing every field, token included,
+    into every traceback. ``field(repr=False)`` means that regression prints ``HttpBotApi(base_url=
+    …)`` instead of the credential. Both mechanisms are asserted because either alone is one edit
+    away from the leak.
+    """
+    fields = {spec.name: spec.repr for spec in dataclasses.fields(HttpBotApi)}
+
+    assert fields["token"] is False
+    assert "__repr__" in vars(HttpBotApi)
+
+
 @pytest.mark.asyncio
 async def test_no_log_record_carries_the_token_tg16(caplog: pytest.LogCaptureFixture) -> None:
     """``httpx`` logs the full request URL at INFO, and the token is a path segment of it.
@@ -645,6 +835,7 @@ async def test_every_non_file_call_is_a_json_post_tg16() -> None:
         await api.send_message(CHAT, "filed under Cooking")
         await api.answer_callback("q-1", "Approved")
         await api.edit_message(CHAT, 12, "Approved — written to topics/Cooking/notes/steak.md")
+        await api.clear_keyboard(CHAT, 12)
 
     assert [call.method for call in fake.calls] == [
         "getMe",
@@ -652,6 +843,7 @@ async def test_every_non_file_call_is_a_json_post_tg16() -> None:
         "sendMessage",
         "answerCallbackQuery",
         "editMessageText",
+        "editMessageReplyMarkup",
     ]
     for call in fake.calls:
         assert call.verb == "POST"
@@ -735,6 +927,94 @@ async def test_the_callback_budget_is_sixty_four_bytes_tg57() -> None:
 
 
 # --------------------------------------------------------------------------------------
+# § Link previews are off on everything that renders text (TG-47)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_every_outbound_message_disables_link_previews_tg47() -> None:
+    """A preview card is Telegram's servers **fetching** a URL out of knowledge-base content.
+
+    The bot's normal traffic is the human's own notes and proposed diffs, and those routinely carry
+    URLs — a source that was ingested, an internal wiki link, a link in a diff hunk. Every one of
+    them, rendered without this option, becomes an outbound HTTPS request from Telegram's
+    infrastructure to a host the human never asked to be contacted, from a daemon whose whole
+    premise is that it is personal and local (arch §10). It is also the difference between a reply
+    that reads as three lines and one that reads as three lines plus a stranger's OpenGraph image.
+
+    The literal body is asserted rather than "the key is present": ``is_disabled: true`` is the
+    field, and ``{"is_disabled": false}`` or a stray ``prefer_small_media`` would satisfy a
+    membership check while fetching the URL exactly as before.
+    """
+    fake = FakeBotApi()
+    async with serving(fake) as api:
+        await api.send_message(CHAT, "see https://example.invalid/steak for the method")
+        await api.edit_message(CHAT, 12, "corrected: https://example.invalid/steak-v2")
+
+    assert LINK_PREVIEW == {"is_disabled": True}
+    for call in fake.calls_to("sendMessage") + fake.calls_to("editMessageText"):
+        assert call.body["link_preview_options"] == {"is_disabled": True}
+
+
+# --------------------------------------------------------------------------------------
+# § Clearing a keyboard is not editing the text (TG-63)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_clearing_a_keyboard_leaves_the_description_untouched_tg63() -> None:
+    """The chat is the only surviving record of what the human approved, and the shipped build
+    overwrote it.
+
+    TG-63 requires every terminal outcome to remove the inline keyboard so a message sitting in the
+    chat forever cannot be pressed a week later. The build had one ``edit_message``, so it removed
+    the buttons the only way that method can: by replacing the message text with "This approval has
+    been answered." — deleting the description of the write the human had just decided about. On a
+    system with no undo (D6) that is the evidence destroyed at the moment it becomes interesting.
+
+    ``editMessageReplyMarkup`` with the field **absent** is Telegram's documented removal form. The
+    assertion is that no ``reply_markup`` key is sent *at all* and no ``text`` key either — an
+    explicit ``null`` would work, but sending ``{"reply_markup": None}`` here would mean a future
+    "clear" that passed a keyboard through would type-check, and a ``text`` key would put us right
+    back where the build was.
+    """
+    fake = FakeBotApi()
+    keyboard = [[{"text": "approve", "callback_data": "v1|ab12cd34|0|approve"}]]
+    async with serving(fake) as api:
+        sent = await api.send_message(
+            CHAT, "write topics/Cooking/notes/steak.md?", keyboard=keyboard
+        )
+        await api.clear_keyboard(CHAT, int(sent["message_id"]))
+
+    call = fake.calls_to("editMessageReplyMarkup")[-1]
+    assert call.body == {"chat_id": CHAT, "message_id": sent["message_id"]}
+    assert "reply_markup" not in call.body
+    assert "text" not in call.body
+    assert fake.calls_to("editMessageText") == []
+
+
+@pytest.mark.asyncio
+async def test_editing_text_and_clearing_a_keyboard_are_separate_calls_tg63() -> None:
+    """TG-67 names both ``edit_message_text`` and ``edit_message_reply_markup``; collapsing them
+    into one method is what took the rule with it.
+
+    They are separate because their blast radii differ. A genuine text edit — TG-41's coalesced
+    progress line — must *keep* whatever keyboard is on the message, and Telegram does keep it when
+    ``editMessageText`` omits ``reply_markup``. A keyboard removal must keep the text. One method
+    cannot do both, and the one the build kept was the destructive one.
+    """
+    fake = FakeBotApi()
+    async with serving(fake) as api:
+        await api.edit_message(CHAT, 12, "reading topics/Cooking/notes/steak.md")
+        await api.clear_keyboard(CHAT, 12)
+
+    assert [call.method for call in fake.calls] == ["editMessageText", "editMessageReplyMarkup"]
+    text_edit = fake.calls_to("editMessageText")[-1]
+    assert text_edit.body["text"] == "reading topics/Cooking/notes/steak.md"
+    assert "reply_markup" not in text_edit.body
+
+
+# --------------------------------------------------------------------------------------
 # § The uploaded document never touches disk (TG-71)
 # --------------------------------------------------------------------------------------
 
@@ -796,6 +1076,7 @@ def test_the_http_client_implements_the_protocol_exactly_tg67() -> None:
         "send_document",
         "answer_callback",
         "edit_message",
+        "clear_keyboard",
     }
     for name in sorted(methods):
         assert inspect.signature(getattr(HttpBotApi, name)) == inspect.signature(
@@ -859,3 +1140,50 @@ def test_the_transport_mints_no_uuid_tg70() -> None:
     }
 
     assert not [name for name in names if name.startswith("uuid")]
+
+
+def test_no_send_carries_a_parse_mode_tg46() -> None:
+    """MarkdownV2 requires escaping ``_*[]()~`>#+-=|{}.!`` and a unified diff is made of those.
+
+    Every byte this module sends is server-derived — an agent's reply, or a ``describe_write``
+    description the human is about to approve — so a ``parse_mode`` here would turn the most
+    consequential message the bot sends into a ``400``, and the approval would never arrive at all.
+    That is the same class of failure as the markup error that killed the TUI's renderer, and it is
+    invisible until a real diff goes through.
+
+    Asserted three ways because the nearest existing test checks only that
+    ``link_preview_options`` is present, so adding ``body["parse_mode"] = "MarkdownV2"`` broke
+    nothing in the whole Layer 5 suite: the parameter does not exist on either method, the string
+    appears nowhere in the module, and the two sending methods take no keyword that could carry one.
+    """
+    assert "parse_mode" not in _literals(SOURCE)
+    for method in (HttpBotApi.send_message, HttpBotApi.edit_message):
+        assert "parse_mode" not in inspect.signature(method).parameters
+
+
+@pytest.mark.asyncio
+async def test_a_real_diff_reaches_the_chat_byte_for_byte_tg46() -> None:
+    """The characters MarkdownV2 would choke on, round-tripped through the real send path.
+
+    ``@@ -1,3 +1,4 @@``, a bare ``1.5``, ``(parens)``, ``_underscores_`` and a backtick are all
+    special in MarkdownV2 and all ordinary in a diff. Whole-body equality rather than a substring,
+    because the failure this rule prevents is a body that grew a field, not a body that lost one.
+    """
+    description = (
+        "--- a/topics/Cooking/notes/steak.md\n"
+        "+++ b/topics/Cooking/notes/steak.md\n"
+        "@@ -1,3 +1,4 @@\n"
+        "-rest for 5 minutes\n"
+        "+rest for 1.5 hours (really!)\n"
+        "+use _clarified_ butter and a `cast iron` pan [see notes]\n"
+    )
+    fake = FakeBotApi()
+    async with serving(fake) as api:
+        await api.send_message(CHAT, description)
+
+    body = fake.calls_to("sendMessage")[0].body
+    assert body == {
+        "chat_id": CHAT,
+        "text": description,
+        "link_preview_options": {"is_disabled": True},
+    }

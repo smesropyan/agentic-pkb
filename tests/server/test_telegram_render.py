@@ -34,7 +34,7 @@ import pytest
 
 import pkb.server.telegram as telegram_module
 from pkb.agents.gates import GATE_DECISIONS, GateReason
-from pkb.clients.approval import truncate
+from pkb.clients.approval import TRUNCATION_MARKER, truncate
 from pkb.contracts import ActionView, DecisionType
 from pkb.server.telegram import (
     NO_UNDO_REASONS,
@@ -66,9 +66,12 @@ CONTINUES = "\n… (continues)"
 """``fit``'s default marker. Reproduced because it is what the human *sees* where the text stopped;
 a test that imported it could not notice the marker disappearing."""
 
-EMITTED_VERBS = ("a", "r", "s", "ca", "cr", "x")
-"""Every verb the adapter puts on a button: approve, reject, respond, the two confirmations of a
-no-undo action, and cancel. The wire values, not the constants, because the wire is what 400s."""
+EMITTED_VERBS = ("a", "r", "ca", "cr", "x")
+"""Every verb the adapter puts on a button: approve, reject, the two confirmations of a no-undo
+action, and cancel. The wire values, not the constants, because the wire is what 400s.
+
+``respond`` is absent because the channel narrows it away (TG-54, TG-65): ``validate_decisions``
+requires a message on it and this channel may not demand prose from a phone."""
 
 
 def action(
@@ -123,6 +126,28 @@ def string_sequence_literals() -> list[set[str]]:
             if len(values) == len(node.elts):
                 literals.append(set(values))
     return literals
+
+
+def string_constants() -> set[str]:
+    """Every string literal the module's *code* holds — docstrings excluded.
+
+    Docstrings quote constants on purpose (``fit`` explains why ``TRUNCATION_MARKER``'s default is
+    wrong for its caller); a duplicate in the code is the drift being asserted against.
+    """
+    tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
+    docstrings = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+            body = getattr(node, "body", [])
+            if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+                docstrings.add(id(body[0].value))
+    return {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(node) not in docstrings
+    }
 
 
 def imported_modules() -> set[str]:
@@ -447,11 +472,11 @@ def test_the_keyboard_is_the_servers_decisions_minus_edit_tg54(reason: GateReaso
     ships ``('edit', 'reject')`` and the bot draws an Approve button the server answers with a 400.
     Order is asserted too: it is the server's, and the first button is the one a hurried thumb hits.
     """
-    expected = tuple(d for d in GATE_DECISIONS[reason] if d != "edit")
+    expected = tuple(d for d in GATE_DECISIONS[reason] if d not in {"edit", "respond"})
     keyboard = keyboard_for(action(GATE_DECISIONS[reason], reason=reason.value), "7f3a2b1c", 0)
 
     assert keyboard is not None
-    labels = {"approve": "Approve", "reject": "Reject", "respond": "Respond"}
+    labels = {"approve": "Approve", "reject": "Reject"}
     assert [button["text"] for button in buttons(keyboard)] == [labels[d] for d in expected]
     assert all(parse_callback(button["callback_data"]) is not None for button in buttons(keyboard))
 
@@ -460,9 +485,8 @@ def test_the_keyboard_is_the_servers_decisions_minus_edit_tg54(reason: GateReaso
     ("label", "allowed", "expected"),
     [
         ("edit-and-reject", ("edit", "reject"), ["Reject"]),
-        ("respond-only", ("respond",), ["Respond"]),
         ("reject-first", ("reject", "approve"), ["Reject", "Approve"]),
-        ("everything", ("approve", "edit", "reject", "respond"), ["Approve", "Reject", "Respond"]),
+        ("everything", ("approve", "edit", "reject", "respond"), ["Approve", "Reject"]),
     ],
 )
 def test_a_gate_todays_table_does_not_ship_is_still_rendered_tg54(
@@ -479,6 +503,21 @@ def test_a_gate_todays_table_does_not_ship_is_still_rendered_tg54(
     assert keyboard is not None
     assert [button["text"] for button in buttons(keyboard)] == expected, label
     assert all(parse_callback(b["callback_data"])[1] == 3 for b in buttons(keyboard))  # type: ignore[index]
+
+
+def test_an_action_offering_only_respond_draws_no_button_tg54() -> None:
+    """``respond`` is narrowed away, because this channel cannot produce a valid one (TG-54, TG-65).
+
+    ``validate_decisions`` requires a message on ``respond`` — *"it becomes the tool's result"* —
+    and TG-65 forbids the bot demanding prose from a phone, so a ``Respond`` button could only ever
+    submit something the daemon refuses. Drawing it and refusing the press is the same dead
+    approval as drawing a button Telegram 400s on, which is what this rule exists to stop. The
+    result is TG-55's hand-off instead: a message with no keyboard, naming the thread and the TUI.
+
+    Diverges from TG-54's parenthetical ``drop=("edit",)`` and agrees with arch §6; no shipped
+    ``GATE_DECISIONS`` row offers ``respond``, so nothing in the deployed table changes.
+    """
+    assert keyboard_for(action(("respond",)), "7f3a2b1c", 0) is None
 
 
 def test_the_module_holds_no_hardcoded_approve_reject_pair_tg54() -> None:
@@ -563,16 +602,10 @@ def test_the_confirm_step_still_fits_the_button_budget_tg64() -> None:
 
 
 # --------------------------------------------------------------------------------------
-# § the part counter is part of the payload (TG-45 against TG-44) — a source bug
+# § the part counter is part of the payload (TG-45 against TG-44)
 # --------------------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    reason="BUG: TelegramAdapter._send prepends '(i/n)\\n' to a part split_message already sized "
-    "to the full 4096-unit limit, so the send is 4102 units and Telegram refuses it — the "
-    "human sees nothing. The counter has to be inside the split's budget.",
-    strict=True,
-)
 def test_the_mechanical_counter_fits_inside_the_wire_limit_tg45() -> None:
     """TG-45 allows a ``(2/4)`` counter; TG-44 says the budget must cover what is actually sent.
 
@@ -587,3 +620,74 @@ def test_the_mechanical_counter_fits_inside_the_wire_limit_tg45() -> None:
     for position, part in enumerate(parts):
         label = f"({position + 1}/{len(parts)})\n"
         assert utf16_len(label + part) <= MESSAGE_LIMIT, f"part {position + 1} is over the limit"
+
+
+# --------------------------------------------------------------------------------------
+# § both directions read one verb table (TG-54)
+# --------------------------------------------------------------------------------------
+
+
+def test_the_verb_table_is_read_in_both_directions_tg54() -> None:
+    """The keyboard and the resolver must not be two independent opinions about a button.
+
+    The build drew buttons from a derivation and read them back with
+    ``"approve" if verb == "a" else "reject"`` — a binary that agrees with the table on the two
+    verbs shipped today and silently turns every future one into a rejection of a write the human
+    never looked at. Asserted structurally, because behaviourally the two agree on every input that
+    currently exists, which is precisely what let the wrong half live.
+    """
+    assert "VERBS" in names_in("_offered_type"), "the press is validated through the table"
+    assert "VERBS" in names_in("_resolve"), "the decision is built from the table, not a comparison"
+    assert "_VERB_FOR" in names_in("keyboard_for"), "the keyboard reads the same table, inverted"
+    assert (
+        "_VERB_FOR" in names_in("_offered_type")
+        or {kind: verb for verb, kind in telegram_module.VERBS.items()} == telegram_module._VERB_FOR
+    ), "the inverse is derived from the table rather than written out beside it"
+
+
+def test_the_preview_marker_is_passed_through_not_stripped_back_off_tg56() -> None:
+    """``truncate(marker=)`` exists for this caller; the adapter kept a copy of the default instead.
+
+    The build called ``truncate(text, budget)`` with the default marker and then
+    ``removesuffix``-ed a hand-typed copy of ``TRUNCATION_MARKER``. That is behaviourally identical
+    *today* and silently wrong the day the shared constant is reworded: the strip stops matching,
+    and the preview then reads "open the TUI for the whole diff" directly above the whole diff —
+    the exact outcome decision U added the parameter to prevent. No behavioural test can see it, so
+    it is asserted at the call and by the absence of the duplicate.
+    """
+    assert "truncate" in names_in("fit")
+    assert "removesuffix" not in names_in("fit")
+    assert TRUNCATION_MARKER not in string_constants(), (
+        "a copy of the shared marker in this module is the drift `marker=` was added to remove"
+    )
+
+
+# --------------------------------------------------------------------------------------
+# § the bot renders ids, it never makes them (TG-40)
+# --------------------------------------------------------------------------------------
+
+
+def test_no_thread_id_is_ever_constructed_in_a_telegram_module_tg40() -> None:
+    """A client-derived thread id resolves to the wrong agent, and shares a checkpoint with it.
+
+    ``expert_thread_id`` is the seam's, and Layer 3 mints every user thread id (SV-10): a bot that
+    assembled ``f"{parent}::{agent}"`` would be a second implementation of an id convention, and
+    the failure is silent — under D6 the wrong conversation's checkpoint is written to with no
+    error anywhere. True today by inspection and asserted by nothing, so adding the f-string broke
+    no test at all.
+
+    Asserted over string constants and f-strings rather than by importing, because the point is
+    absence: there is no call to make and no exception to catch.
+    """
+    separator = "::"
+    assert not [text for text in string_constants() if separator in text]
+
+    joined = {
+        value.value
+        for node in ast.walk(ast.parse(SOURCE.read_text(encoding="utf-8")))
+        if isinstance(node, ast.JoinedStr)
+        for value in node.values
+        if isinstance(value, ast.Constant) and isinstance(value.value, str)
+    }
+    assert not [text for text in joined if separator in text], "an id is being built in an f-string"
+    assert "expert_thread_id" not in names_in("_threads_text")

@@ -56,8 +56,12 @@ __all__ = [
 ]
 
 TRUNCATION_MARKER: Final = "\n… (truncated — open the TUI for the whole diff)"
-"""What a channel with a length limit appends. Visible, because a silently clipped diff is a diff
-the human approved without seeing (D6: there is no undo)."""
+"""The **default** a channel with a length limit appends. Visible, because a silently clipped diff
+is a diff the human approved without seeing (D6: there is no undo).
+
+It names the TUI, so a channel that already put the whole text in front of the human passes its own
+``marker=`` to :func:`truncate` rather than sending them to a terminal for what is on the screen
+above (C-35, TG-56)."""
 
 _DIFF_MARKER: Final = "@@"
 """The observable sign that the server actually produced a unified diff.
@@ -182,22 +186,41 @@ def edited_args(
     return merged
 
 
-def truncate(description: str, limit: int) -> tuple[str, bool]:
+def truncate(description: str, limit: int, *, marker: str = TRUNCATION_MARKER) -> tuple[str, bool]:
     """``(text, was_truncated)`` — cut on a **line boundary**, with a visible marker (CL-22).
 
     Shared because every channel with a length limit needs it and each would otherwise cut
     differently: Telegram's message limit is the obvious case, but a narrow terminal pane is the
     same problem. Cutting mid-line in a unified diff can turn a removal into what reads as an
     addition, and a silent cut is a diff the human approved without seeing all of.
+
+    **What this is for is list rows, previews and captions — never the surface a decision is made
+    against** (C-35, decision U). TU-39 rules that an ``ActionView.description`` is rendered
+    verbatim and never truncated, *"because the human approves an irreversible write from a
+    fragment"*, and measured that collision is the common case rather than a corner: a 120-bullet
+    note approval is 9,218 characters and a delete of the same file is 7,868, against a 4,096-unit
+    limit — so cutting to fit hides the last 60 bullets of 120 under an irreversible approve
+    button. A channel too small for the whole text changes the **container** (TG-56 uploads it as a
+    document) and only then offers a preview cut through here.
+
+    ``marker`` exists because the default hard-codes *"open the TUI for the whole diff"*, which in
+    that preview prints directly above the whole diff it is telling the human to open a terminal to
+    read. The alternative — a second truncation implementation inside the adapter — is exactly the
+    per-channel drift this function exists to prevent, so the channel supplies its own wording and
+    keeps the one cut.
+
+    The cut stays **character-based and channel-agnostic**: Telegram's UTF-16 arithmetic lives in
+    the adapter (C-26, TG-44), because a helper that learned one channel's units would be wrong for
+    the next one.
     """
     if limit <= 0 or len(description) <= limit:
         return description, False
-    budget = max(0, limit - len(TRUNCATION_MARKER))
+    budget = max(0, limit - len(marker))
     cut = description[:budget]
     boundary = cut.rfind("\n")
     if boundary > 0:
         cut = cut[:boundary]
-    return cut + TRUNCATION_MARKER, True
+    return cut + marker, True
 
 
 def is_diff(description: str) -> bool:

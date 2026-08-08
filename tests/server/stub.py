@@ -103,7 +103,11 @@ class StubService:
     async def create_thread(
         self, agent_id: str, *, title: str | None = None, origin_channel: str = "http"
     ) -> Thread:
-        self.calls.append(("create_thread", (agent_id,)))
+        # `origin_channel` is recorded (TG-4): it was thrown away here, so nothing in the suite
+        # could see which channel stamped a thread, and deleting the keyword from the Telegram
+        # adapter broke no test at all — silently costing D3's cross-channel-resume story, where a
+        # conversation started on a phone has to be recognisable in the TUI.
+        self.calls.append(("create_thread", (agent_id, origin_channel)))
         if agent_id not in {a.agent_id for a in AGENTS}:
             raise UnknownAgentError(f"no agent answers to the id {agent_id!r}")
         thread = Thread(

@@ -417,7 +417,21 @@ def outcome(result: CallToolResult) -> dict[str, Any]:
 # --------------------------------------------------------------------------------------
 
 MCP_SOURCE = Path(mcp_module.__file__)
+TELEGRAM_SOURCE = Path(pkb.server.__file__).parent / "telegram.py"
+TELEGRAM_API_SOURCE = Path(pkb.server.__file__).parent / "telegram_api.py"
 SERVER_SOURCES = sorted(Path(pkb.server.__file__).parent.glob("*.py"))
+
+ALLOWED_BASE_URLS = frozenset({"https://api.telegram.org"})
+"""The only URL any transport in ``pkb.server`` may name (MC-7 as amended, TG-68).
+
+Not "no HTTP client": the Bot API is HTTPS-only and egress to a third party is the whole job. What
+MC-7's own docstring forbids is a *second client of this process* — and a URL is what that would
+take. Asserted as "no ``://`` literal except this one" rather than as a list of banned route paths,
+because two of those paths are legitimately spelled elsewhere: the bot's own ``/threads`` command
+(TG-39) is byte-identical to the daemon's route, and ``mcp.py`` names ``127.0.0.1`` as the host it
+**binds**, which is the opposite of a client. A ``://`` sweep still catches the plant that proved
+this test was missing — ``_DAEMON = "http://127.0.0.1:8765/threads"``, which the whole suite let
+through."""
 
 
 def _parse(path: Path) -> ast.Module:
@@ -447,6 +461,28 @@ def code_strings(path: Path) -> list[str]:
         if isinstance(node, ast.Constant)
         and isinstance(node.value, str)
         and id(node) not in documentation
+    ]
+
+
+def executable_strings(path: Path) -> list[str]:
+    """:func:`code_strings`, minus **attribute** docstrings as well as the three PEP-257 kinds.
+
+    A triple-quoted string under a module-level constant is documentation the interpreter evaluates
+    and discards, exactly like a function's; it is a bare ``ast.Expr`` wrapping a constant, so
+    excluding that shape excludes every prose string a module holds and leaves only the ones that
+    can become a request. Without this, MC-7's loopback sweep trips over the sentence explaining
+    why ``/health`` matters.
+    """
+    tree = _parse(path)
+    prose = {
+        id(node.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
+    }
+    return [
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in prose
     ]
 
 
@@ -650,20 +686,45 @@ async def test_the_agents_resource_publishes_the_ids_the_tools_accept_mc6(
         assert answered.is_error is False
 
 
-def test_the_adapter_pulls_no_http_client_and_no_harness_mc7() -> None:
-    """MCP is a transport, not a second client of the daemon.
+@pytest.mark.parametrize(
+    "source",
+    [MCP_SOURCE, TELEGRAM_SOURCE, TELEGRAM_API_SOURCE],
+    ids=["mcp", "telegram", "telegram_api"],
+)
+def test_a_transport_pulls_no_harness_and_never_curls_the_daemon_mc7(source: Path) -> None:
+    """MCP is a transport, not a second client of the daemon — and so is the bot (TG-67, TG-68).
 
     D9 is explicit that an adapter reaches the service by calling it, never by making an HTTP round
     trip back into the same process — a bot that curls its own daemon is a second process to
     supervise, a second failure mode and a second copy of the error table. And I2 keeps every
     transport free of the harness, so the import-linter contract stays a real check rather than an
     ``allow_indirect_imports`` rubber stamp.
-    """
-    roots = _roots(MCP_SOURCE)
 
-    assert not roots & HTTP_CLIENT_ROOTS
+    The rule's prose has always named ``pkb.server.telegram`` beside ``pkb.server.mcp``, and the
+    test named only ``MCP_SOURCE``: the string "telegram" did not appear in this file at all.
+    Proven, not inferred — planting both ``import httpx`` and
+    ``_DAEMON = "http://127.0.0.1:8765/threads"`` at the top of ``pkb/server/telegram.py`` left
+    **1934 tests passing** and ``lint-imports`` at **5 kept, 0 broken**. Nothing mechanical stopped
+    the newest transport from curling the process it lives inside.
+
+    ``HTTP_CLIENT_ROOTS`` is applied to the **logic** modules only (C-27): the Bot API is HTTPS at
+    ``api.telegram.org`` with no non-HTTP transport short of MTProto, so banning an HTTP client
+    outright would be unsatisfiable. What is banned is loopback — asserted here for every transport
+    by literal, and positively for the one module that is allowed a client (its only base URL is
+    the Bot API's, pinned in ``test_telegram_api.py``).
+    """
+    roots = _roots(source)
+
+    if source is not TELEGRAM_API_SOURCE:
+        assert not roots & HTTP_CLIENT_ROOTS
     assert not roots & HARNESS_ROOTS
-    assert not any(name.startswith("pkb.agents") for name in imported_modules(MCP_SOURCE))
+    assert not any(name.startswith("pkb.agents") for name in imported_modules(source))
+    assert not any(name.startswith("pkb.tui") for name in imported_modules(source))
+    assert "pkb.clients.sse" not in imported_modules(source)
+    # `http(s)://` only: `pkb://` is MCP's own resource scheme, which nothing fetches over a
+    # network — it is resolved in process by the same object that publishes it.
+    urls = {text for text in executable_strings(source) if "http://" in text or "https://" in text}
+    assert urls <= ALLOWED_BASE_URLS, source.name
 
 
 # --------------------------------------------------------------------------------------
@@ -876,7 +937,7 @@ async def test_the_returned_thread_id_continues_the_same_conversation_mc11(
 
         assert second["thread_id"] == first["thread_id"]
         assert [c for c in service.calls if c[0] == "create_thread"] == [
-            ("create_thread", (LIBRARIAN,))
+            ("create_thread", (LIBRARIAN, "mcp"))
         ]
         assert [c[1][0] for c in service.calls if c[0] == "start_run"] == [
             first["thread_id"],

@@ -200,7 +200,7 @@ async def test_the_offset_does_not_wait_for_dispatch_tg29(db_path: Path) -> None
         await store.claim(7, CHAT, "message")
 
         assert await store.next_offset() == 8
-        assert await store.orphans() == [7]
+        assert await store.orphans() == [(7, CHAT)]
 
 
 @pytest.mark.asyncio
@@ -257,10 +257,10 @@ async def test_an_update_claimed_but_never_dispatched_is_named_in_arrival_order_
             await store.claim(update_id, CHAT, "message")
         await store.dispatched(9)
 
-        assert await store.orphans() == [5, 12]
+        assert await store.orphans() == [(5, CHAT), (12, CHAT)]
 
     async with opened(db_path) as restarted:
-        assert await restarted.orphans() == [5, 12]
+        assert await restarted.orphans() == [(5, CHAT), (12, CHAT)]
         await restarted.dispatched(5)
         await restarted.dispatched(12)
         assert await restarted.orphans() == []
@@ -625,13 +625,6 @@ async def test_two_approvals_in_one_chat_never_share_an_accumulator_tg60(db_path
         assert other == {0: "reject"}
 
 
-@pytest.mark.xfail(
-    reason="record_answer reads the row, awaits, then writes it back: two concurrent taps on one "
-    "approval lose an answer, and CL-6 forbids padding it back in. Latent today because "
-    "`_poll` dispatches updates strictly serially — reachable the moment anything runs a "
-    "second handler alongside it.",
-    strict=True,
-)
 @pytest.mark.asyncio
 async def test_two_taps_arriving_together_do_not_lose_an_answer_tg60(db_path: Path) -> None:
     """The accumulator decides whether ``resolve`` is ever called, so a dropped tap parks forever.
@@ -642,13 +635,15 @@ async def test_two_taps_arriving_together_do_not_lose_an_answer_tg60(db_path: Pa
     ``action_count``, ``resolve`` is never called and the interrupt stays parked with both of the
     human's taps already spent. The failure is silent from the phone: the buttons appeared to work.
 
-    ``record_message`` has the identical shape, where the lost id is a keyboard that is never
-    removed (TG-63) — a live approve button on a write that already happened.
+    The merge therefore happens inside the ``UPDATE`` itself, so what is written is what was read.
+    The persisted row is only half the claim: ``_on_callback`` decides on the map ``record_answer``
+    *returns* (``if len(answers) < prompt["action_count"]: return``), so one of the two calls has to
+    come back holding both answers or ``resolve`` is still never reached.
     """
     async with opened(db_path) as store:
         await open_two_action_prompt(store)
 
-        await asyncio.gather(
+        returned = await asyncio.gather(
             store.record_answer(HANDLE, 0, "approve"),
             store.record_answer(HANDLE, 1, "reject"),
         )
@@ -656,6 +651,31 @@ async def test_two_taps_arriving_together_do_not_lose_an_answer_tg60(db_path: Pa
         row = await store.prompt(HANDLE)
         assert row is not None
         assert row["answers"] == {0: "approve", 1: "reject"}
+        assert max(len(answers) for answers in returned) == row["action_count"]
+
+
+@pytest.mark.asyncio
+async def test_two_messages_recorded_together_do_not_lose_a_keyboard_tg60(db_path: Path) -> None:
+    """``record_message`` had ``record_answer``'s shape, and it loses a keyboard rather than a tap.
+
+    The N messages of a multi-action approval are posted one per action, and every one of their ids
+    has to reach the row or TG-63 cannot clear all N. A read-modify-write across an ``await`` drops
+    whichever id was written second, and the message it belonged to keeps its buttons forever: the
+    human scrolls back, presses approve on a write that already happened, and either gets a stale
+    alert or answers whatever interrupt is pending now. Nothing about that is visible when it
+    happens, so the assertion is on the ids that survive a concurrent pair, not on a serial one.
+    """
+    async with opened(db_path) as store:
+        await open_two_action_prompt(store)
+
+        await asyncio.gather(
+            store.record_message(HANDLE, 11),
+            store.record_message(HANDLE, 12),
+        )
+
+        row = await store.prompt(HANDLE)
+        assert row is not None
+        assert sorted(row["message_ids"]) == [11, 12]
 
 
 @pytest.mark.asyncio
@@ -760,3 +780,144 @@ async def test_setup_over_an_existing_file_keeps_every_row_the_bot_already_wrote
         assert await restarted.next_offset() == 43
         assert await restarted.bound_thread(CHAT) == THREAD
         assert await restarted.prompt(HANDLE) is not None
+
+
+# --------------------------------------------------------------------------------------
+# § the connection this store must be handed (TG-28, ST-1, ST-3)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_transactional_connection_is_refused_at_setup_tg28(db_path: Path) -> None:
+    """Autocommit is a **precondition**, and it was neither documented nor checked.
+
+    Every statement in this module is a single short write, which is only true because Layer 3
+    opens its connection ``isolation_level=None``. Handed a default aiosqlite connection,
+    ``_merged``'s ``execute → fetchall → commit`` holds an implicit write transaction across two
+    awaits — and ST-3 *measured* what that costs: a handler holding one across an ``await`` killed
+    a concurrent checkpointer run after the victim's 5 s timeout, surfacing as a failed agent run
+    with a written file and no flush. The bot writes on the inbound path, which is precisely when a
+    run is streaming, so the failure would land on somebody else's turn and name this module
+    nowhere.
+    """
+    connection = await aiosqlite.connect(db_path)  # the default: deferred transactions
+    try:
+        with pytest.raises(ValueError) as caught:
+            await SqliteTelegramStore(connection).setup()
+    finally:
+        await connection.close()
+
+    assert "isolation_level=None" in str(caught.value)
+
+
+def test_no_statement_opens_a_transaction_it_has_to_hold_tg28() -> None:
+    """``BEGIN`` appears nowhere, so there is no transaction for an ``await`` to sit inside.
+
+    Asserted over the source rather than by behaviour because the failure is a *timing* one: with
+    autocommit the same code is correct, and the day somebody adds ``BEGIN IMMEDIATE`` to make two
+    statements atomic, every test here still passes and a concurrent checkpointer write starts
+    failing five seconds later in another layer.
+    """
+    import ast
+    from pathlib import Path as _Path
+
+    import pkb.service.telegram as store_module
+
+    source = _Path(store_module.__file__).read_text(encoding="utf-8")
+    statements = [
+        node.value
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    ]
+    executed = [text.upper() for text in statements if "SELECT" in text or "UPDATE" in text]
+    assert executed, "the walk found no SQL at all; this check is broken, not the code"
+    for text in statements:
+        assert "BEGIN " not in text.upper(), text
+
+
+@pytest.mark.asyncio
+async def test_the_store_is_hammered_while_a_run_streams_and_never_locks_tg28(
+    db_path: Path,
+) -> None:
+    """The bot writes on the inbound path, which is exactly when the checkpointer is writing.
+
+    Two connections on one file, one of them looping the checkpointer's own tables while the store
+    accumulates ledger rows, prompts and answers: with a transaction held across an ``await`` this
+    is where ``database is locked`` appears, five seconds later, on the *other* connection. Zero is
+    the only acceptable number because the victim of the failure is an agent run, not the bot.
+    """
+    async with opened(db_path) as store:
+        other = await aiosqlite.connect(db_path, isolation_level=None)
+        try:
+            await other.executescript(FOREIGN_SCHEMA)
+            errors: list[str] = []
+
+            async def checkpointing() -> None:
+                for index in range(200):
+                    try:
+                        await other.execute(
+                            "INSERT INTO checkpoints (thread_id, checkpoint) VALUES (?,?)",
+                            (f"t-{index}", b"blob"),
+                        )
+                    except sqlite3.OperationalError as exc:  # pragma: no cover - the failure case
+                        errors.append(str(exc))
+                    await asyncio.sleep(0)
+
+            async def botting() -> None:
+                for index in range(200):
+                    try:
+                        await store.claim(index, CHAT, "message")
+                        await store.started(index, THREAD, f"run-{index}")
+                        await store.open_prompt(f"h{index}", CHAT, THREAD, f"i-{index}", 1)
+                        await store.record_answer(f"h{index}", 0, "a")
+                    except sqlite3.OperationalError as exc:  # pragma: no cover - the failure case
+                        errors.append(str(exc))
+                    await asyncio.sleep(0)
+
+            await asyncio.gather(checkpointing(), botting())
+        finally:
+            await other.close()
+
+    assert errors == []
+
+
+@pytest.mark.asyncio
+async def test_a_whole_approval_cycle_leaves_the_knowledge_base_byte_identical_tg28(
+    tmp_path: Path,
+) -> None:
+    """I3, measured rather than argued: nothing under ``kb_root`` moves, including its mtimes.
+
+    The structural half is stronger than this test — neither telegram module imports ``os``,
+    ``shutil`` or ``tempfile``, and the built SV-22 scan fails outright on one that does — but the
+    structural half is about *imports*, and this is about the tree. The database deliberately lives
+    **outside** ``kb_root`` (``<kb>/../pkb.sqlite``), which is the whole reason a Layer 3 table can
+    hold a transport's bookkeeping at all.
+    """
+    kb_root = tmp_path / "kb"
+    (kb_root / "topics" / "Cooking").mkdir(parents=True)
+    (kb_root / "topics" / "Cooking" / "steak.md").write_text("existing\n", encoding="utf-8")
+    (kb_root / "tags.md").write_text("# Tags\n", encoding="utf-8")
+    before = {
+        path: (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in sorted(kb_root.rglob("*"))
+        if path.is_file()
+    }
+
+    async with opened(tmp_path / "pkb.sqlite") as store:
+        await store.claim(1, CHAT, "message")
+        await store.bind(CHAT, THREAD, COOKING)
+        await store.started(1, THREAD, "run-1")
+        await store.open_prompt(HANDLE, CHAT, THREAD, "i-1", 2)
+        await store.record_message(HANDLE, 1001)
+        await store.record_answer(HANDLE, 0, "a")
+        await store.record_answer(HANDLE, 1, "r")
+        await store.resolve_prompt(HANDLE)
+        await store.dispatched(1)
+
+    after = {
+        path: (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in sorted(kb_root.rglob("*"))
+        if path.is_file()
+    }
+    assert after == before
+    assert (tmp_path / "pkb.sqlite").is_file(), "the database is beside the tree, never inside it"

@@ -834,7 +834,7 @@ async def test_every_route_the_tui_uses_keeps_its_ids_byte_for_byte_dc19() -> No
         assert GRILLING in catalog and "/" in GRILLING
 
         parent = await client.create_thread(GRILLING)
-        assert ("create_thread", (GRILLING,)) in service.calls
+        assert ("create_thread", (GRILLING, "tui")) in service.calls
 
         derived = expert_thread_id(parent["thread_id"], COOKING)
         assert "::" in derived and "/" in derived

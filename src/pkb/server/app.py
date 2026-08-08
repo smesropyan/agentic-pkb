@@ -137,15 +137,28 @@ def create_app(open_service: ServiceFactory, *, config: ServerConfig | None = No
 
     @app.get("/health")
     async def health_endpoint(request: Request) -> dict[str, Any]:
-        """200 while serving, always (AP-18). Degradation lives in the body."""
+        """200 while serving, always (AP-18). Degradation lives in the body.
+
+        ``unmapped_agents`` is computed **here** (TG-11, TG-3, C-30): one set difference over the
+        catalog this endpoint already fetches, against the agent ids the deployment's Telegram
+        mapping names. It is the only mechanism that tells a human the topic they just created is
+        unreachable from their phone — without it, creating a topic and then wondering why the bot
+        ignores it is a silent, permanent confusion. Computing it here rather than in the bot keeps
+        the answer available while the bot is crash-looping, which is when ``/health`` gets read; and
+        it is a **set** difference, never a length comparison, because two chats may legitimately
+        map to one agent (TG-25).
+        """
         service = getattr(request.app.state, "service", None)
         counts = (0, 0)
         pending = 0
         agents = 0
         active = 0
         subscribers = 0
+        unmapped: tuple[str, ...] = ()
         if service is not None:
-            agents = len(service.list_agents())
+            catalog = service.list_agents()
+            agents = len(catalog)
+            unmapped = tuple(sorted({item.agent_id for item in catalog} - health.telegram.agents))
             active = service.runs.active
             subscribers = service.runs.subscribers
             counts = await service.thread_counts()
@@ -156,6 +169,7 @@ def create_app(open_service: ServiceFactory, *, config: ServerConfig | None = No
             subscribers=subscribers,
             threads=counts,
             proposals_pending=pending,
+            unmapped_agents=unmapped,
         )
 
     app.include_router(build_router(service_of_request, lambda request: request.app.state.shutdown))

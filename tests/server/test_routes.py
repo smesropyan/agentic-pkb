@@ -44,7 +44,7 @@ from pkb.contracts import (
     UnknownThreadError,
     expert_thread_id,
 )
-from pkb.server.app import create_app
+from pkb.server.app import ServerConfig, create_app
 from pkb.server.health import HealthState, redact
 from pkb.server.routes import route_paths
 from pkb.service import RunSubscription, Thread
@@ -239,7 +239,7 @@ def test_an_agent_id_keeps_its_slashes_ro2(service: StubService, client: TestCli
     response = client.post(f"/agents/{GRILLING}/threads", json={})
 
     assert response.status_code == 201
-    assert ("create_thread", (GRILLING,)) in service.calls
+    assert ("create_thread", (GRILLING, "http")) in service.calls
     assert response.json()["thread"]["agent_id"] == GRILLING
 
 
@@ -259,8 +259,8 @@ def test_a_percent_encoded_agent_id_resolves_to_the_same_agent_ro2(
     # The assertion with teeth is the id the service was asked about: the decoded one, or the
     # undecoded string that then 404s. Never a third agent.
     assert service.calls[-1] in (
-        ("create_thread", (COOKING,)),
-        ("create_thread", ("topic%2Fcooking",)),
+        ("create_thread", (COOKING, "http")),
+        ("create_thread", ("topic%2Fcooking", "http")),
     )
 
 
@@ -908,3 +908,148 @@ def test_redaction_leaves_ordinary_text_alone_ap18() -> None:
     """A redactor that eats diagnostics is a redactor somebody turns off."""
     message = "ConnectError: [Errno 61] Connection refused to 127.0.0.1:8765"
     assert redact(message) == message
+
+
+# --------------------------------------------------------------------------------------
+# The telegram block of `/health` (TG-11, TG-12, TG-13), 2026-08-08
+# --------------------------------------------------------------------------------------
+
+
+@contextlib.contextmanager
+def client_for_health(state: HealthState) -> Iterator[TestClient]:
+    """A client over an app whose ``HealthState`` the test owns — the daemon's seam (C-30).
+
+    ``ServerConfig`` takes the health state the composition root built, which is where the Telegram
+    mapping's shape (``chats``, ``agents``) is stamped onto it. No telegram task is started: the
+    block must be right whether or not the bot is running.
+    """
+    app = create_app(opener_for(seed(StubService())), config=ServerConfig(health=state))
+    with TestClient(app, base_url=BASE_URL) as started:
+        yield started
+
+
+def mapped(mapping: dict[int, str]) -> HealthState:
+    """A health state carrying what the daemon loads from its config file (TG-11, TG-17)."""
+    state = HealthState(kb_root="/kb")
+    state.telegram.chats = len(mapping)
+    state.telegram.agents = frozenset(mapping.values())
+    state.telegram.running()
+    return state
+
+
+def test_health_names_every_agent_no_chat_can_reach_tg11() -> None:
+    """TG-3's whole mechanism: the daemon reports the agents the mapping does not name.
+
+    Creating a topic does not create a Telegram chat — the mapping is hand-configured and the bot
+    never writes it. So the human's first sign that a new topic is unreachable from their phone is
+    that the bot ignores it, silently and permanently, unless `/health` says so here. The count is
+    published beside it because "three chats, one unreachable topic" is the sentence a human needs.
+    """
+    state = mapped({100: LIBRARIAN, 200: COOKING})
+
+    with client_for_health(state) as client:
+        body = client.get("/health").json()
+
+    assert body["telegram"]["chats"] == 2
+    assert body["telegram"]["unmapped_agents"] == [GRILLING]
+
+
+def test_unmapped_agents_is_a_set_difference_not_a_count_tg25() -> None:
+    """Two chats may map to one agent, so arithmetic over lengths lies about coverage.
+
+    A household with a phone and a tablet on the same topic has two chats and one agent. A check of
+    ``len(mapping) >= len(agents)`` calls that deployment complete while two topics sit unreachable,
+    which is precisely the silent gap TG-3 exists to close.
+    """
+    state = mapped({100: COOKING, 200: COOKING})
+
+    with client_for_health(state) as client:
+        body = client.get("/health").json()
+
+    assert body["telegram"]["chats"] == 2, "two chats"
+    assert body["telegram"]["unmapped_agents"] == [LIBRARIAN, GRILLING]
+
+
+def test_unmapped_agents_survives_a_crash_looping_bot_tg11() -> None:
+    """It is computed in the endpoint, not by the bot, so a dead bot cannot take it away.
+
+    A human reads `/health` when something is wrong. If the mapping report came from the adapter,
+    it would go blank exactly then — and the reader would be unable to tell "this topic has no
+    chat" from "the bot is down", which are different problems with different fixes.
+    """
+    state = mapped({100: LIBRARIAN, 200: COOKING})
+    state.telegram.failed(RuntimeError("boom"))
+
+    with client_for_health(state) as client:
+        response = client.get("/health")
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["status"] == "degraded", "a restarting subsystem is the narrow degraded case"
+    assert body["telegram"]["unmapped_agents"] == [GRILLING]
+
+
+def test_running_does_not_mean_telegram_is_reachable_tg12() -> None:
+    """``state`` reports the task; ``last_poll_ok_at`` reports Telegram.
+
+    ``_supervise`` stamps ``running()`` before it awaits the task body, so a bot whose token was
+    revoked polls, gets a 401 and stays ``running`` with ``restarts: 0`` forever. A human debugging
+    that sees ``status: ok`` for the whole first poll window and learns nothing; only a
+    ``last_poll_ok_at`` that never appears — or stops advancing — tells the truth.
+    """
+    state = mapped({100: COOKING})
+
+    with client_for_health(state) as client:
+        before = client.get("/health").json()["telegram"]
+        state.telegram.poll_ok()
+        after = client.get("/health").json()["telegram"]
+
+    assert before["state"] == "running" and before["last_poll_ok_at"] is None
+    assert after["last_poll_ok_at"] == state.telegram.last_poll_ok_at
+    assert after["last_poll_ok_at"] is not None
+
+
+def test_a_send_failure_never_degrades_health_tg13() -> None:
+    """A failed ``sendMessage`` is reported and nothing else — 200, ``ok``, ``running``.
+
+    ``degraded`` means one thing: an enabled subsystem is not running. Widened to "something is a
+    bit wrong" it fires on every dropped message and gets muted; and a non-200 invites the
+    supervisor restart D9 forbids, which would kill in-flight runs and pending approvals that are
+    perfectly healthy. So ``send_failed`` touches neither ``state`` nor ``restarts``.
+    """
+    state = mapped({100: COOKING})
+
+    with client_for_health(state) as client:
+        state.telegram.send_failed(TimeoutError("sendMessage timed out"))
+        response = client.get("/health")
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["status"] == "ok"
+    assert body["telegram"]["state"] == "running"
+    assert body["telegram"]["restarts"] == 0
+    assert "sendMessage timed out" in body["telegram"]["last_send_error"]
+
+
+def test_a_send_failure_never_publishes_the_bot_token_tg13() -> None:
+    """The new field is arbitrary library text on an unauthenticated surface, so it is redacted.
+
+    The bot token lives in the request URL's *path*, so any client error that names the URL carries
+    it — and `/health` is served to anything on the machine (AP-20). ``last_error`` was fixed for
+    this once; a second free-text field inherits the fix rather than reopening the leak.
+    """
+    token = "123456789:AAFAKEfakeFAKEfake_TOKEN_valueXYZ"
+    state = mapped({100: COOKING})
+
+    state.telegram.send_failed(
+        ConnectionError(f"POST https://api.telegram.org/bot{token}/sendMessage failed")
+    )
+    body = state.payload(
+        agent_count=3, active_runs=0, subscribers=0, threads=(0, 0), proposals_pending=0
+    )
+
+    assert token not in str(body)
+    assert "[redacted]" in str(body["telegram"]["last_send_error"])
+    assert "sendMessage failed" in str(body["telegram"]["last_send_error"]), (
+        "the diagnosis survives"
+    )

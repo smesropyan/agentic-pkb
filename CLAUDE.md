@@ -13,6 +13,7 @@ mechanical structure enforced in code and the meaning curated in dialog with the
 | `docs/superpowers/specs/2026-08-06-pkb-agents-layer2-rules.md` | Every Layer 2 rule (`RT-*`, `RG-*`, `MW-*`, `LB-*`, `PR-*`, `SK-*`): runtime, registry, permissions, gates, middleware, the routing workflow, the shipped prompts and skills. The contract `pkb.agents` is tested against. |
 | `docs/superpowers/specs/2026-08-07-pkb-service-server-layer3-rules.md` | Every Layer 3 rule (`SV-*`, `RO-*`, `SS-*`, `AP-*`, `ST-*`, `MC-*`, `PK-*`): the service protocol, HTTP routes, SSE, approvals, packs, the MCP mount and the Telegram wiring. Built. |
 | `docs/superpowers/specs/2026-08-08-pkb-tui-clients-layer4-rules.md` | Every Layer 4 rule (`CL-*`, `DC-*`, `TU-*`): the shared approval helper, the SSE decoder, the transport and the Textual client. Built. |
+| `docs/superpowers/specs/2026-08-08-pkb-telegram-layer5-rules.md` | Every Layer 5 rule (`TG-*`): the supervised bot task, the owner allow-list, the durable update ledger and approval prompts, the Bot API port, and every length, ordering and keyboard rule an approval on a phone depends on. Built. |
 | `docs/superpowers/specs/2026-08-07-large-source-ingestion.md` | Sources that do not fit a turn: one file per source with the arguments as sections, `.inbox` staging, re-ingestion and reconciliation. Crosses all three layers. Designed, not built. |
 | `docs/reference/deepagents-0.7.5-api-recon.md` | Verified signatures of the harness Layer 2 will use. |
 
@@ -31,7 +32,22 @@ mechanical structure enforced in code and the meaning curated in dialog with the
 4. `pkb.clients` + `pkb.tui` — the shared approval helper, the SSE decoder, the HTTP transport and
    the Textual client. **Built.** Run it with `python -m pkb.tui` against a running daemon. See §8
    "As built" in the Layer 4 rules.
-5. `pkb.server.telegram` — hosted in the daemon, one Telegram channel per expert. **← next**
+5. `pkb.server.telegram` + `pkb.server.telegram_api` + `pkb.service.telegram` — the supervised bot
+   task, the Bot API port and the durable bindings, ledger and approval prompts. **Built.** See §8
+   "As built" in the Layer 5 rules for the shipped `BotApi` surface, the two clauses of TG-48/TG-49
+   that are deliberately not built, and what the conformance pass had to change.
+
+**Enable the bot** with `PKB_TELEGRAM_TOKEN` in the environment and a JSON file beside the SQLite
+database (`<db>.telegram.json`, or `--telegram-config`):
+
+```json
+{"chats": {"<chat_id>": "topic/cooking"}, "owners": [<your_user_id>]}
+```
+
+The token is read in `pkb.daemon` and nowhere else — neither telegram module may import `os`, and a
+built seam scan enforces it. `owners` is **the system's only authentication boundary**: a bot's
+username is discoverable and the token is a public inbound path into a tree with no undo, so an
+empty list refuses everyone. No token or no file leaves the bot off and the daemon serving.
 
 **The daemon owns runs.** A run is a plain `asyncio.Task` publishing into a per-run hub; an HTTP
 response subscribes to it. A dropped connection **detaches** — it never cancels — because D2's whole
