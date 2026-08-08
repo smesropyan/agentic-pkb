@@ -1,7 +1,8 @@
 # PKB Service + Server (Layer 3) — Requirements and Rules
 
 **Date**: 2026-08-07
-**Status**: **Designed, not built.** Every open question has a default applied; none blocks the build.
+**Status**: **Built (2026-08-08).** 1529 tests, ruff, mypy-strict and four import contracts green.
+See §8 "As built" for what the grounding re-run corrected and what the test suite found.
 **Scope**: `pkb.service`, `pkb.server` (`app`, `routes`, `sse`, `mcp`, `telegram` wiring), `pkb.packs`,
 and the Layer 3 tables — build-order step 3 of the
 [architecture design](2026-08-06-pkb-architecture-design.md), built on the merged
@@ -742,3 +743,106 @@ Do **not** build any of the following in `pkb.service` or `pkb.server`. Each is 
 - **Iterating `runtime.run(...)` from an ASGI response handler** (AP-6). It ties the run's lifetime to
   the socket, which is D2/D3's promise deleted, and the tests that would catch it are the ones nobody
   writes.
+
+---
+
+## 8. As built (2026-08-08)
+
+Built as `pkb/packs.py`, `pkb/service/` (five modules), `pkb/server/` (six), `pkb/daemon.py`, and the
+seam additions in `pkb/contracts.py`. **1529 tests** pass — 226 of them new, across
+`tests/service/{test_seam,test_threads,test_store}.py`,
+`tests/server/{test_runs,test_routes,test_sse,test_mcp}.py` and `tests/test_packs.py` — with ruff,
+mypy-strict and **four** import contracts green.
+
+### What the grounding re-run corrected
+
+Seven probes executed every package assumption against the installed versions. **No claim in §2
+failed to reproduce**, and SS-1 in particular is now independently verified rather than inherited
+from the pass that produced the discredited P-2 — so its "re-run before relying on it" hedge is
+dropped. But several rules were wrong in ways that were bugs rather than wording:
+
+| Rule | What the re-run found |
+|---|---|
+| **AP-10** | "Await the first `__anext__`" is right for a *refusal* (0.01 ms) and wrong for an *admitted* run, whose first event is a whole model call away — 2.06 s measured. Awaiting unconditionally holds the response headers for that long, which is the thing AP-10 exists to prevent. It is now a **race** with a 250 ms deadline: refused runs raise, admitted ones commit the headers and put the pending future at the head of the stream. |
+| **SS-1, AP-6** | New hard constraint: **the SSE generator's `finally` must be synchronous.** The enclosing anyio cancel scope is level-triggered, so the first `await` inside it raises `CancelledError` again and the rest never runs — and `asyncio.shield` does **not** rescue it. Anything needing an await on teardown belongs to the run task. |
+| **SS-1** | The 2.4 hazard is worse than stated. Under uvicorn's real contract (`send` raises `OSError` on a dead socket) `StreamingResponse` does not merely keep generating — starlette raises `ClientDisconnect` and the suspended generator is **never finalized**. |
+| **AP-9** | The replay buffer must hold `ServerSentEvent` objects, never the dicts handed to the response: `ensure_bytes` **mutates** a yielded dict, adding a `sep` key, and an unknown key raises. |
+| **SS-6** | The ping is a **fixed-interval heartbeat over the whole connection**, not an idleness timer — outgoing data never resets it. Nothing may read `: ping` as "the run is idle". `ping=0` is a busy loop, not an off switch. |
+| **SS-5, §5.3** | Real wire bytes are **CRLF**, and field order is fixed as comment, id, event, data, retry regardless of construction order. The §5.3 sample's LF framing and its `: ping - <ISO>` line are both wrong. |
+| **ST-2, ST-9** | Layer 3's connection must be opened `isolation_level=None`. With aiosqlite's default deferred isolation, one coroutine's `commit()` commits every other coroutine's pending statement on a shared connection — six rows persisted where five were expected. |
+| **ST-3** | The lock-out takes exactly the **victim's** `busy_timeout` (5.4 s at the default), not 16 s. The rule is stronger that way: the victim is the *saver*, whose timeout Layer 3 does not own. |
+| **ST-7** | Five foreign tables, not seven — `store_vectors` and `vector_migrations` are not created without an embedding index. Two index names (`store_prefix_idx`, `idx_store_expires_at`) are also reserved. |
+| **MC-1** | `mcp.server.fastmcp` is **gone**. `from mcp.server import MCPServer`, `from mcp.server.streamable_http_manager import StreamableHTTPASGIApp`, `from mcp.client.streamable_http import streamable_http_client`, types from `mcp_types`. |
+| **MC-2** | `app.mount` fails a **third** way the rule does not name, and it is the one an implementer hits first: `streamable_http_path` defaults to `/mcp` inside the sub-app, so the endpoint lands at `/mcp/mcp`. |
+| **MC-4** | A **portless** Host header 421s exactly like `testserver`. Four places in this document say to pin `base_url="http://127.0.0.1"`; every one of them would produce a suite where every MCP test 421s. It must carry a port. |
+| **MC-14** | A coded error cannot be **raised**: every exception path yields `structured_content: null` and prefixes the message with the tool's name. It must be a **returned** `CallToolResult` with `is_error=True`. `CallToolResult` also may not appear in a return annotation's union — `InvalidSignature`. |
+| **MC-6** | A templated resource appears **only** in `list_resource_templates()`, never in `list_resources()`. It is two static resources plus one template, not "two resources". |
+| **PK-9** | Unimplementable as written against the `Pack` type: a rendered tag subtree has no path. It ships as a synthesized entry at `path="tags.md"`, `role="tag-subtree"`. |
+| **PK-12** | Entry *text* cannot come from the snapshot — `ParsedDocument` keeps only the frontmatter-stripped body. A targeted `abs_path` read of a path the snapshot already named is not a second tree walk, and the rule has to say so. |
+
+### What the test suite found
+
+The eight test files were written in parallel, each over a disjoint rule set, each required to
+demonstrate any defect it found as a **strict xfail** rather than work around it. They found
+**thirteen**, all since fixed — and because each test was written against the broken code, each one
+demonstrably fails without its fix.
+
+The worst was mine, introduced by AP-10's own correction: **a run admitted but not yet speaking was
+handed `run_id=""`** — the normal path, since the race times out by design. That empty string is the
+key the supervisor files hubs and tasks under, so every slow-starting run shared one key: the second
+run's hub replaced the first's, the first's teardown deleted the second's thread entry, `attach`
+handed a reconnecting client another thread's stream, and `cancel` was unaddressable because the
+client had only ever received `""`. The run id is now **minted before the run starts** and handed
+down (RO-11, SS-8).
+
+The rest, by what they were:
+
+* **Rows that were never written.** `resume` did not register an unregistered derived thread, so
+  answering an approval on a thread whose row was missing left that conversation invisible to every
+  list (SV-12). A derived thread did not inherit its parent's `origin_channel`, so every routed row
+  read `http` whatever channel the human was on (ST-13).
+* **Streams that never ended.** A dropped subscriber's end-of-stream sentinel was sent under
+  `suppress(QueueFull)` — and the only way to be dropped is that queue being full, so the sentinel
+  was always discarded: the run was protected and the reader was left awaiting a queue nothing would
+  feed again (AP-8). The fix reserves a slot for the sentinel, so what the dropped reader keeps is a
+  clean prefix followed by an ending rather than a stream with a hole in it.
+* **A mechanism wired to nothing.** No caller passed the shutdown event to the SSE generator, so
+  `EventSourceResponse(shutdown_event=None)`, the farewell branch was unreachable and
+  `SseEncoder.cancelled()` was dead code — AP-12's grace period buys nothing without a generator
+  that notices (AP-12).
+* **A terminal frame a client had to string-match.** A cancelled run's `run.error` carried neither
+  AP-11's `code: "cancelled"` nor SS-9's status, because status was computed only for `RunEnd` —
+  making SS-9's third value unreachable on the wire, since a cancelled run never emits `run.end` at
+  all (AP-11, SS-9, SS-15).
+* **One payload, two wire shapes.** A failed run and a timeout were returned through the *success*
+  envelope while every other coded failure went through `is_error` — so the only caller who could
+  act on `retryable` was exactly the one branching on `is_error` (MC-14, MC-15).
+* **A menu that invented options.** Candidate ids were matched by substring, so a reply naming
+  `topic/cooking/grilling` also offered `topic/cooking` — an option the Librarian never wrote, which
+  a caller picks, filing the material one level up from where it belongs. And the heuristic fired on
+  a **direct expert ask**, which can never be a menu because only the Librarian classifies (MC-19).
+* **A delete with no undo.** `DELETE /threads/{id}` did not refuse while a run was live on that
+  thread, though it erases checkpoints and every derived expert thread (RO-16).
+* **A golden test that could not be golden.** `research_pack` ordered topics by the caller's
+  argument rather than snapshot order, so two callers naming the same topics differently got
+  byte-different packs for identical content (PK-9).
+
+### Deviations from the spec, recorded
+
+* **`RG-20`'s public surface gains `chat_model_for`.** RG-21 makes the model-with-failover a
+  registry property; the ingestion loop was a third consumer and reached for `init_chat_model`
+  itself. Amended in the Layer 2 rules.
+* **`SV-2`'s harness import is deferred into `open_service`.** SV-4/SV-30 require the *real*
+  `RuntimeService` to import and run with the harness banned from `sys.meta_path`; a module-level
+  `from pkb.agents import PkbRuntime` makes that impossible. The module still names only the two
+  exported names and no harness module, so the import contract is unchanged.
+* **Thread titles are deterministic in v1, with TT-1…TT-4's *mechanism* shipped.** The title is
+  written after the first reply, off the critical path, once per thread, never over a human-set
+  one — that is all asserted. The model call itself needs a Layer 2 entry point that answers one
+  prompt without appending to the conversation being titled; the runtime has none, and adding one is
+  a Layer 2 amendment rather than a transport concern. Swapping it in changes one function body.
+* **`pkb_research_pack` requires explicit `topics` in v1.** PK-8 allows it at most one model call —
+  the classification that selects topics — and that call lives in Layer 2 and is not wired to this
+  tool. Naming the topics is the honest interface until it is.
+* **`pkb.tui` and `pkb.clients` are absent from the import contract's source list**, because
+  import-linter errors on a module that does not exist. They join it in step 4.

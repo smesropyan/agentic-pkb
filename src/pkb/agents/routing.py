@@ -71,6 +71,7 @@ from langgraph.runtime import Runtime
 
 from pkb.agents.paths import to_kb_relative
 from pkb.contracts import (
+    EXPERT_THREAD_SEPARATOR,
     AgentDescriptor,
     AgentEvent,
     ApprovalMode,
@@ -83,6 +84,8 @@ from pkb.contracts import (
     ThreadBusyError,
     ToolEnd,
     ToolStart,
+    expert_thread_id,
+    librarian_thread_id,
 )
 
 __all__ = [
@@ -469,38 +472,14 @@ def _decision_of(args: Any) -> RoutingDecision:
 # Threads (step 4's precondition)
 # --------------------------------------------------------------------------------------
 
-EXPERT_THREAD_SEPARATOR: Final = "::"
-"""Joins a Librarian thread to the expert thread derived from it (LB-14).
-
-Two colons rather than one because a thread id is minted by Layer 3 and a scan thread already uses
-``scan:<agent_id>:<uuid4>`` (RT-58); a two-character separator cannot collide with that shape, and
-:func:`librarian_thread_id` can therefore invert the derivation exactly.
-"""
-
-
-def expert_thread_id(thread_id: str, agent_id: str) -> str:
-    """The thread an expert runs on when the Librarian routes to it (LB-14).
-
-    Derived, not minted, and that is the whole point of step 4. D-6 established that the harness
-    would otherwise checkpoint delegated work in an opaque nested ``checkpoint_ns`` under the
-    parent's thread — durable, but not addressable: a client cannot open it, resume it, or continue
-    the conversation with the expert, so "continue with the Cooking expert" was a suggestion rather
-    than a link. A deterministic id makes it a real thread with real history that
-    ``run``/``resume``/``history`` all accept, and it stays derivable from the Librarian's thread so
-    Layer 3 needs no extra table to find it.
-    """
-    return f"{thread_id}{EXPERT_THREAD_SEPARATOR}{agent_id}"
-
-
-def librarian_thread_id(thread_id: str) -> str | None:
-    """The Librarian thread an expert thread was derived from, or ``None`` if it was not.
-
-    Used by :meth:`~pkb.agents.runtime.PkbRuntime.delete_thread`: erasing a conversation has to
-    erase the expert threads it spawned, or the deleted material survives in a thread the human
-    never knew existed (RT-48 with the derivation of LB-14).
-    """
-    head, separator, _ = thread_id.partition(EXPERT_THREAD_SEPARATOR)
-    return head if separator else None
+# `EXPERT_THREAD_SEPARATOR`, `expert_thread_id` and `librarian_thread_id` are **re-exported from
+# `pkb.contracts`**, not defined here (C-1). Layer 3 must produce a derived thread id (SS-10, ST-12)
+# and the transports may not import this module, so the one copy sits in the seam — the precedent
+# `validate_decisions` set. A second implementation of an id convention is the class of duplication
+# that fails silently: a thread resolving to the wrong agent shares a checkpoint (D-6).
+#
+# They stay importable from here because that is where LB-14 says the derivation belongs, and a test
+# asserts the objects are *identical*, not merely equal.
 
 
 # --------------------------------------------------------------------------------------

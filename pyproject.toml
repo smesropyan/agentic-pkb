@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 dependencies = [
+    "aiosqlite>=0.22.1",
     "deepagents>=0.7.5",
     # Imported directly by `pkb.agents.models`: the ollama client lets `httpx.ConnectError` escape
     # on its streaming path, so the failover predicate has to name httpx's exception types.
@@ -13,6 +14,7 @@ dependencies = [
     "httpx>=0.28",
     "langchain-ollama>=1.1.0",
     "langgraph-checkpoint-sqlite>=3.1.1",
+    "mcp>=2.0.0",
     "pypdf>=6.15.0",
     "ruamel-yaml>=0.18",
     "sse-starlette>=3.4.8",
@@ -98,19 +100,35 @@ forbidden_modules = [
 ]
 
 [[tool.importlinter.contracts]]
-name = "I1/I2 layering — core < agents < service < server|tui"
+name = "I1/I2 layering — core < packs < agents < service < server|tui|clients"
 type = "layers"
 layers = [
-    "(pkb.server) | (pkb.tui)",
+    "(pkb.server)",
     "(pkb.service)",
     "(pkb.agents)",
+    "(pkb.packs)",
     "pkb.contracts",
     "pkb.core",
 ]
 exhaustive = false
 
 [[tool.importlinter.contracts]]
-name = "I2 — transports never import the harness"
+name = "I2 — transports never import the harness, directly or transitively"
 type = "forbidden"
-source_modules = ["pkb.contracts"]
+# STRICT: indirect imports ARE checked. This is the contract that catches
+# `pkb.server.app -> pkb.agents.runtime -> langgraph`; `allow_indirect_imports` here would keep it
+# green while deleting exactly the check that matters (decision B, P-8).
+# `pkb.tui` and `pkb.clients` join this list in step 4 — import-linter errors on a module that
+# does not exist, so they cannot be listed before they are written.
+source_modules = ["pkb.contracts", "pkb.packs", "pkb.server"]
 forbidden_modules = ["deepagents", "langgraph", "langchain", "langchain_core", "pkb.agents"]
+
+[[tool.importlinter.contracts]]
+name = "I2 — the composition root names no harness module"
+type = "forbidden"
+# DIRECT-ONLY: `pkb.service` is the composition root — something must construct `PkbRuntime` — so a
+# transitive chain exists wherever that lives. What it may not do is *name* a harness module: it
+# reaches the harness through `pkb.agents`' two exported names and nothing else (SV-2, decision C).
+source_modules = ["pkb.service"]
+forbidden_modules = ["deepagents", "langgraph", "langchain", "langchain_core"]
+allow_indirect_imports = true
