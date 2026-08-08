@@ -27,6 +27,7 @@ import contextlib
 import json
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from typing import Any
 
 import pytest
 from fastapi import FastAPI
@@ -34,7 +35,7 @@ from fastapi import FastAPI
 from pkb.contracts import AgentEvent, MessageDelta, RunEnd, RunError, RunHandle, ThreadBusyError
 from pkb.server.app import create_app
 from pkb.service import RunSubscription
-from pkb.service.runs import SUBSCRIBER_QUEUE_SIZE, RunSupervisor
+from pkb.service.runs import REPLAY_BUFFER_SIZE, SUBSCRIBER_QUEUE_SIZE, RunSupervisor
 from tests.server.driver import Captured, drive
 from tests.server.stub import LIBRARIAN, StubService, opener_for
 
@@ -689,3 +690,79 @@ async def test_cancelling_an_unknown_run_is_204_ro18() -> None:
     assert captured.status == 204
     assert captured.body == b""
     assert service.cancelled == ["run-that-never-was"], "the route did not reach the service"
+
+
+# --------------------------------------------------------------------------------------
+# Defects the Layer 4 spec found in Layer 3, 2026-08-08
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_frame_after_the_terminal_one_does_not_add_a_second_ss7() -> None:
+    """`terminal_seen = isinstance(...)` was an assignment where it had to be an accumulation.
+
+    Any event emitted *after* `run.end` reset the flag, and the `finally` then published a spurious
+    second terminal frame. SS-7 promises exactly one; a straggling delegate frame after a Librarian
+    merge is entirely plausible, and a client that kept reading would turn a completed turn into a
+    visible failure.
+    """
+    supervisor = RunSupervisor()
+    handle = RunHandle(run_id="run-1", agent_id="librarian", thread_id="T1")
+
+    async def starter() -> tuple[RunHandle, Any]:
+        async def stream() -> Any:
+            yield RunEnd(run_id="run-1", final_text="done")
+            yield MessageDelta(run_id="run-1", agent_id="topic/cooking", text="a straggler")
+
+        return handle, stream()
+
+    subscription = await supervisor.start("T1", starter)
+    seen = [event async for event in subscription.events]
+
+    terminal = [e for e in seen if isinstance(e, RunEnd | RunError)]
+    assert len(terminal) == 1, f"exactly one terminal frame, got {[type(e).__name__ for e in seen]}"
+    assert isinstance(terminal[0], RunEnd)
+
+
+@pytest.mark.asyncio
+async def test_the_replay_buffer_keeps_the_most_recent_frames_ap9() -> None:
+    """It kept the **first** N — the wrong half — and dropped the overflow silently.
+
+    A client attaching to a run in flight wants what just happened, not the opening of a turn that
+    has been going for two minutes. Worse, the fresh per-response encoder renumbers `seq`
+    contiguously over the gap, so the hole was undetectable on the wire and an attach rendered a
+    conversation with a silent bite out of the middle.
+    """
+    supervisor = RunSupervisor()
+    handle = RunHandle(run_id="run-2", agent_id="librarian", thread_id="T2")
+    total = REPLAY_BUFFER_SIZE + 50
+    running = asyncio.Event()
+
+    async def starter() -> tuple[RunHandle, Any]:
+        async def stream() -> Any:
+            for index in range(total):
+                yield MessageDelta(run_id="run-2", agent_id="librarian", text=f"chunk-{index}")
+            running.set()
+            await asyncio.sleep(0.05)
+            yield RunEnd(run_id="run-2", final_text="done")
+
+        return handle, stream()
+
+    first = await supervisor.start("T2", starter)
+    await asyncio.wait_for(running.wait(), 2)
+
+    late = supervisor.attach("T2")
+    assert late is not None
+    replayed = [e async for e in late.events]
+    # The subscriber `start` handed back was never read from, so AP-8 correctly dropped it long
+    # before this point — that is a different rule, tested above.
+    [_ async for _ in first.events]
+
+    texts = [e.text for e in replayed if isinstance(e, MessageDelta)]
+    assert texts, "the attaching client got no replay at all"
+    assert texts[-1] == f"chunk-{total - 1}", "the buffer kept the opening, not the recent frames"
+    assert texts == [f"chunk-{i}" for i in range(total - len(texts), total)], (
+        "no hole in the replay"
+    )
+    assert len(texts) == REPLAY_BUFFER_SIZE, "the buffer is bounded, and it keeps the newest"
+    assert isinstance(replayed[-1], RunEnd), "the attaching client still sees the terminal frame"

@@ -24,18 +24,17 @@ from types import MappingProxyType
 from typing import Any, Final
 
 from pkb.contracts import (
-    ApprovalPendingError,
-    InvalidDecisionError,
+    ERROR_CODES,
+    INTERNAL_CODE,
+    RETRYABLE_CODES,
     PkbAgentError,
-    StaleInterruptError,
-    ThreadBusyError,
-    UnknownAgentError,
-    UnknownThreadError,
+    code_for,
 )
 from pkb.packs import UnknownTopicError
 
 __all__ = [
     "ERROR_CODES",
+    "ERROR_STATUS",
     "INTERNAL_CODE",
     "PROBLEM_CONTENT_TYPE",
     "problem_body",
@@ -45,25 +44,28 @@ __all__ = [
 PROBLEM_CONTENT_TYPE: Final = "application/problem+json"
 """RFC 9457. A shape a client can parse without knowing this project."""
 
-INTERNAL_CODE: Final = "internal"
-
-ERROR_CODES: Final[Mapping[type[BaseException], tuple[int, str]]] = MappingProxyType(
+ERROR_STATUS: Final[Mapping[str, int]] = MappingProxyType(
     {
-        UnknownAgentError: (404, "unknown_agent"),
-        UnknownThreadError: (404, "unknown_thread"),
-        UnknownTopicError: (404, "unknown_topic"),
-        ThreadBusyError: (409, "thread_busy"),
-        ApprovalPendingError: (409, "approval_pending"),
-        StaleInterruptError: (409, "stale_interrupt"),
-        InvalidDecisionError: (400, "invalid_decision"),
-        ValueError: (400, "validation_error"),
+        "unknown_agent": 404,
+        "unknown_thread": 404,
+        "unknown_topic": 404,
+        "thread_busy": 409,
+        "approval_pending": 409,
+        "stale_interrupt": 409,
+        "invalid_decision": 400,
+        "validation_error": 400,
+        INTERNAL_CODE: 500,
     }
 )
-"""The one table, shared by the HTTP handler and the MCP adapter so the two cannot drift (MC-14).
+"""Machine code → HTTP status. The **transport's** half of the table.
 
-Order matters on lookup, not here: :func:`status_and_code` walks the exception's MRO, so a subclass
-of a mapped error inherits its mapping and ``ValueError``'s row never shadows ``InvalidDecisionError``.
+The code half lives in :data:`pkb.contracts.ERROR_CODES`, because four things have to agree on it
+and two of them — the TUI and the Telegram adapter — may not import this module (I2, decision P). A
+status code is a transport concern and a Telegram bot has no use for one, so it stays here.
 """
+
+UnknownTopicError_CODE: Final = "unknown_topic"
+"""``pkb.packs``' own refusal, mapped here because it is below the seam and knows nothing of wires."""
 
 _TITLES: Final = MappingProxyType(
     {
@@ -79,26 +81,20 @@ _TITLES: Final = MappingProxyType(
     }
 )
 
-_RETRYABLE: Final = frozenset({"thread_busy"})
-"""Codes where retrying *the same call later* can succeed.
-
-``approval_pending`` is deliberately absent: retrying does not help, because the thread stays parked
-until a human decides. MC-14 states both as non-retryable-on-this-thread so a program does not spin.
-"""
+_RETRYABLE = RETRYABLE_CODES
+"""Re-exported from the seam so the HTTP body and a client agree (decision P)."""
 
 
 def status_and_code(exc: BaseException) -> tuple[int, str]:
-    """``(status, code)`` for one exception — MRO order, so subclasses inherit their mapping.
+    """``(status, code)`` for one exception.
 
-    Anything unmapped is ``(500, "internal")``, including an unmapped ``PkbAgentError`` subclass.
-    That is the point: a new typed error is a 500 until somebody gives it a row, rather than
-    silently becoming whatever the last ``except`` happened to do.
+    The code comes from the seam's table (so every channel answers identically) and the status from
+    this module's. Anything unmapped is ``(500, "internal")``, including an unmapped
+    ``PkbAgentError`` subclass — a new typed error is a 500 until somebody gives it a row, rather
+    than silently becoming whatever the last ``except`` happened to do.
     """
-    for klass in type(exc).__mro__:
-        row = ERROR_CODES.get(klass)
-        if row is not None:
-            return row
-    return (500, INTERNAL_CODE)
+    code = UnknownTopicError_CODE if isinstance(exc, UnknownTopicError) else code_for(exc)
+    return (ERROR_STATUS.get(code, 500), code)
 
 
 def problem_body(exc: BaseException, **extra: Any) -> dict[str, Any]:

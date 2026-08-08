@@ -42,7 +42,9 @@ from typing import Any, Final
 from sse_starlette import ServerSentEvent
 
 from pkb.contracts import (
+    CANCELLED_CODE,
     EVENT_NAMES,
+    RUN_ERROR_CODE,
     RUN_STARTED_EVENT,
     AgentEvent,
     InterruptEvent,
@@ -53,7 +55,6 @@ from pkb.contracts import (
 )
 
 __all__ = [
-    "CANCELLED_CODE",
     "ENVELOPE_KEYS",
     "RunStatus",
     "SseEncoder",
@@ -77,8 +78,8 @@ RunStatus = str
 _CANCELLED_MESSAGE: Final = "the run was cancelled"
 """The message :class:`~pkb.service.runs.RunSupervisor` synthesizes for a cancelled run (AP-11)."""
 
-CANCELLED_CODE: Final = "cancelled"
-"""The machine code on a cancelled run's terminal frame — what a client branches on (AP-11, SS-15)."""
+# `CANCELLED_CODE` and `RUN_ERROR_CODE` come from the seam (decision P): four things have to agree
+# on these strings and two of them may not import this module.
 
 
 def event_name(event: AgentEvent) -> str:
@@ -149,9 +150,15 @@ class SseEncoder:
     stateless encoder cannot know and a client should not have to reconstruct.
     """
 
-    def __init__(self, handle: RunHandle, catalog: Iterable[str] = ()) -> None:
+    def __init__(
+        self,
+        handle: RunHandle,
+        catalog: Iterable[str] = (),
+        codes: Mapping[str, str] | None = None,
+    ) -> None:
         self.handle = handle
         self._catalog = frozenset(catalog)
+        self._codes = codes
         self._seq = 0
         self._interrupted = False
 
@@ -196,13 +203,30 @@ class SseEncoder:
             # wire (a cancelled run never emits `run.end` at all: Layer 2 re-raises CancelledError).
             payload["status"] = self.status_for(event)
             if isinstance(event, RunError):
-                payload["code"] = (
-                    CANCELLED_CODE if payload["status"] == "cancelled" else "run_error"
-                )
+                payload["code"] = self._code_for(event, payload["status"])
         return self._frame(event_name(event), payload, thread_id=thread_id)
 
+    def _code_for(self, event: RunError, status: str) -> str:
+        """The machine code on a terminal error frame (SS-15, AP-11).
+
+        A cancellation is not a failure, so it gets its own code and a client says nothing rather
+        than offering "try again". Otherwise the code is the one the supervisor recorded from the
+        exception's own type — which is what lets a client tell "the thread is busy, wait" from
+        "this run died" without reading the sentence in ``message``.
+        """
+        if status == "cancelled":
+            return CANCELLED_CODE
+        recorded = self._codes.get(event.run_id) if self._codes else None
+        return recorded or RUN_ERROR_CODE
+
     def status_for(self, event: RunEnd | RunError) -> RunStatus:
-        """``completed`` | ``interrupted`` | ``cancelled`` (SS-9).
+        """One of :data:`~pkb.contracts.RUN_STATUSES` — **four** values, not three (SS-9, amended).
+
+        ``completed`` and ``interrupted`` ride on ``run.end``; ``cancelled`` and ``error`` ride on
+        ``run.error``, because a cancelled run never emits ``run.end`` at all — Layer 2 re-raises
+        ``CancelledError`` without a terminal event. A client matching three ways either raises or
+        falls through to "done" on every provider failure, which is the most common failure a human
+        sees.
 
         The :class:`~pkb.contracts.RunEnd` dataclass is **unmodified** — this is an envelope field.
         Layer 3 computes it from what it saw on the stream, because Layer 2 cannot: ``astream``

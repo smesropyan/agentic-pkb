@@ -32,6 +32,7 @@ from pkb import contracts as contracts_module
 from pkb.contracts import (
     EVENT_NAMES,
     RUN_STARTED_EVENT,
+    RUN_STATUSES,
     ActionView,
     AgentEvent,
     ApprovalRequest,
@@ -791,3 +792,58 @@ def test_no_module_in_the_server_keeps_a_dedupe_set_ss13() -> None:
     for path in SERVER_SOURCES:
         offenders = {name for name in identifiers(path) if "dedup" in name or "seen" in name}
         assert not offenders, f"{path.name} keeps {sorted(offenders)}"
+
+
+# --------------------------------------------------------------------------------------
+# Defects the Layer 4 spec found in Layer 3, 2026-08-08
+# --------------------------------------------------------------------------------------
+
+
+def test_a_terminal_error_carries_the_typed_code_the_supervisor_recorded_ss15() -> None:
+    """SS-15 promises a mid-stream typed error keeps its machine `code`. It did not.
+
+    `RunSupervisor._drive` published `RunError(message=str(exc))` and discarded the exception's
+    type, so every failure reached the wire as an untyped `run_error` — and a client cannot tell
+    "the thread is busy, wait and retry" from "this run died" without reading the sentence in
+    `message`, which is exactly what RO-21 says clients must never do.
+    """
+    handle = RunHandle(run_id="run-1", agent_id="topic/cooking", thread_id="T1")
+    encoder = SseEncoder(handle, (), {"run-1": "thread_busy"})
+
+    frame = encoder.event(
+        RunError(run_id="run-1", message="a run is already active", retryable=True)
+    )
+
+    body = json.loads(str(frame.data))
+    assert body["code"] == "thread_busy"
+    assert body["status"] == "error"
+
+
+def test_a_cancelled_run_is_not_a_failure_ap11() -> None:
+    """A cancellation gets its own code, so a client offers "try again" for one and not the other."""
+    handle = RunHandle(run_id="run-2", agent_id="topic/cooking", thread_id="T1")
+
+    frame = SseEncoder(handle).event(
+        RunError(run_id="run-2", message="the run was cancelled", retryable=True)
+    )
+
+    body = json.loads(str(frame.data))
+    assert (body["code"], body["status"]) == ("cancelled", "cancelled")
+
+
+def test_run_status_has_four_values_and_the_seam_names_them_ss9() -> None:
+    """SS-9 enumerated three; `status_for` always returned a fourth (C-14).
+
+    `completed` and `interrupted` ride on `run.end`; `cancelled` and `error` ride on `run.error`,
+    because a cancelled run never emits `run.end` at all — Layer 2 re-raises `CancelledError`
+    without a terminal event. A client matching three ways either raises or falls through to "done"
+    on every provider failure, which is the most common failure a human sees.
+    """
+    assert set(RUN_STATUSES) == {"completed", "interrupted", "cancelled", "error"}
+
+    handle = RunHandle(run_id="run-3", agent_id="a", thread_id="T1")
+    encoder = SseEncoder(handle)
+    assert encoder.status_for(RunEnd(run_id="run-3", final_text="")) == "completed"
+    encoder.event(InterruptEvent(run_id="run-3", request=approval()))
+    assert encoder.status_for(RunEnd(run_id="run-3", final_text="")) == "interrupted"
+    assert encoder.status_for(RunError(run_id="run-3", message="boom", retryable=False)) == "error"

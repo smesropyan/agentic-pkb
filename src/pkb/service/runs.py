@@ -37,11 +37,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections import deque
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Final
 
-from pkb.contracts import AgentEvent, RunEnd, RunError, RunHandle
+from pkb.contracts import AgentEvent, RunEnd, RunError, RunHandle, code_for, is_retryable
 from pkb.service import RunSubscription
 
 __all__ = [
@@ -65,16 +66,20 @@ right when the queue feeds the run and wrong when it feeds a browser.
 """
 
 REPLAY_BUFFER_SIZE: Final = 512
-"""How many frames a reattaching client can replay from (AP-9).
+"""How many of the **most recent** frames a reattaching client can replay from (AP-9).
 
 Bounded because a 300-page ingestion emits far more than any client needs to catch up on, and an
 unbounded buffer would make the daemon's memory a function of the longest run it ever served.
+Recent rather than earliest, because catching up means seeing what just happened.
 """
 
 
 @dataclass
 class _Subscriber:
     queue: asyncio.Queue[AgentEvent | None]
+    capacity: int
+    """Logical capacity — one below the queue's, so the end-of-stream sentinel always fits."""
+
     dropped: bool = False
 
 
@@ -89,7 +94,12 @@ class RunHub:
     def __init__(self, handle: RunHandle) -> None:
         self.handle = handle
         self._subscribers: list[_Subscriber] = []
-        self._replay: list[AgentEvent] = []
+        # A **suffix**, not a prefix. Keeping the first N frames is the wrong half: a client
+        # attaching to a run in flight wants what just happened, not the opening of a turn that has
+        # been going for two minutes. Worse, the old prefix silently dropped the middle of a long
+        # run and the fresh per-response encoder renumbered `seq` contiguously over the hole — so
+        # the gap was undetectable on the wire (AP-9, C-19).
+        self._replay: deque[AgentEvent] = deque(maxlen=REPLAY_BUFFER_SIZE)
         self._closed = False
         self._terminal: AgentEvent | None = None
 
@@ -107,14 +117,13 @@ class RunHub:
         Never blocks and never awaits: it is called from the run task, and a publish that could wait
         would put a browser on the critical path of a knowledge-base write.
         """
-        if len(self._replay) < REPLAY_BUFFER_SIZE:
-            self._replay.append(event)
+        self._replay.append(event)
         if isinstance(event, RunEnd | RunError):
             self._terminal = event
         for subscriber in list(self._subscribers):
             if subscriber.dropped:
                 continue
-            if subscriber.queue.qsize() >= SUBSCRIBER_QUEUE_SIZE:
+            if subscriber.queue.qsize() >= subscriber.capacity:
                 # Its own fault and its own problem: the run continues, and this reader gets a
                 # *closed* stream rather than the power to stall everyone else (AP-8). Closed
                 # matters as much as dropped — a reader left awaiting a queue nothing will feed
@@ -144,8 +153,13 @@ class RunHub:
         # sentinel. `publish` treats the *logical* size as full, so the sentinel always fits — see
         # `_detach`, where the alternative was evicting a frame and handing the dropped reader a
         # stream with a hole in it instead of a clean prefix.
-        queue: asyncio.Queue[AgentEvent | None] = asyncio.Queue(maxsize=SUBSCRIBER_QUEUE_SIZE + 1)
-        subscriber = _Subscriber(queue=queue)
+        # Big enough for the replay it is about to be primed with, plus the reserved sentinel slot.
+        # Sized at the constant alone, a full replay buffer overflowed the queue on the way in and
+        # `subscribe()` dropped the overflow under `suppress(QueueFull)` — the attaching client lost
+        # frames before it had read one.
+        capacity = max(SUBSCRIBER_QUEUE_SIZE, len(self._replay))
+        queue: asyncio.Queue[AgentEvent | None] = asyncio.Queue(maxsize=capacity + 1)
+        subscriber = _Subscriber(queue=queue, capacity=capacity)
         for event in self._replay:
             with contextlib.suppress(asyncio.QueueFull):
                 queue.put_nowait(event)
@@ -208,6 +222,12 @@ class RunSupervisor:
         self._hubs: dict[str, RunHub] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._by_thread: dict[str, str] = {}
+        self._codes: dict[str, str] = {}
+
+    @property
+    def codes(self) -> Mapping[str, str]:
+        """Run id → the machine code of the typed error that ended it, for the encoder (SS-15)."""
+        return self._codes
 
     @property
     def active(self) -> int:
@@ -277,10 +297,14 @@ class RunSupervisor:
         on a stream that ended silently — which is the failure mode a cancelled run produces
         naturally, because Layer 2 re-raises ``CancelledError`` without emitting anything.
         """
+        # `|=`, not `=`. As an assignment, any event emitted *after* `run.end` — a straggling
+        # delegate frame after a Librarian merge is entirely plausible — reset the flag, and the
+        # `finally` below then published a second terminal frame. SS-7 promises exactly one, and a
+        # client that kept reading would turn a completed turn into a visible failure.
         terminal_seen = False
         try:
             async for event in stream:
-                terminal_seen = isinstance(event, RunEnd | RunError)
+                terminal_seen |= isinstance(event, RunEnd | RunError)
                 hub.publish(event)
         except asyncio.CancelledError:
             # AP-11: the frame Layer 3 authors, and the only one. A transport frame, not a
@@ -296,7 +320,18 @@ class RunSupervisor:
             raise
         except Exception as exc:  # a starter that fails after admission still owes a terminal frame
             _log.exception("run %s failed", hub.handle.run_id)
-            hub.publish(RunError(run_id=hub.handle.run_id, message=str(exc), retryable=False))
+            # The exception's own type decides the code and whether it is worth retrying. Discarding
+            # it and publishing a bare `run_error` was SS-15's promise broken on the one path a human
+            # sees most: a `thread_busy` that escapes admission as a genuine race arrived as an
+            # untyped failure, so a client could not tell "wait and try again" from "this run died".
+            hub.publish(
+                RunError(
+                    run_id=hub.handle.run_id,
+                    message=str(exc),
+                    retryable=is_retryable(exc),
+                )
+            )
+            self._codes[hub.handle.run_id] = code_for(exc)
             terminal_seen = True
         finally:
             if not terminal_seen:

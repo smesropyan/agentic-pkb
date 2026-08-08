@@ -304,7 +304,8 @@ def _stream(
     wire bytes differ from every other SSE producer for no gain.
     """
     catalog = [descriptor.agent_id for descriptor in service.list_agents()]
-    encoder = SseEncoder(subscription.handle, catalog)
+    codes = getattr(getattr(service, "runs", None), "codes", None)
+    encoder = SseEncoder(subscription.handle, catalog, codes)
 
     async def frames() -> AsyncIterator[ServerSentEvent]:
         try:

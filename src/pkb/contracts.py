@@ -31,8 +31,14 @@ from pkb.core.errors import Finding, Severity
 from pkb.core.models import FlushReport, ScanRequest
 
 __all__ = [
+    "CANCELLED_CODE",
+    "ERROR_CODES",
     "EVENT_NAMES",
     "EXPERT_THREAD_SEPARATOR",
+    "INTERNAL_CODE",
+    "RETRYABLE_CODES",
+    "RUN_ERROR_CODE",
+    "RUN_STATUSES",
     "SCAN_THREAD_PREFIX",
     "ActionView",
     "AgentDescriptor",
@@ -73,7 +79,9 @@ __all__ = [
     "UnknownAgentError",
     "UnknownThreadError",
     "agent_for_thread",
+    "code_for",
     "expert_thread_id",
+    "is_retryable",
     "is_scan_thread",
     "librarian_thread_id",
     "validate_decisions",
@@ -652,3 +660,74 @@ RUN_STARTED_EVENT: Final = "run.started"
 A transport frame carrying :class:`RunHandle`, written before anything is relayed so a client has
 the run id (for cancel) and the agent id (for its header) before the first token.
 """
+
+
+# --------------------------------------------------------------------------------------
+# Machine error codes — one table, because four sides have to agree on it (decision P, RO-21)
+# --------------------------------------------------------------------------------------
+
+ERROR_CODES: Final[Mapping[type[BaseException], str]] = MappingProxyType(
+    {
+        UnknownAgentError: "unknown_agent",
+        UnknownThreadError: "unknown_thread",
+        ThreadBusyError: "thread_busy",
+        ApprovalPendingError: "approval_pending",
+        StaleInterruptError: "stale_interrupt",
+        InvalidDecisionError: "invalid_decision",
+        ValueError: "validation_error",
+    }
+)
+"""Typed error → the stable machine code a client branches on.
+
+Here rather than in ``pkb.server.errors`` because **four** things have to agree on it: the HTTP
+exception handler, the MCP adapter, the TUI and the Telegram adapter — and the last two may not
+import ``pkb.server`` at all (I2). The alternatives were a client branching on prose, or the same
+nine rows copied into step 4 and again into step 5, which is exactly the drift that put
+``validate_decisions``, ``expert_thread_id`` and :class:`UnknownThreadError` in this module.
+
+The **HTTP status** half stays in ``pkb.server.errors``: a status code is a transport's concern and
+a Telegram bot has no use for one. ``pkb.server`` re-exports these names and a test asserts the
+objects are identical, not merely equal.
+"""
+
+INTERNAL_CODE: Final = "internal"
+"""What an unmapped exception becomes. A new typed error is this until somebody gives it a row."""
+
+RUN_ERROR_CODE: Final = "run_error"
+"""A run that failed for a reason the transport could not type — the wire's ``run.error`` default."""
+
+CANCELLED_CODE: Final = "cancelled"
+"""A run the human or the daemon stopped (AP-11). Distinguished from a failure because it is not
+one: a client offers "try again" for a failure and says nothing for a cancellation."""
+
+RETRYABLE_CODES: Final = frozenset({"thread_busy", RUN_ERROR_CODE, CANCELLED_CODE})
+"""Codes where retrying *the same call later* can succeed.
+
+``approval_pending`` is deliberately absent: retrying does not help, because the thread stays parked
+until a human decides. Neither is ``invalid_decision`` — the request was wrong, not the moment.
+"""
+
+RUN_STATUSES: Final = ("completed", "interrupted", "cancelled", "error")
+"""The four values ``run.end``/``run.error`` carry (SS-9, amended).
+
+**Four, not three.** ``completed`` and ``interrupted`` ride on ``run.end``; ``cancelled`` and
+``error`` ride on ``run.error``, because a cancelled run never emits ``run.end`` at all — Layer 2
+re-raises ``CancelledError`` without a terminal event. A client matching three ways either raises or
+falls through to "done" on every provider failure, which is the most common failure a human sees.
+
+``interrupted`` is the one that must never render as done: the thread is parked on a human decision.
+"""
+
+
+def code_for(exc: BaseException) -> str:
+    """The machine code for one exception — MRO order, so a subclass inherits its mapping."""
+    for klass in type(exc).__mro__:
+        code = ERROR_CODES.get(klass)
+        if code is not None:
+            return code
+    return INTERNAL_CODE
+
+
+def is_retryable(exc: BaseException) -> bool:
+    """Whether retrying the same call later could succeed. See :data:`RETRYABLE_CODES`."""
+    return code_for(exc) in RETRYABLE_CODES
