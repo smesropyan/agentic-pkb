@@ -800,7 +800,7 @@ deselected by default exactly as §6.5 already does.
 | # | Fact | Established by | What it forces |
 |---|------|----------------|----------------|
 | **F-1** | **Bot API 9.3 (2025-12-31) put topics in private chats**: `message_thread_id` and `is_topic_message` on `Message`, `has_topics_enabled` on `User` (returned **only** by `getMe`), and `message_thread_id` accepted by `sendMessage`, `sendDocument`, `sendChatAction` and the rest of the send family. **Bot API 9.4 (2026-02-09)** let bots call `createForumTopic` in a private chat. **Confirmed live 2026-08-09** (F-9, F-10). | Official changelog; executed 2026-08-09 | The whole feature. Two API calls (`getMe`, `createForumTopic`) and one parameter on the send family, and nothing else changes on the wire (TG-75, TG-78, TG-90). |
-| **F-2** | **A deleted topic was reported to be silent.** In a **private** chat, sending with the `message_thread_id` of a deleted topic does **not** error: the parameter is ignored and the message lands in **General**, while the same case in a group errors. The **response** carries the truth, since `sendMessage` returns the `Message` and its `message_thread_id` says where the message went. **Amended 2026-08-09: the report did not reproduce.** Four probes on this deployment's own bot answered `ok: false`, `Bad Request: message thread not found`, and nothing arrived in General (F-11). | tdlib/telegram-bot-api#854, contradicted by F-11 (executed 2026-08-09) | TG-80 reads the `message_thread_id` back off every send that carries one. **Measured today that comparison never fires**, because a dead topic raises before a response exists, so **TG-83 does the work and TG-80 stands behind it** (§9.3.3's preamble states this plainly). Both stay: a human watched the reported behaviour, issue #847 shows this corner of the API has already moved once, and the price of the comparison is one integer per send. |
+| **F-2** | **A deleted topic was reported to be silent.** In a **private** chat, sending with the `message_thread_id` of a deleted topic does **not** error: the parameter is ignored and the message lands in **General**, while the same case in a group errors. The **response** carries the truth, since `sendMessage` returns the `Message` and its `message_thread_id` says where the message went. **Amended 2026-08-09: the report did not reproduce.** Four probes on this deployment's own bot answered `ok: false`, `Bad Request: message thread not found`, and nothing arrived in General (F-11). | tdlib/telegram-bot-api#854, contradicted by F-11 (executed 2026-08-09) | TG-80 reads the `message_thread_id` back off every send that carries one. **Measured today that comparison never fires**, because a dead topic raises before a response exists, so **TG-83 does the work and TG-80 stands behind it** (§9.3.3's preamble states this plainly). Both stay: a human watched the reported behaviour, issue #847 shows this corner of the API has already moved once, and the price of the comparison is one integer per send. **Amended again 2026-08-09 (F-13)**: `sendChatAction` answers `ok: true` on the same dead topic, so the silent acceptance in this report is reproduced on this deployment, on another method of the same family. |
 | **F-3** | **Bot API 10.0 (2026-05-08) reportedly broke sending to *existing* private-chat topics** with `400 Bad Request: message thread not found`, while inbound messages still carry `message_thread_id`. Reported unresolved. **Amended 2026-08-09: this error string is what a deleted topic answers with on the live API today** (F-11), so the path TG-83 handles is the path that runs. | tdlib/telegram-bot-api#847; executed 2026-08-09 | Handled identically to a TG-80 mismatch: the topic is gone, so recreate and re-send (TG-83). **This is now the live-verified path**, and the reasoning that made it safe to rule on an open bug is unchanged: recreate-and-re-send is right under either behaviour. |
 | **F-4** *(live, probed 2026-08-09, morning)* | Before the human flipped the toggle, the deployment's own bot answered `getMe` with `has_topics_enabled: false` and `allows_users_to_create_topics: false`, and `createForumTopic` answered **`400 Bad Request: the chat is not a forum`**. **Superseded the same day by F-8.** | Executed 2026-08-09 against the real bot | Kept rather than deleted, because it is the executed evidence for TG-75: a bot with the toggle off answers exactly this, the deployment ran on it for the whole of §9's build, and TG-75 promises that deployment keeps working. |
 | **F-5** | **There is no update for a deleted topic.** Topic lifecycle reaches a bot as *service messages* inside an ordinary `message` update (`forum_topic_created`, `forum_topic_edited`, `forum_topic_closed`, `forum_topic_reopened`), and deletion produces none of them. | Bot API update-type list; F-2 | `allowed_updates` needs **no new kind** (TG-91). The absence of a deletion event is why a dead topic is discovered by a send rather than by an update, whether the send errors (F-11) or lands somewhere else (F-2). It also means a service message arrives on the same code path as a human's message and would hit TG-36's attachment refusal (TG-92). |
@@ -809,22 +809,33 @@ deselected by default exactly as §6.5 already does.
 | **F-8** *(live, 2026-08-09)* | With BotFather's **Threaded Mode** on, `getMe` answers `has_topics_enabled: true` and `allows_users_to_create_topics: true`. | Executed against the real bot | TG-75's probe reads a real `true` for the first time. The flag is per bot and the human owns it, so TG-75's two-behaviour requirement stands unchanged. |
 | **F-9** *(live, 2026-08-09)* | **`createForumTopic` works in a private chat.** One call against the human's own chat returned `message_thread_id: 163395`. | Executed against the real bot | F-1's second half and TG-76/TG-78 are settled against the live API. The id also confirms decision Y's arithmetic: Telegram mints a topic id out of the chat's message-id sequence, so `0` is free and is never a topic. |
 | **F-10** *(live, 2026-08-09)* | **A send into a live topic round-trips its id.** `sendMessage` with that `message_thread_id` returned a `Message` whose `message_thread_id` equalled the one sent. | Executed against the real bot | TG-80's comparison has a truth to compare against on the success path: a landed topic reports itself, so a mismatch would mean something. `landed_topic_id` maps absence to `GENERAL` (§9.13.2), and this is the measurement that says absence is not the normal case for a topic send. |
-| **F-11** *(live, 2026-08-09)* | **HAZARD 1 did not reproduce.** A send into a **deleted** private-chat topic answered `ok: false`, `Bad Request: message thread not found`, in **four** measurements: topic deleted by the bot through `deleteForumTopic`, topic deleted by the human from their own client, each of those with an inline keyboard attached and without one. Nothing landed in General and no stray message existed afterwards. | Executed against the real bot, four probes | The correction of F-2, and the reason §9.3.3's framing changes. TG-83 is the path that runs; TG-80 and TG-81 are defence against a reported behaviour nobody here could reproduce. It also settles the keyboard question that made the hazard frightening: a dead topic refuses an armed send, so the stray-with-a-live-Approve-button case has no live example. |
+| **F-11** *(live, 2026-08-09)* | **HAZARD 1 did not reproduce.** A send into a **deleted** private-chat topic answered `ok: false`, `Bad Request: message thread not found`, in **four** measurements: topic deleted by the bot through `deleteForumTopic`, topic deleted by the human from their own client, each of those with an inline keyboard attached and without one. Nothing landed in General and no stray message existed afterwards. | Executed against the real bot, four probes | The correction of F-2, and the reason §9.3.3's framing changes. TG-83 is the path that runs; TG-80 and TG-81 are the defence behind it. **Amended 2026-08-09 (F-13): the clause calling that defence *"a reported behaviour nobody here could reproduce"* is struck.** `sendChatAction` accepts the same dead thread and answers `ok: true`, so #854's shape is live on this deployment on another method of the send family. It also settles the keyboard question that made the hazard frightening: a dead topic refuses an armed send, so the stray-with-a-live-Approve-button case has no live example. |
 | **F-12** *(live, 2026-08-09)* | **The daemon ran end to end against the real bot.** The `getMe` probe reported topic mode on, TG-30's cold-start drain discarded a real backlog up to update `976956452` without running a turn, and the token appeared in the httpx log as the bot id followed by `[redacted]`. | Executed against the real bot | TG-16 and TG-75's startup path are exercised outside a fake for the first time, and TG-30 discarded a backlog a fake could only simulate. |
+| **F-13** *(live, 2026-08-09)* | **`sendChatAction` accepts a dead thread and answers `ok: true`.** The topic that answered `sendMessage` with `400 Bad Request: message thread not found` answered `sendChatAction(chat_id, "typing", message_thread_id=…)` with `ok: true` in the same minute. A control on a topic created minutes earlier answered `ok: true` as well, so the call reports the same success for a live topic and a deleted one. | Executed against the real bot, two probes | Two things, and the second one matters more than the first. **The cheap invisible liveness probe does not exist**: the one method that could have tested a topic without posting anything a human can see reports success for a topic Telegram has deleted, so a probe built on it would confirm every dead channel as alive (TG-102 forbids it by name). And the silent acceptance tdlib/telegram-bot-api#854 reported is **real on this API today**, on at least one method, so TG-80 defends against a behaviour this deployment has now reproduced. |
 
 **Method, so the results can be re-run.** Each probe was a single JSON-over-HTTPS call to
 `api.telegram.org` with the deployment's own token, made outside the test suite and outside the
 daemon, against the human's private chat with Threaded Mode on. F-11's four cases differ in two
 dimensions only: who deleted the topic (the bot through `deleteForumTopic`, then the human from
-their client) and whether the attempted send carried an `inline_keyboard`. The daemon of F-12 ran on
-port 8791 over a scratch knowledge base. **No token and no user id is recorded here or anywhere in
-the repository** (§0's public-repo rule).
+their client) and whether the attempted send carried an `inline_keyboard`. F-13 ran on the topic
+F-11 had already killed, `sendChatAction` first and `sendMessage` second, then the same pair on a
+freshly created topic as a control. The daemon of F-12 ran on port 8791 over a scratch knowledge
+base. **No token and no user id is recorded here or anywhere in the repository** (§0's public-repo
+rule).
 
 **What the measurements change and what they do not.** F-9, F-10 and F-12 confirm the design.
 F-11 contradicts F-2, which §9 called *"the single most important constraint in this section"*, so
 §9.3.3's framing is corrected in place: TG-83 carries the weight and TG-80 stands as defence. No
 rule is deleted. The fake's default flips to the measured behaviour (§9.7), so the default suite
 exercises the path that fires against the live API, and the reported behaviour keeps its switch.
+
+**F-13 moves TG-80 back toward the middle of the design, and the correction is recorded here rather
+than only on the rule.** §9.1 as amended called TG-80 defence against a behaviour *"nobody here
+could reproduce"*. That reading was true of `sendMessage` and false of the API: one method of the
+send family accepts a `message_thread_id` for a deleted topic and reports success, which is #854's
+shape exactly. TG-80 compares a response because a send that succeeds is the one failure no
+exception handler sees, and one measured method with that behaviour makes the comparison a guard
+against something live rather than a guard against a report.
 
 ---
 
@@ -864,8 +875,8 @@ failure it prevents.
 | ID | Rule | Source | Sev | Test assertion (live?) |
 |----|------|--------|-----|------------------------|
 | TG-76 | **A topic is created only in response to `/channels` from an allow-listed owner** (TG-87). Never at startup, never when the catalog gains an agent, never on an inbound message, never on a restart. The adapter calls `createForumTopic` from exactly one code path. | decision AA; TG-3; TG-20 | error | Booting an adapter whose directory is empty against a catalog of thirty agents issues **zero** `createForumTopic` calls; adding an agent to the catalog mid-session issues zero; grep finds exactly one call site. **no key** — *Why*: eager creation buries the four channels the human uses under twenty-six they do not, cannot be undone in one action, and — since no API enumerates a chat's topics (F-5) — leaves a state after a partial failure that nothing can reconstruct. |
-| TG-77 | **The channel directory is durable, in `pkb_telegram_channels`, and holds at most one channel per `(chat_id, agent_id)`.** A `/channels` naming an agent that already has one in this chat **creates nothing** and answers with a pointer to the existing channel. The directory is the bot's own bookkeeping and is never read from the knowledge base, never derived from KB content and never written by an agent. **Amended 2026-08-09 (§10): "creates nothing" holds under concurrency, so the decision is serialized with one lock per chat.** The read of the directory, the check for an existing channel and the `createForumTopic` are three awaits apart, and `_poll` gives every update its own child of the task group, so two `/channels` for one agent delivered in one batch each see no row and each create. `_channels` holds `_creations[chat_id]` from the directory read to the creation; the second caller then reads the row the first one wrote and answers with this rule's pointer. | decision AB; TG-17 (amended), TG-28; I3, ST-3, ST-7; `_repairs` (the same defect on the recreation path) | error | Two `/channels topic/cooking` in one chat produce one `createForumTopic` and one directory row; **the same two dispatched concurrently produce the same one create, the same one row and the pointer as the second reply**; a fresh adapter over the same store routes that topic without re-creating it; the row survives fifty supervised restarts. **no key** — *Why*: two channels for one agent in one chat is two independent conversations with one expert, invisibly diverging — TG-25 permits that across chats deliberately, and permitting it accidentally within one chat is how a human's Cooking history splits in half. The concurrent case is worse than the sequential one it was written for: the row is keyed on `(chat_id, agent_id)`, so the second write **replaces** the first and the chat keeps a second topic of the same name that nothing addresses, that the bot may never delete (TG-78) and that no API can enumerate (F-5). Measured against the fake before the lock: two creates, one row. |
-| TG-78 | **`createForumTopic` is called with the agent's catalog `title` and nothing else** — no `icon_color`, no `icon_custom_emoji_id`. **The bot never renames, edits, closes, reopens or deletes a topic**: `editForumTopic`, `closeForumTopic`, `reopenForumTopic`, `deleteForumTopic` and `unpinAllForumTopicMessages` are **not** in the `BotApi` Protocol. The binding is by topic **id**, so a human renaming a topic changes nothing. | §8.1's precedent for dropping `send_chat_action`; `AgentDescriptor.title` (GE-25); TG-63's reasoning; D6 | error | `createForumTopic` receives exactly `chat_id` and `name`; the Protocol has no method whose name contains `delete`, `close` or `edit_forum`; a renamed topic keeps routing to the same agent. **no key** — *Why*: every method on this Protocol has to be implemented by every fake, and a parameter with no rule behind it is cost with no failure prevented. Deleting or renaming is worse than useless: the topic is the human's record of what they approved, the rename may have been deliberate, and a bot that tidies the human's chat is a bot that destroys evidence on a system with no undo. |
+| TG-77 | **The channel directory is durable, in `pkb_telegram_channels`, and holds at most one channel per `(chat_id, agent_id)`.** A `/channels` naming an agent that already has one in this chat **creates nothing** and answers with a pointer to the existing channel. The directory is the bot's own bookkeeping and is never read from the knowledge base, never derived from KB content and never written by an agent. **Amended 2026-08-09 (§10): "creates nothing" holds under concurrency, so the decision is serialized with one lock per chat.** The read of the directory, the check for an existing channel and the `createForumTopic` are three awaits apart, and `_poll` gives every update its own child of the task group, so two `/channels` for one agent delivered in one batch each see no row and each create. `_channels` holds `_creations[chat_id]` from the directory read to the creation; the second caller then reads the row the first one wrote and answers with this rule's pointer. **Amended 2026-08-09 (§11, decision AI): the pointer is sent into the channel it names, and the channel the command was typed in gets its own one-line answer when it is not that channel.** Original text, kept: *"answers with a pointer to the existing channel"*, which the build read as a reply in the typing channel. A human deleted a topic, tapped its picker row and received *"topic/cooking already has a channel in this chat (topic 101), so I created nothing"* about a topic Telegram had deleted, in a channel that was not it, with no way left to reach that expert from the phone: TG-82 and TG-83 repair a dead channel and both are triggered by a failed send, and nothing will ever send into a deleted topic once the one message that names it goes somewhere else. Sending the pointer through the channel it names points at the place on a live channel and raises `message thread not found` on a dead one, which is TG-83's trigger, so the repair that already exists runs. | decision AB, decision AI; TG-17 (amended), TG-28, TG-83, TG-102; I3, ST-3, ST-7; `_repairs` (the same defect on the recreation path) | error | Two `/channels topic/cooking` in one chat produce one `createForumTopic` and one directory row; **the same two dispatched concurrently produce the same one create, the same one row and the pointer as the second reply**; a fresh adapter over the same store routes that topic without re-creating it; the row survives fifty supervised restarts. **The pointer for a live channel is delivered into that channel and nothing is created; the pointer for a channel whose topic was deleted repairs it**, so the human's exact sequence (channel exists, topic dead, row tapped) ends with a new topic, a directory pointing at it, and a line in the channel the human typed in. **no key** — *Why*: two channels for one agent in one chat is two independent conversations with one expert, invisibly diverging — TG-25 permits that across chats deliberately, and permitting it accidentally within one chat is how a human's Cooking history splits in half. The concurrent case is worse than the sequential one it was written for: the row is keyed on `(chat_id, agent_id)`, so the second write **replaces** the first and the chat keeps a second topic of the same name that nothing addresses, that the bot may never delete (TG-78) and that no API can enumerate (F-5). Measured against the fake before the lock: two creates, one row. |
+| TG-78 | **`createForumTopic` is called with the agent's catalog `title` and nothing else** — no `icon_color`, no `icon_custom_emoji_id`. **The bot never renames, edits, closes, reopens or deletes a topic**: `editForumTopic`, `closeForumTopic`, `reopenForumTopic`, `deleteForumTopic` and `unpinAllForumTopicMessages` are **not** in the `BotApi` Protocol. The binding is by topic **id**, so a human renaming a topic changes nothing. **Amended 2026-08-09 (§12, decision AK): the bot names a topic it takes as a channel, on create and on bind, and leaves the name alone from that moment on.** Original text, kept: *"The bot never renames, edits, closes, reopens or deletes a topic"*, with `editForumTopic` off the Protocol to enforce it. That text drew the line around every topic in the chat. The line belongs around the human's furniture, and a topic the bot has taken as a channel stopped being furniture at the moment it was taken. A human created a topic in their own client, where Telegram named it *New Chat*, and bound it with `/channels topic/cooking` from inside it (TG-87's bind-here form, the recovery path for a lost database). The bind wrote the durable row and left the name, so the human then talked to an expert whose name appeared nowhere on the screen. Decision AE lets an ordinary reply inside a channel carry no attribution on the ground that the topic header names the expert, and a channel titled *New Chat* deletes the thing decision AE rests on, which returns the ambiguity TG-1 deleted `/connect` for, in front of a tree with no undo. So `edit_forum_topic` joins the Protocol and nothing else does: `closeForumTopic`, `reopenForumTopic`, `deleteForumTopic`, `unpinAllForumTopicMessages` and `deleteMessage` stay absent for the reasons this row already gives. The rename fires from one code path, the bind, because create already names what it makes; TG-105 rules the unconditional form and TG-106 rules the failure. | §8.1's precedent for dropping `send_chat_action`; `AgentDescriptor.title` (GE-25); TG-63's reasoning; D6; decision AE, TG-1, TG-105, TG-106 | error | `createForumTopic` receives exactly `chat_id` and `name`; the Protocol has no method whose name contains `delete`, `close`, `reopen` or `unpin`, and `edit_forum_topic` is reached from **one** call site; a renamed topic keeps routing to the same agent; a bind renames the topic it took and a message arriving later in that topic renames nothing. **no key** — *Why*: every method on this Protocol has to be implemented by every fake, and a parameter with no rule behind it is cost with no failure prevented. Deleting is worse than useless: the topic is the human's record of what they approved, and a bot that tidies the human's chat is a bot that destroys evidence on a system with no undo. Renaming a topic the bot took as a channel is the opposite act. It writes the expert's name onto the one surface decision AE points at, once, in answer to a command the human typed, and every rename after that one belongs to the human. |
 | TG-79 | **An agent that leaves the catalog retires its channel; the Telegram topic is left standing.** That channel is answered exactly like an unmapped one (TG-18's twin), its agent id is published in `telegram.invalid_chats`' companion field, and nothing is deleted. Re-adding the agent under the same id revives the channel with its binding intact. | TG-18; TG-78; decision AD | error | Remove an agent from the catalog: that topic's next message runs nothing and gets the unmapped-style reply, `/health` reports it, `deleteForumTopic` is never called; restore the agent and the same thread resumes. **no key** — *Why*: TG-18 already ruled this shape for chats — report, never die, never route anyway — because a topic can be renamed under a running config. The only new part is that the *Telegram* topic outlives the KB one, which is correct: it holds the human's history of a topic they may be in the middle of splitting. |
 
 #### 9.3.3 The deleted-topic hazard — TG
@@ -881,20 +892,30 @@ not found`, with a topic deleted by the bot and with one deleted by the human, w
 keyboard attached and without (F-11). So **TG-83 is the rule that runs**, and every recreation,
 re-send and retirement in this subsection reaches its work through it.
 
-**TG-80 and TG-81 stay, and stay unchanged.** Under the measured behaviour they are unreachable: a
-dead topic raises before a response exists, so no mismatch can be compared and no stray message can
-be disarmed. Three reasons keep them anyway. A human filed #854 after watching the silent
-relocation, so the behaviour existed somewhere. Issue #847 shows this corner of the API has already
-changed once under a version bump nobody controls. The cost is one integer comparison per send.
-**Say which is which when reading the code**: TG-83 is the exercised path, TG-80 is defence against
-a reported behaviour nobody here could reproduce, and a build that quietly drops TG-80 as dead code
-is one Bot API release away from the failure this whole subsection is arranged around.
+**TG-80 and TG-81 stay, and stay unchanged.** Under the measured behaviour they are unreachable on
+`sendMessage`: a dead topic raises before a response exists, so no mismatch can be compared and no
+stray message can be disarmed. Three reasons keep them anyway. A human filed #854 after watching the
+silent relocation, so the behaviour existed somewhere. Issue #847 shows this corner of the API has
+already changed once under a version bump nobody controls. The cost is one integer comparison per
+send. **Say which is which when reading the code**: TG-83 is the exercised path, TG-80 is the guard
+behind it, and a build that quietly drops TG-80 as dead code is one Bot API release away from the
+failure this whole subsection is arranged around.
+
+**Amended 2026-08-09 (F-13). The sentence that called TG-80 defence against something nobody could
+reproduce is struck, and the reason is a measurement.** `sendChatAction` takes the same
+`message_thread_id` as the send family, and on the topic that had just refused a `sendMessage` it
+answered `ok: true`. A control on a topic created minutes earlier answered `ok: true` too, so the
+method reports the same success either way. #854's shape is therefore live on this deployment, on
+one method of the API this adapter uses, and the difference between "a report from elsewhere" and
+"a measurement here" is what decides whether a later reader treats TG-80 as dead code. Two rules
+follow from that measurement and are written in §11: no method of this API is a liveness probe
+(TG-102), and the only thing that proves a topic alive is a send the human can see.
 
 | ID | Rule | Source | Sev | Test assertion (live?) |
 |----|------|--------|-----|------------------------|
-| TG-80 | **The `message_thread_id` on the send *response* is the truth; the one sent is a request.** Every send carrying a non-zero `message_thread_id` compares the value on the returned `Message` against the one it sent. A difference, or its absence, means **the topic is gone** and the message has landed in General. The comparison is unconditional — it is not sampled, not limited to approvals, and not skipped for notices. **Amended 2026-08-09 (measured): this rule is defence, not the working path.** F-11's four probes make the live API raise TG-83's error before any response exists, so nothing reaches the comparison today. The rule stands as written for the reasons §9.3.3's preamble gives, and the amendment is only about which rule a reader should expect to see fire. | F-2 (tdlib/telegram-bot-api#854), contradicted live by F-11; decision AC; D6 | error | A fake that accepts a stale `message_thread_id`, returns `ok: true` and echoes a `Message` **without** it: the adapter detects the loss on the **first** send, marks the channel dead and takes TG-81's path. A companion test pins that the fake raises **no** error, so a version of the adapter that only inspects exceptions fails it. That fake behaviour now sits behind the `silent_relocation` switch rather than being the default (§9.7). **live**: the `@pytest.mark.live` test asserts the **measured** answer — `ok: false` with `message thread not found` — and is marked as the probe that would catch the API moving back to #854's behaviour. |
+| TG-80 | **The `message_thread_id` on the send *response* is the truth; the one sent is a request.** Every send carrying a non-zero `message_thread_id` compares the value on the returned `Message` against the one it sent. A difference, or its absence, means **the topic is gone** and the message has landed in General. The comparison is unconditional — it is not sampled, not limited to approvals, and not skipped for notices. **Amended 2026-08-09 (measured): this rule is defence, not the working path.** F-11's four probes make the live API raise TG-83's error before any response exists, so nothing reaches the comparison today. The rule stands as written for the reasons §9.3.3's preamble gives, and the amendment is only about which rule a reader should expect to see fire. **Amended again 2026-08-09 (F-13): the comparison guards a behaviour this deployment has reproduced.** `sendChatAction` accepts the `message_thread_id` of a deleted topic and answers `ok: true`, so one method of this API does today what #854 described. A reader who took *"defence"* to mean *"unreachable"* now has the measurement that says otherwise, and a build that deletes the comparison is deleting the only detection that works on a method which reports success. | F-2 (tdlib/telegram-bot-api#854), contradicted live by F-11; decision AC; D6 | error | A fake that accepts a stale `message_thread_id`, returns `ok: true` and echoes a `Message` **without** it: the adapter detects the loss on the **first** send, marks the channel dead and takes TG-81's path. A companion test pins that the fake raises **no** error, so a version of the adapter that only inspects exceptions fails it. That fake behaviour now sits behind the `silent_relocation` switch rather than being the default (§9.7). **live**: the `@pytest.mark.live` test asserts the **measured** answer — `ok: false` with `message thread not found` — and is marked as the probe that would catch the API moving back to #854's behaviour. |
 | TG-81 | **The stray message is disarmed before anything else.** On a TG-80 mismatch the adapter, in this order: (1) calls `clear_keyboard(chat_id, response.message_id)` if the send carried one, (2) posts one plain line in General saying which topic was deleted and that the message below it was meant for that expert, (3) then repairs (TG-82). The stray **text is never deleted** and `deleteMessage` is not in the Protocol. | decision AC, AD; TG-63; D6 | error | A stray approval send: `clear_keyboard` is the **next** call after the send, before any `createForumTopic`; the correction message follows; the original text is untouched; no method named `delete_message` exists. A stray *plain* message issues no `clear_keyboard`. **no key** — *Why*: a message is dangerous only while its buttons are live, and the response that revealed the problem already carries the `message_id` needed to disarm it. Repairing first means a `createForumTopic` failure leaves an approve button for an irreversible write sitting in General under the wrong expert's name — which is the exact failure this whole section is arranged around. |
-| TG-82 | **Repair is bounded and durable.** A dead channel is recreated at most **twice** (`MAX_RECREATIONS = 2`), counted in the directory row so the bound survives a restart, and the pending message is re-sent into the new topic. Past the bound the channel is **retired**: the agent's traffic goes to General with the agent id as its first line (TG-85), the human is told **once**, and no further `createForumTopic` is issued for it until a `/channels` command asks. **Amended 2026-08-09 (§9.10)**: retirement is a **channel's** state and its routing seed is read back per chat, never from the chat-less `retired_agents()`; `/channels <agent-id>` **revives** it in the process as well as in the row, or the way out the notice names creates a permanently silent topic; a recreation **carries the binding over** to the new topic, because a repair is not a rotation and the thread it moves is frequently holding the very approval being re-sent; and an unattributed send resolves its agent from the directory, because the orphan report is the message most likely to find a topic deleted and it carries no agent id. | decision AC; TG-23's rate-limit reasoning; Q20's "an approval must never be undeliverable" | error | Delete the topic three times in a fixture: two recreations, then retirement with one notice and zero further creates; a restart between deletions does not reset the count; the retired channel's messages arrive in General prefixed with the agent id. **no key** — *Why*: unbounded recreation is a loop against a human deliberately deleting a topic, and each turn of that loop is a `createForumTopic` plus a notification. Refusing to repair at all is worse: the expert's approvals become undeliverable, which is precisely the outcome Q20 rejected. Two is the smallest number that survives an accidental deletion and a fat-fingered second one without becoming a fight. |
+| TG-82 | **Repair is bounded and durable.** A dead channel is recreated at most **twice** (`MAX_RECREATIONS = 2`), counted in the directory row so the bound survives a restart, and the pending message is re-sent into the new topic. Past the bound the channel is **retired**: the agent's traffic goes to General with the agent id as its first line (TG-85), the human is told **once**, and no further `createForumTopic` is issued for it until a `/channels` command asks. **Amended 2026-08-09 (§9.10)**: retirement is a **channel's** state and its routing seed is read back per chat, never from the chat-less `retired_agents()`; `/channels <agent-id>` **revives** it in the process as well as in the row, or the way out the notice names creates a permanently silent topic; a recreation **carries the binding over** to the new topic, because a repair is not a rotation and the thread it moves is frequently holding the very approval being re-sent; and an unattributed send resolves its agent from the directory, because the orphan report is the message most likely to find a topic deleted and it carries no agent id. **Amended 2026-08-09 (§11, TG-103): the bound counts repairs the bot performed on its own, and a `/channels` naming the agent clears the count before the pointer goes out.** The cap stops an automatic loop; a human tapping a picker row is the decision the cap defers to, and TG-103 states the ruling and its reason. | decision AC, decision AJ; TG-23's rate-limit reasoning; TG-103; Q20's "an approval must never be undeliverable" | error | Delete the topic three times in a fixture: two recreations, then retirement with one notice and zero further creates; a restart between deletions does not reset the count; the retired channel's messages arrive in General prefixed with the agent id. **no key** — *Why*: unbounded recreation is a loop against a human deliberately deleting a topic, and each turn of that loop is a `createForumTopic` plus a notification. Refusing to repair at all is worse: the expert's approvals become undeliverable, which is precisely the outcome Q20 rejected. Two is the smallest number that survives an accidental deletion and a fat-fingered second one without becoming a fight. |
 | TG-83 | **`400 message thread not found` is the same fact as a TG-80 mismatch** and takes the identical path — with one difference stated in the code: **nothing was delivered**, so there is no stray message and TG-81's steps (1) and (2) are skipped. The adapter never treats it as retryable and never counts it toward TG-8's transport backoff. **Amended 2026-08-09 (measured): this is the path a deleted topic actually takes.** F-11 answered `ok: false` with this exact description in all four probes, with the topic deleted by the bot and by the human, armed and unarmed. TG-83 was written as the twin of an unresolved bug report and is now the live-verified mechanism of the whole subsection, so a change to it is a change to the only detection that runs. | F-3 (tdlib/telegram-bot-api#847); **F-11 (executed 2026-08-09, four probes)**; TG-8; TG-48 | error | A fake 400ing with that description: the channel is marked dead, no `clear_keyboard` is issued, the repair runs, `restarts == 0` and `with_retry` does **not** re-send to the dead id. This is the fake's **default** as of 2026-08-09 (§9.7), so every hazard test that does not opt out drives this path. **live**: one `@pytest.mark.live` test deletes a topic and asserts the send raises with `is_missing_thread` true. **no key** for the rest — *Why*: recreate-and-re-send is right whether the API errors or relocates, which is what made it safe to rule on an open bug and what makes the measurement a confirmation rather than a redesign. Retrying the send instead would re-issue the same dead id up to the retry bound, three 400s per message forever. |
 | TG-84 | **A channel known to be dead is never sent to with its stale id.** Between detection and repair — and permanently after retirement — the agent's messages go to General with the TG-85 prefix. A queued outbox item addressed to a channel that died while it waited is re-addressed, never dropped and never sent blind. **Amended 2026-08-09 (§9.10)**: a repair compares its channel against the directory row **before** creating anything — a row naming a different topic means the channel already moved, so re-address and create nothing. Reachable by an ordinary restart, because prompt rows (TG-57) and ledger rows (TG-29/TG-31) keep naming the dead id and `_moved` is process memory. | TG-80, TG-82; TG-49 ("never a `MessageComplete`, an `InterruptEvent` or a terminal frame") | error | Kill a topic mid-run with three frames still in the outbox: zero sends carry the dead id, all three arrive in General prefixed, and none is dropped. **no key** — *Why*: TG-80 detects one stray per send. Without this rule a fan-out with eight queued messages produces eight strays and eight corrections, and the human's chat becomes unreadable at exactly the moment something needs approving. |
 
@@ -1009,6 +1030,8 @@ class BotApi(Protocol):         # additions only; §8.1's shipped seven are unch
     #
     # NOT ADDED, and deliberately: edit_forum_topic, close_forum_topic, reopen_forum_topic,
     # delete_forum_topic, unpin_all_forum_topic_messages, delete_message (TG-78, decision AD).
+    # AMENDED 2026-08-09 (§12, TG-78 amended): edit_forum_topic IS on the Protocol, for the one
+    # act of naming a topic the bot takes as a channel. The other five stay off. See §12.3.
 
     # send_message / send_document gain `topic_id: int = GENERAL` and RETURN THE WHOLE Mapping,
     # which they already do (§8.1). TG-80 reads `message_thread_id` off that response.
@@ -1093,7 +1116,7 @@ blocked on any of them.
 | # | Question | Options | Recommended default | Blast radius if changed later |
 |---|----------|---------|---------------------|-------------------------------|
 | **Q27** | **Should `/channels all` exist?** It creates one topic per catalog agent in one command. | (a) yes; (b) list-and-name only, one agent per command. | **(a)** (TG-87). It is the "set it up once" path, and without it a human with a twelve-topic knowledge base types twelve commands with hand-copied agent ids on a phone. It is still decision AA's shape — one explicit human act — and the act is undoable one topic at a time. The risk is a human with forty topics who types it once and gets forty channels; the mitigation is that the reply says how many it will create **before** creating them only if we add a confirm step, which we have not, because TG-64's confirm affordance is for irreversible *writes* and a topic is deletable. | One command branch. If it goes, `/channels <agent-id>` is unchanged and TG-87 loses one clause. |
-| **Q28** | **Is `MAX_RECREATIONS = 2` the right bound, and should retirement ever expire?** | (a) 2, permanent until a `/channels` command; (b) 2, expiring after N days; (c) 1; (d) unbounded with a rate limit. | **(a)** (TG-82). Two survives an accidental deletion plus a fat-fingered second one without becoming a fight with a human who is deliberately deleting the topic. (d) is the shape that turns a deletion into a notification loop. (b) adds a timer to a supervised task that carries no state across restarts (P-23) and would need its own durable column. **The uncertainty is honest**: nobody has yet deleted a topic in anger on this deployment, so the number is reasoned, not measured. | One constant and one column. Fully reversible; the durable count means changing the bound changes behaviour for existing dead channels immediately. |
+| **Q28** | **Is `MAX_RECREATIONS = 2` the right bound, and should retirement ever expire?** | (a) 2, permanent until a `/channels` command; (b) 2, expiring after N days; (c) 1; (d) unbounded with a rate limit. | **(a)** (TG-82). Two survives an accidental deletion plus a fat-fingered second one without becoming a fight with a human who is deliberately deleting the topic. (d) is the shape that turns a deletion into a notification loop. (b) adds a timer to a supervised task that carries no state across restarts (P-23) and would need its own durable column. **The uncertainty is honest**: nobody has yet deleted a topic in anger on this deployment, so the number is reasoned, not measured. **Refined 2026-08-09 (TG-103): the bound counts the repairs the bot made on its own, and an explicit `/channels` clears the count.** A human deleted a topic on this deployment and reached the picker, which is what the ruling above had no measurement for; the number stays at 2 and the thing it counts is now stated. | One constant and one column. Fully reversible; the durable count means changing the bound changes behaviour for existing dead channels immediately. |
 | **Q29** | **When General is not the Librarian, should the bot say so in that channel once at startup, or only in `/agents`?** | (a) `/agents` only (quiet); (b) one notice per daemon start; (c) a notice on the first message after a start. | **(a)** (TG-73). A per-start notice on a daemon whose value proposition is staying up for weeks is either invisible or, under a restart loop, spam — and TG-13's whole lesson was that a notice fired by a restart is a notice the human learns to ignore. But (a) means a human who never types `/agents` never learns that their General talks to Cooking, and that is the one ambiguity topics leave standing. | One message. Genuinely a judgement call about noise, which is why it is here rather than ruled silently. |
 | **Q30** | **Should `/channels <agent-id>` in an unbound topic bind that topic, or always create a new one?** | (a) bind here, create otherwise, and say which happened (TG-87); (b) always create, with a separate `/bind` for the other case. | **(a)**, and it is the least comfortable ruling in §9: one command with two behaviours is exactly the kind of context-dependence TG-1 was written against. It is chosen because the bind-here form is the **only** recovery path for a lost SQLite file — no API enumerates a chat's topics (F-5) — and a second command is a second thing to remember on a surface that already has six. The mitigation is the reply naming which happened, which makes the ambiguity visible after the fact rather than never. | One command branch and one line of help text. If (b) wins, `/bind` is additive and TG-87 splits in two. |
 | **Q31** | **Should a `/pending` keyboard for an agent with no channel offer to create one?** | (a) no — post it in the typing channel with the TG-85 prefix (TG-88); (b) create the channel and post it there; (c) post a line suggesting `/channels <agent-id>`. | **(a)**, with **(c)** as a cheap improvement if the prefix reads badly in practice. (b) violates decision AA — creating a topic as a side effect of a *listing* command is the daemon deciding what is reachable from the phone, which is the one thing TG-3 has ruled against since the beginning. | One line of text. Nothing structural. |
@@ -1556,3 +1579,411 @@ Measured on the build, against the longest agent ids `pkb.core.paths` permits: `
 80-character slug is 86 bytes and takes the digest form (20 bytes on the wire); the same with five
 slugs is 410 bytes and takes the same 20; `librarian` rides inline at 12 and
 `topic/cooking/grilling` at 25. Every payload the picker can emit fits 64 bytes.
+
+---
+
+## 11. Durable state that outlives what it describes
+
+**Date**: 2026-08-09
+**Status**: **Built**, 2026-08-09. Rules TG-102, TG-103 and TG-104, decisions AI and AJ, an
+amendment to TG-77 marked in place, F-13 added to §9.1 and the framing it undermines corrected
+there. §11.8 holds the two defects an adversarial pass found by running the build.
+**Scope**: `pkb.server.telegram` and nothing else. **No store change, no `BotApi` change, no
+`/health` change, no `pkb.daemon` change**, and `pkb.tui` and `pkb.clients` stay untouched exactly as
+§9 and §10 left them. The fix routes one message through a channel it already knew the address of,
+and the repair it reaches is the one TG-82 and TG-83 built.
+
+### Why this section exists
+
+A human deleted the Cooking topic in their Telegram client, opened the `/channels` picker and tapped
+the Cooking row. The bot answered, in General:
+
+> topic/cooking already has a channel in this chat (topic 101), so I created nothing.
+
+The topic did not exist. Verified against the live API the same day: `sendMessage` with
+`message_thread_id: 101` answers `400 Bad Request: message thread not found`, and the durable row
+still read `(chat, 101, topic/cooking, recreations 0, retired 0)`. **The chat id, the user id and
+the topic id are masked here and everywhere below**, per §0's public-repo rule; `101` stands for the
+id Telegram minted, and the suite uses the same number for the same reason.
+
+**The channel was unrecoverable from the phone.** TG-77 refuses to create a second channel for one
+agent, which is the right rule for the right reason: a second channel splits that expert's history
+in half with nothing on screen saying which half a message went to. What the build got wrong is
+smaller and worse. It treated the durable row as proof the topic was alive.
+
+The repair machinery existed and could not be reached. TG-82 and TG-83 recreate a dead channel and
+both are triggered by a **failed send**. Nothing will ever send into a deleted topic: no inbound
+message can arrive from one (F-5), and the one message that names it went to the channel the command
+was typed in. The bot held the address of a dead topic, the code that fixes a dead topic, and no
+path between them.
+
+**This is the third time in this layer that durable state outlived the thing it describes.** The
+ledger row (TG-29) names a chat and an update Telegram may have moved on from, the prompt row
+(TG-57) names messages a human can delete, and the channel row (TG-77) names a topic Telegram can
+delete without an update. Each was found by a human using the bot. TG-102 writes the pattern once so
+the fourth one is caught by a reader.
+
+### 11.1 Decisions applied
+
+Continuing the letter series of §10.1 (last: **AH**).
+
+| # | Decision | Why |
+|---|----------|-----|
+| **AI** | **TG-77's pointer is sent into the channel it names. The channel the command was typed in gets a one-line answer of its own, and only when it is a different channel.** | On a live channel the pointer is more useful there: it points at the place, and the place is a topic the human can open, where the alternative names a topic id that is invisible in every Telegram client (§9.10 struck exactly that id from TG-74's reply for the same reason). On a dead channel the send raises `message thread not found`, which is TG-83's trigger, so one line of routing reaches a repair that was written, tested and unreachable. The second message is not decoration. The human is standing in General when they tap, TG-100 leaves the picker keyboard live and unmarked after a press, and a press whose only answer arrives in a channel they are not looking at is a press that reads as nothing happening, so the next thing the thumb does is press again. Two other shapes were available and both fail. **One message, in the named channel only**: the tap goes unanswered where the human is looking. **One message in the typing channel, with a separate probe beside it**: the probe is the thing F-13 killed, since `sendChatAction` answers `ok: true` for a topic Telegram deleted, and a probe that carries no text is a message the human cannot read even when it works. The cost is one extra send per press against a budget that is per chat (F-7, TG-94), bounded by how fast a human taps. |
+| **AJ** | **An explicit `/channels` naming an agent clears that channel's recreation count, and TG-82's cap counts only the repairs the bot made on its own.** | The cap exists to stop an automatic loop against a human deleting a topic on purpose. A human tapping a picker row is the opposite of a loop: it is the same act that opened the channel in the first place, and `open_channel` already clears `recreations` and `retired` on it for a channel the human creates or binds (TG-87's revival). Left counting, the human's third deletion answers a tap with a retirement notice instead of a channel, on a feature a person exploring it will exercise three times in a minute. Recovery would still exist, since a retired row leaves the directory and the next `/channels` creates, and that is exactly the failure worth avoiding anyway: a tap that does not do what the row says, followed by a tap that does, teaches the human the button is unreliable. The count keeps a meaning after this decision, and a sharper one: repairs since the human last said this channel should work. |
+
+### 11.2 Rule table — TG-102 onward
+
+Same conventions as §0, §9.3 and §10.2: stable ids, `no key` / `live` on every assertion, and every
+rule states the failure it prevents.
+
+| ID | Rule | Source | Sev | Test assertion (live?) |
+|----|------|--------|-----|------------------------|
+| TG-102 | **A durable row that names something Telegram owns is a record of the past, and only using it proves it still holds.** Three rows in this layer name an object Telegram can destroy without telling the bot: the ledger row names a chat and a channel (TG-29), the prompt row names the messages an approval was posted as (TG-57), and the channel row names a topic (TG-77). **The row is never evidence its object exists.** No update announces a deletion (F-5), and **no method of this API is a liveness probe**: `sendChatAction` answers `ok: true` for a topic Telegram deleted and `ok: true` for one created a minute ago (F-13), so a check built on it confirms every dead channel as alive. So the act that reports such a row to the human **is** the act that exercises it: a reply that names a channel is delivered into that channel, and the failure of that delivery is the detection. A reader adding a fourth row of this kind names, on the row, the act that proves it and the repair that act triggers. | F-5, F-13 (executed); TG-29, TG-57, TG-77, TG-83; decision AI | error | `/channels <agent-id>` for an agent whose topic was deleted ends with a new topic, a directory row naming it and a line in the typing channel; the same command for a live channel creates nothing and delivers the pointer into that channel. grep-level: `pkb/server/telegram.py` contains no `chat_action` and `BotApi` has no method whose name contains it, so the probe F-13 killed cannot be reintroduced without a rule change. **no key** — *Why*: the failure is a repair that exists and cannot be reached. The bot held a dead topic id, TG-82 and TG-83 which recreate a dead topic, and no path between them, because the one message that named the topic was sent somewhere else and no message will ever arrive from a topic that is gone. Every rule in §9.3.3 is triggered by a send that fails, so a report about a channel that skips the channel disarms the whole subsection for that channel, permanently and in silence. |
+| TG-103 | **`MAX_RECREATIONS` bounds the repairs the bot makes on its own. An explicit `/channels` naming an agent clears that agent's count in this chat before the pointer goes out, so a human request never spends the allowance and never retires a channel.** Retirement stays reachable, by deletions the bot repaired with no human asking. The count is cleared through `open_channel`, the same durable write TG-87's revival already makes, so both doors leave a channel the human just asked for with the same allowance. **Amended 2026-08-09 (§11.8): the read that decides the clear and the write that performs it hold `_repairs[existing]`, and the write carries the topic id from the row it just read.** `open_channel` sets `topic_id` as well as the count, and `_repair` owns that column and writes it two awaits away, so the pair is a check-then-act on a value another task replaces. | decision AJ; TG-82, TG-87, TG-77 (amended); Q28 (refined) | error | Delete the topic and tap the row three times: three recreations, zero retirements, and the row reads `recreations == 1` after each. Two deletions repaired by ordinary sends, then a `/channels` for that agent: the row reads `0` before the pointer is sent, and the next two deletions still repair. A channel retired without any human request is still retired, and its notice is still sent once. **An unattended send that repairs the same channel inside the row read leaves the directory naming the live topic**, driven with the competing send as its own task. **no key** — *Why*: the cap stops a loop, and a thumb is not a loop. Counting a human's request against it makes a channel answer the third tap with a retirement notice, which a person exploring the picker reaches in a minute; bypassing the count instead would need the repair to know who triggered it, which means a flag threaded through `_send` into `_repair` or a second recovery path beside it, and §9.10 defect 3 and §9.11 defect A are both what happens when this layer grows a second way to repair a channel. |
+| TG-104 | **A General fallback the bot chose for itself is process memory with no expiry, and an explicit `/channels` naming the agent clears it.** `_repair` answers a failed `createForumTopic` by re-addressing the channel to General and leaving the durable row naming the topic. Every send for that channel is then re-addressed **before** it can fail, so TG-83's trigger never fires for it again, and the pointer TG-102 relies on reaches General rather than the topic. The channel is stuck until the daemon restarts, while `_POINTER_LOST` tells the human to send `/channels <agent-id>`, which is the command that cannot work. `_point_at` deletes the mapping when it points at General and the row still names the topic, under the same lock that reads the row. Retirement is untouched: a retired row leaves the directory, so that path is TG-87's revival through the create branch. | §11.8 (measured); TG-82, TG-83, TG-84, TG-87, TG-102 | error | One failed recreation, then `/channels <agent-id>`: the pointer carries the topic id, the recreation runs, the directory names the new topic and a later reply for that agent lands in it. Before the fix the same two commands issued zero further `createForumTopic` calls and answered `_POINTER_LOST` twice. **no key** — *Why*: the fallback is right at the moment it is made, because a message has to go somewhere and General is where the human can see it. What is wrong is that it outlives its reason. §9.10 made this exact argument for retirement — a re-addressing left standing sends every one of that expert's messages to General for the life of the daemon, into a channel the human is being told to repair — and the failed-create path had the same defect and no rule. |
+
+### 11.3 The contract
+
+```python
+# pkb/server/telegram.py — additions only. No new module, no new table, no new BotApi method,
+# no new store method, and NO SECOND RECOVERY PATH: the repair is TG-82 and TG-83, reached the
+# way every other caller reaches it, by a send that fails.
+
+async def _point_at(self, typed_in: Channel, existing: Channel, agent_id: str) -> None:
+    """TG-77 (amended), TG-102, TG-103, TG-104. Called from `_channels` where the pointer was.
+
+    Under `_repairs[existing]`: clear the count (TG-103) and drop a General pin a failed
+    recreation left behind (TG-104). Then send the pointer into `existing` **with its agent id**
+    and answer `typed_in` when it is a different channel. The agent id matters: an unattributed
+    send cannot be routed by TG-82's retirement, cannot be repaired under the right row, and is
+    what §9.12 defect 4 measured as a channel pinned to General for the life of the daemon.
+    """
+
+_ALREADY_HERE: Final = ...   # into the named channel: the pointer, and the probe
+_ALREADY:      Final = ...   # unchanged, into the typing channel: the channel was alive
+_REOPENED:     Final = ...   # into the typing channel: the topic was gone and now exists again
+_POINTER_LOST: Final = ...   # into the typing channel: gone, and the recreation failed
+```
+
+**Where the outcome comes from.** `_point_at` reads `_route_out(existing, agent_id)` **after** the
+pointer send and answers the typing channel from it: the same channel means the topic was alive, a
+different topic means TG-83 repaired it, and General means the recreation failed and TG-82 fell
+back. Nothing new decides this, and nothing new is recorded to make it decidable; `_route_out` is
+the function every send already asks where a message goes now.
+
+### 11.4 Test strategy delta
+
+The three tiers of §6.1 are unchanged and the default suite still collects zero live tests and opens
+no socket.
+
+| File | What it gains |
+|------|---------------|
+| `tests/server/test_telegram_topics.py` | A `§ TG-102` section: the human's exact sequence, driven through the typed command and through a picker press, plus the live-channel case that must create nothing, plus TG-103's three taps. |
+| `tests/server/test_telegram_picker.py` | The press path asserted against the same sequence, because a press and a typed command run one function (TG-98) and this is the case the human hit through the button. |
+
+Two assertions are worth naming because a later change breaks them silently:
+
+* **The pointer send carries the topic id it names.** A build that answers only in the typing
+  channel passes every other assertion in the file, which is how this defect shipped.
+* **`recreations` reads `1` after a human-triggered repair, not `3`** (TG-103). A test that only
+  counts `createForumTopic` calls cannot tell a cleared count from a spent one.
+* **The clear survives a repair racing it** (TG-103, §11.8). The competing send runs as its own
+  task, because that is the only way the window opens; a sequential test passes against the build
+  that writes a dead topic id back over the repair.
+* **A second `/channels` after a failed recreation issues a second `createForumTopic`** (TG-104).
+  Counting the creates is the assertion: a test that reads only the reply text passes against a
+  build whose pointer never left General, because the reply is the same either way.
+
+### 11.5 Explicitly out of §11
+
+- **A liveness probe of any kind** (TG-102, F-13). No `sendChatAction`, no `getChat`, no message the
+  bot deletes afterwards; `deleteMessage` is still not on the Protocol (decision AD).
+- **A second recovery path.** TG-82 and TG-83 repair a channel; §11 changes where one message goes.
+- **A durable record of dead topic ids.** Q32 is still open and still defaulted to (a).
+- **Marking or clearing the picker keyboard after a repair** (TG-100). A `✓` written after one press
+  claims the whole keyboard is current, and it is current for one row at one moment.
+- **Any store, `BotApi`, `/health` or `pkb.daemon` change**, and `pkb.tui` and `pkb.clients`,
+  untouched as in §9.8 and §10.5.
+
+### 11.6 Open questions — Q35 onward
+
+| # | Question | Options | Recommended default | Blast radius if changed later |
+|---|----------|---------|---------------------|-------------------------------|
+| **Q35** | **Should the other reports that name a channel be delivered into it, as TG-102 now requires of the pointer?** `/agents` lists this chat's channels and `/health` counts them, and both read rows without exercising them. | (a) the pointer only, which is the one command whose whole purpose is to make a channel reachable; (b) `/agents` too, which would mean one send per listed channel; (c) a periodic sweep that sends into every channel. | **(a)**. (b) turns one command into N sends against a per-chat budget (F-7) and posts a line into every expert's topic because the human asked a question in General. (c) is a background job that writes into the human's chat with nothing to say, and P-23 is the reason a supervised task carrying state is refused elsewhere. The pointer earns its send because a human asked for that channel by name. | One command. (b) is additive and would reuse `_point_at`. |
+
+### 11.7 As built — 2026-08-09
+
+`pkb/server/telegram.py` grew one method (`_point_at`), three message constants and one durable
+write on a path that had none. No import was added, no module moved, `BotApi` gained no method, the
+store gained no method and no table, and `pkb/tui` and `pkb/clients` were not opened. The five seam
+scans still glob `pkb/server/*.py` and still pass. §11.8's audit added no method and no constant:
+one lock around a read and a write, one `del` on `_moved`, and TG-104.
+
+Three things the build settled that §11.1 to §11.3 left to the implementer.
+
+**The count is cleared before the pointer, not after the repair.** Clearing afterwards would let the
+repair the human triggered read a count already at the bound and retire the channel, which is the
+outcome TG-103 exists to prevent; the human would then be told their expert had moved to General by
+the tap that was meant to bring it back. Cleared first, the repair the tap triggers always
+recreates.
+
+**The clear is skipped when the count is already zero.** `_point_at` reads `store.channel(...)`,
+which the repair path already reads, and writes only when `recreations` is non-zero. The ordinary
+pointer therefore writes nothing, and `created_at` keeps naming the moment the human made the
+channel rather than the last time they asked about it.
+
+**The typing channel's answer carries no agent id.** `_say(typed_in, …)` is a reply to a command in
+that channel, so it belongs to that channel. Attributing it to the agent it names would put it
+through `_route_out` under that agent, and an agent whose channel is retired routes to General,
+which would take the answer out of the channel the human is standing in and looking at.
+
+### 11.8 Audit — two defects an adversarial pass found, by running them
+
+**Defect 1 is the third instance of one shape in this file: a check-then-act across an await on a
+value another task writes.** The first was `_channel_died`'s `known` guard (§9.11 defect A), the
+second was two picker presses creating two topics (§10.7), and the third is TG-103's count clear.
+
+`_point_at` read `store.channel(...)` and then wrote `store.open_channel(chat_id,
+existing.topic_id, agent_id)`. `open_channel` sets `topic_id` alongside the count, and `_repair`
+owns `topic_id` and writes it two awaits after it decides to. The competing send has to be its own
+task, and that is how it arrives: the outbox pump and every run reply run in tasks of their own.
+Driven that way against the fake, an unattended send discovered the same deletion inside the row
+read, repaired the channel to a new topic, and the clear then wrote the **dead** topic id back over
+it. The directory named a topic Telegram had deleted, the topic the bot had just created stood on
+the human's phone addressed by nothing, and every message from it answered TG-74's *"not connected
+to an expert"*. §9.12 defect 4 measured that shape once already.
+
+Two conditions gate it, and both hold on the sequence the human ran: the count has to be non-zero,
+so the bot must have repaired this channel unattended at least once, and the competing send has to
+find the death inside one row read. Narrow, and it produces the outcome this whole section exists
+to prevent, so the read and the write now hold `_repairs[existing]` and the write carries the topic
+id from the row it just read. The lock is released before the pointer goes out: the pointer's own
+failure takes that lock, so holding it across the send would deadlock the repair the send exists to
+trigger. Lock order on this path is `_creations[chat_id]` then `_repairs[existing]`, and nothing
+takes them the other way round.
+
+**Defect 2 was found by the attack on a repair whose own creation fails, and it is TG-104.** A
+`createForumTopic` failure makes `_repair` write `_moved[channel] = channel.general` and leave the
+durable row naming the topic. That mapping has no expiry and `_route_out` consults it first, so
+every later send for that channel is re-addressed to General **before** it can fail. TG-83's
+trigger never fires for it again, and TG-102's whole mechanism goes with it: the pointer is a send,
+so it arrives in General too, and `_POINTER_LOST` answers with *"Send `/channels <agent-id>` to try
+again"*, which is the command that just did nothing. Measured against the fake: one failed
+recreation, then two more `/channels topic/cooking`, and zero further `createForumTopic` calls, two
+identical `_POINTER_LOST` lines, and the channel stuck in General until the daemon restarts.
+
+The failure of the create is real and the fallback is right at the moment it is made, because the
+message has to go somewhere and General is where the human can see it. What is wrong is that the
+fallback outlives its reason. §9.10 made the same argument about retirement and answered it with
+`_revive`; the failed-create path had the same defect, no rule and no test. §11 made it reachable
+by promising a repair on the pointer, so TG-104 states it and `_point_at` clears the pin under the
+lock that already reads the row.
+
+This is also the fourth instance of TG-102's own pattern, in a form the rule did not cover: **state
+that outlived the thing it describes**, held in memory rather than in a row. TG-102 asks a reader
+adding a durable row to name the act that proves it. `_moved` is not a row, and the mapping there
+records a judgment about a channel rather than a fact about a topic, so nothing proves it and the
+judgment stands until the process ends.
+
+Eleven other attacks were run and found sound. Six are worth naming, because a reader who does not
+see them written down runs them again.
+
+* **Two presses on a dead row, dispatched in one batch, produce one `createForumTopic`.**
+  `_creations[chat_id]` already serializes `/channels` from the directory read onward, so the second
+  caller reads the row the first one repaired and its pointer lands in the live topic. The picker
+  press and the typed command are one function (TG-98), so this holds for both doors.
+* **A press from outside the allow-list is refused with an alert, sends nothing and creates
+  nothing.** The check sits in `_on_callback` above the picker branch, so `_point_at` is not
+  reachable by a stranger and the durable row is not read on that path.
+* **A press on an agent that has left the catalog creates nothing** and answers `_NO_SUCH_AGENT`.
+  `_channels` re-reads `list_agents()` and refuses before `_channel_of`, so a dead row for a dead
+  agent is never repaired into a topic the knowledge base has no expert for (TG-79).
+* **The callback is answered before any work on every new path.** The journal order for the repair
+  case is `answer_callback`, the pointer send, `createForumTopic`, the resend, the typing channel's
+  line (TG-61).
+* **A repair whose own `createForumTopic` fails leaves the count at zero**, so the next request
+  still repairs once TG-104 clears the pin it also leaves. TG-82 falls back to General, the pointer
+  is re-sent there under the agent's name, and `_POINTER_LOST` follows it in the typing channel. The
+  pointer's own text reads *"and this is it"* about General on that path, which TG-82 has by then
+  made true, and the line under it says so in words.
+* **The human's sequence carries the thread over**, so the conversation started in the deleted topic
+  continues in the recreated one and `/threads` still lists it (TG-82's `_carry_binding`).
+
+Two behaviours were checked, found unchanged and left alone. A channel the bot retired with no human
+request is still recovered by a press, through the create branch rather than through `_point_at`:
+`store.channels` omits a retired row, so `_channel_of` answers `None` and `_create_channel` runs,
+which is TG-87's revival and clears `_retired` in the process. And **`/channels all` still leaves a
+dead topic dead**, because it skips every agent already in the directory and never sends into one.
+The repair door is a `/channels` naming an agent and the picker row that types it (TG-101 keeps
+`all` off the keyboard), which is the door the human used.
+
+---
+
+## 12. The channel carries the expert's name
+
+**Date**: 2026-08-09
+**Status**: **Built**, 2026-08-09. Rules TG-105 and TG-106, decisions AK and AL, an amendment to
+TG-78 marked in place, and one method added to `BotApi`.
+**Scope**: `pkb.server.telegram` and `pkb.server.telegram_api`. **One `BotApi` method**, and that is
+the whole surface change: no store change, no new table, no `/health` field, no `pkb.daemon` change,
+and `pkb.tui` and `pkb.clients` stay untouched as §9.8, §10.5 and §11.5 left them.
+
+### Why this section exists
+
+The human's live bot showed **New Chat** as the tab name of their Cooking expert. Two paths reach a
+channel and only one of them named it.
+
+`_create_channel` passes `self._catalog().get(agent_id, agent_id)` to `createForumTopic`, so a topic
+the bot makes arrives called *Cooking*. That path had never run on the deployment: the log holds
+zero `createForumTopic` calls. The human made the topic in their own Telegram client, where Telegram
+named it *New Chat*, and bound it with `/channels topic/cooking` from inside it. `_channels` wrote
+the durable row, answered *"Bound this topic"*, and left the name, because TG-78 said the bot never
+renames a topic and `editForumTopic` was absent from the Protocol to make that true by construction.
+
+**A name is not decoration on this layer.** Decision AE lets an ordinary reply inside a channel
+carry no agent attribution, and the ground it gives is that the topic header already says which
+expert you are talking to. A channel called *New Chat* removes the ground. What the human is left
+with is a conversation with an unnamed expert that writes to a tree with no undo, which is the
+ambiguity TG-1 deleted `/connect` for.
+
+TG-78 was right about the general case and wrong about ownership. It was written to keep the bot out
+of the human's furniture, and taking a topic as a channel is the act that stops it being furniture.
+
+### 12.1 Decisions applied
+
+Continuing the letter series of §11.1 (last: **AJ**).
+
+| # | Decision | Why |
+|---|----------|-----|
+| **AK** | **The rename is unconditional at the moment of ownership, and the bot never inspects the name it replaces.** | The conditional form reads *"rename only a topic still carrying a Telegram default"*, and it has no input. Its input is a record the bot has to keep rather than a value it can ask for. **Corrected 2026-08-09** on an earlier draft of this cell, which claimed the name never reaches the bot at all: no Bot API *method* returns a topic's name, and one *message* carries one. The `forum_topic_created` service message arrives with the name on it, and TG-92 already receives that message for a topic **the human made by hand** (the §9 suite delivers `{"name": "Cooking"}` on a topic the bot did not create). So the input exists, once, and the argument stands on what keeping it costs. The message fires at creation, so a build that used it would hold a copy of a name Telegram owns and the human may change, which is the shape TG-102 is about; `forum_topic_edited` carries every later change and TG-92 silences it, so the copy goes stale the first time the human renames the topic. A copy that a restart drops, or that never existed because the topic predates the mapping or arrived while the daemon was down, makes the condition fire by **uptime**: one start names the topic and the next start skips it, for the same bind. The narrow form of the test, `name == title`, saves one call per channel once and pays for it with a stale copy answering *"already Cooking"* for a topic titled *New Chat*, which is the exact outcome §12 exists to end. The broad form, *"is this a Telegram default"*, adds a locale dependence on top, since *New Chat* is a string Telegram picks and translates and a build tuned to it renames for an English client and skips for every other language. A rule that fires by uptime or by locale teaches one human a behaviour the next human does not get. A rule that fires by locale teaches one human a behaviour the next human does not get. Unconditional costs a deliberate title once, recoverable in two taps, announced in the reply the same second the bot changes it. Conditional costs a channel called *New Chat* hosting an expert decision AE prints no name for, in silence, forever. |
+| **AL** | **The rename runs after the durable bind, and its failure leaves the channel bound and says the name did not change.** | The bind is the thing the human asked for and the rename is the thing that makes it legible, so the order is bind, then name, then report what both did. Renaming first would risk a named topic the store does not own if the write fails. A failed rename that rolled the bind back would answer a recovery command with nothing, on the one command that exists because the database was lost. A failed rename reported as success would leave the human reading *New Chat* under a line claiming the topic is called *Cooking*, and the next thing they doubt is the binding. So the reply forks on what happened, names the title it wanted, and tells the human they can set it themselves. |
+
+### 12.2 Rule table — TG-105 onward
+
+Same conventions as §0, §9.3, §10.2 and §11.2: stable ids, `no key` / `live` on every assertion, and
+every rule states the failure it prevents.
+
+| ID | Rule | Source | Sev | Test assertion (live?) |
+|----|------|--------|-----|------------------------|
+| TG-105 | **Taking a topic as a channel names it, once, with the agent's catalog title, and the bot reads no name and polices none afterwards.** Ownership is taken on two paths and both name the topic: `createForumTopic` carries the title already (TG-78), and the bind form of `/channels` (TG-87) follows its durable write with one `editForumTopic`. The rename is **unconditional** (decision AK): no comparison against *New Chat* or any other string Telegram picks, and no attempt to read the current name, which the Bot API does not expose to a bot. **Nothing after that moment renames anything.** A message arriving in the channel renames nothing, a restart renames nothing, a catalog title changing renames nothing (Q36), and a human who renames the channel has made a decision that stands, which is TG-78's original instinct holding from the moment it applies. The reply states the new title, so the human learns the name changed in the same second rather than by noticing later. | TG-78 (amended), TG-87, decision AE, decision AK; TG-1; `AgentDescriptor.title` (GE-25) | error | The human's sequence: a topic exists carrying a name the bot did not choose, `/channels topic/cooking` is typed **inside it**, and afterwards exactly one `editForumTopic` carries `(chat, 101, "Cooking")`, the reply names *Cooking*, and the durable row binds topic 101. The create path still passes the title to `createForumTopic` and issues **no** `editForumTopic`. An ordinary message in that channel afterwards issues zero. A second `/channels topic/cooking` from inside the bound topic renames nothing, because TG-77 answers with the pointer. **no key** — *Why*: decision AE prints no agent name on an ordinary reply because the topic header carries it, so an unnamed channel is an unattributed conversation with an expert that writes to a tree with no undo. The conditional form is the tempting one and it cannot be built: the name reaches the bot once, on a service message TG-92 already handles, so the condition would run off a copy of a value Telegram owns (TG-102) and would fire by uptime, and the *New Chat* form of it would fire by locale on top. |
+| TG-106 | **A failed rename never undoes the bind, never claims the name, never repairs and never records liveness.** The durable write happens first, so a channel that fails to be named is a channel that works: the reply says the binding stands, names the title the bot wanted, and tells the human to set it themselves. The failure takes **no** other path. It does not reach TG-82 or TG-83: a rename delivers nothing, so no message was lost and there is nothing to re-send, and creating a topic in answer to it would be the second recovery path §11.5 refuses. It is reported through `_note_send_failed` and logged, and it never counts toward TG-8's restart budget. **The rename is not a probe in either direction** (TG-102, F-13). An error from it proves nothing about the topic, and `ok: true` from it proves nothing either, because F-13 measured one method of this API answering `ok: true` for a topic Telegram had deleted. Nothing is written from the outcome except the text of the reply. Both answers are therefore safe, which is what the rule needs, because this repo has measured `sendChatAction` and `sendMessage` against a deleted topic and has not measured `editForumTopic`. | decision AL; TG-102, F-13, F-5; TG-82, TG-83, TG-8; §11.5 | error | A fake whose `edit_forum_topic` raises `400 Bad Request: message thread not found`: the durable row still binds the topic, the reply says the binding stands and the name did not change, `createForumTopic` is called zero times, and no channel is marked dead. The same with a plain `500`. A fake whose `edit_forum_topic` answers for a topic it has already deleted changes no state at all. **no key** — *Why*: the bind form is the only recovery path for a lost database (F-5), so a rename that could undo it turns the recovery command into a command that recovers nothing. The repair branch is the dangerous one: a rename that reached TG-83 would answer *"I could not name this topic"* by creating a **second** topic for an agent that just got one, which is TG-77's split history produced by the fix for a missing title. The bind renames the topic the human just sent a message from, and a message arriving from a topic is the only evidence F-5 leaves that the topic is alive, so the error branch is a backstop rather than the expected case. |
+
+### 12.3 The contract
+
+```python
+# pkb/server/telegram_api.py — one method, and the reason it is the only one.
+
+class BotApi(Protocol):
+    async def edit_forum_topic(self, chat_id: int, topic_id: int, name: str) -> None:
+        """Name a topic the bot has taken as a channel (TG-78 amended, TG-105).
+
+        `name` and nothing else beside the address: no `icon_custom_emoji_id`, for the reason
+        `create_forum_topic` carries no `icon_color`. Returns None: the answer carries no
+        information this layer may act on (TG-106, F-13).
+        """
+
+# STILL NOT ADDED, and for TG-78's original reasons: close_forum_topic, reopen_forum_topic,
+# delete_forum_topic, unpin_all_forum_topic_messages, delete_message.
+
+# pkb/server/telegram.py — one method, called from the bind branch of `_channels` and nowhere else.
+
+async def _name_channel(self, channel: Channel, agent_id: str, title: str) -> str | None:
+    """One `editForumTopic` with the catalog title. Returns None on success, the reason on failure.
+
+    TG-105, TG-106. The caller has already written the durable row, so a reason coming back means
+    a bound channel with a name the bot did not set, and the caller says exactly that.
+
+    `agent_id` names the log line and `title` goes on the wire. The caller computes the title once
+    and passes it, so the call and the reply can never name two different titles.
+    """
+
+_BOUND:          Final = ...   # bound, and the topic now carries the agent's title
+_BOUND_UNNAMED:  Final = ...   # bound, the rename failed, the human can set the name themselves
+```
+
+### 12.4 Test strategy delta
+
+The three tiers of §6.1 are unchanged and the default suite still collects zero live tests and opens
+no socket. Every fake `BotApi` in the suite gains `edit_forum_topic`, which is TG-78's own stated
+cost of a Protocol method and the reason there is one.
+
+| File | What it gains |
+|------|---------------|
+| `tests/server/test_telegram_topics.py` | A `§ TG-105` section: the human's exact sequence, the create path asserted to name its topic and issue no `editForumTopic`, the failed rename, the dead-topic rename that must not repair, the silence afterwards, two binds of one agent arriving together, and a stranger's bind. The TG-78 surface test keeps its shape and moves `edit_forum` from the forbidden list to a **two-part** one-call-site assertion: one `edit_forum_topic` on the wire, and one caller of `_name_channel`. Counting only the wire call passes against a build that renames from the create path too, measured. |
+| `tests/server/test_telegram_picker.py` | The press path renames too, because a press and a typed command run one function (TG-98), and the query is answered before the rename goes out (TG-61), because the rename is a network call the press now waits on. |
+| `tests/server/test_telegram_api.py` | The Protocol-conformance test lists `edit_forum_topic` literally, beside `create_forum_topic` and for the same reason, and one wire test pins the body: `chat_id`, `message_thread_id`, a title truncated at `TOPIC_NAME_LIMIT`, and nothing else. |
+| Every fake `BotApi` with a topic model | `edit_forum_topic`, recorded. The `§9` fake also keeps a `names` dict, so a test reads the tab the human reads rather than the call the bot made. |
+
+Three assertions are worth naming because a later change breaks them silently:
+
+* **The create path issues no `editForumTopic`.** A build that renames after every ownership event
+  passes the bind test and sends two calls where one is needed, and the second one is the call
+  TG-78 spent a section refusing.
+* **The reply on a failed rename does not name the title as set.** A test that only counts
+  `edit_forum_topic` calls passes against a build that lies in the chat.
+* **A message arriving in a bound channel issues no `editForumTopic`.** Policing the name is one
+  line away from setting it once, and the failure is silent: the human's chosen title reverts on a
+  schedule they cannot see.
+* **Two binds of one agent arriving together name one topic.** The bind reads the directory, writes
+  the row and then renames, which is a decision carried across three awaits, and this file has
+  shipped three check-then-act races already. `_creations` serializes it and the second caller
+  answers with TG-77's pointer. Measured with the lock removed: two `editForumTopic` calls, one for
+  each topic, so the human reads *Cooking* on a topic nothing routes to.
+* **A stranger's `/channels` renames nothing.** `editForumTopic` changes something every client
+  displays, and the allow-list is the only authentication this deployment has (TG-20, decision X).
+  Measured with `_sender_ok` opened: the rename goes out.
+
+### 12.5 Explicitly out of §12
+
+- **Reading a topic's name.** No method returns one to a bot and none is being added. TG-92's
+  `forum_topic_created` message carries one and the adapter keeps reading past it, because a stored
+  copy of a name Telegram owns is what AK declines to build.
+- **A rename after ownership**, by any trigger: a restart, an inbound message, a catalog title
+  change (Q36), a `/channels` that answers with TG-77's pointer.
+- **Every other topic-mutating method** (TG-78's original list): close, reopen, delete, unpin.
+- **Icons of any kind**, on either call. Neither has a rule behind it.
+- **Any store, `/health` or `pkb.daemon` change**, and `pkb.tui` and `pkb.clients`.
+
+### 12.6 Open questions — Q36 onward
+
+| # | Question | Options | Recommended default | Blast radius if changed later |
+|---|----------|---------|---------------------|-------------------------------|
+| **Q36** | **A catalog title changes after a channel is opened. Does the topic follow it?** A topic gains a title when the human renames a KB topic folder, and the channel keeps the name it was given. | (a) the name stands, and the channel keeps the title it was opened with; (b) the daemon renames every affected channel when it notices the catalog moved. | **(a)**. (b) needs the daemon to compare the catalog against a name it holds only as a stored copy of Telegram's state (AK), so it would rename on every restart to be sure, which is the policing TG-105 refuses and would overwrite a title the human chose. The channel is addressed by id, so a stale title costs legibility and nothing else, and `/channels` already names the agent id in its reply. | One method. (b) would need a durable record of the name the bot last set, which is a fourth row of the kind TG-102 is about. |
+
+### 12.7 As built — 2026-08-09
+
+`pkb/server/telegram_api.py` grew one Protocol method and its `HttpBotApi` implementation, which
+truncates at `TOPIC_NAME_LIMIT` exactly as `create_forum_topic` does and returns nothing.
+`pkb/server/telegram.py` grew `_name_channel`, one message constant (`_BOUND_UNNAMED`) and one
+format field on `_BOUND`, and the bind branch of `_channels` gained a rename and a fork on its
+answer. No import was added, no module moved, the store gained nothing, and the five seam scans
+still glob `pkb/server/*.py` and still pass.
+
+Three things the build settled that §12.1 to §12.3 left to the implementer.
+
+**The rename is not retried past the transport rule already in place.** `_name_channel` goes through
+`with_retry`, so a 429 or a 5xx is absorbed the way every other call's is, and a 400 propagates on
+the first attempt (`RETRY_CODES` omits it). That gives `400 message thread not found` the same
+treatment as any other 400 here: reported to the human, dropped, no repair. TG-106 needs no branch
+for it, and adding one would be the second recovery path.
+
+**The failure reply names the title rather than the error alone.** The human's next act is to set
+the name themselves, so the message they need is the name the bot wanted, with the reason beside it.
+A reply carrying only `400 Bad Request` tells them something broke and leaves them to guess what
+the topic should have been called.
+
+**The one-call-site assertion counts two things.** Counting `edit_forum_topic` in the adapter's AST
+counts the wire call inside `_name_channel`, and a second **caller** of `_name_channel` leaves that
+count at one. Measured: a build that renamed from `_create_channel` as well passed the TG-78 surface
+test and sent two calls where one is needed. The test now counts callers of `_name_channel` beside
+calls of `edit_forum_topic`, and the create path has a test of its own asserting zero renames.
+
+**The rename adds no fourth check-then-act, and decision AK's cell was corrected.** An adversarial
+pass drove two binds of one agent arriving together, two binds of two agents into one topic, and a
+bind racing a repair for the same agent. `_creations` already covers the first two, and the third
+never reaches the bind branch: a repair implies a live durable row, and a live row sends `/channels`
+to TG-77's pointer, which renames nothing. The same pass found AK resting on a false statement about
+the Bot API. `forum_topic_created` carries a topic's name and TG-92 receives it for a topic the human
+made by hand, so the name does reach the bot once. The ruling stands on what keeping that name costs
+and the cell now says so.

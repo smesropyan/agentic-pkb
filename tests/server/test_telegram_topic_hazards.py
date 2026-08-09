@@ -180,6 +180,12 @@ class FakeBotApi:
         self.topics.setdefault(chat_id, set()).add(self.next_topic_id)
         return {"message_thread_id": self.next_topic_id, "name": name}
 
+    async def edit_forum_topic(self, chat_id: int, topic_id: int, name: str) -> None:
+        """TG-105. Recorded so the hazard tests can assert a repair renames nothing (TG-106)."""
+        self.journal.append(
+            ("edit_forum_topic", {"chat_id": chat_id, "topic_id": topic_id, "name": name})
+        )
+
     async def send_message(
         self,
         chat_id: int,

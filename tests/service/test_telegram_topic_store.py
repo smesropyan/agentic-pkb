@@ -251,6 +251,12 @@ class FakeBotApi:
         self.next_topic_id += 1
         return {"message_thread_id": topic_id, "name": name}
 
+    async def edit_forum_topic(self, chat_id: int, topic_id: int, name: str) -> None:
+        """TG-105. Every fake implements every method on the Protocol, which is TG-78's own cost."""
+        self.journal.append(
+            ("edit_forum_topic", {"chat_id": chat_id, "topic_id": topic_id, "name": name})
+        )
+
     async def send_message(
         self,
         chat_id: int,
