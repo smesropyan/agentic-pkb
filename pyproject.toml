@@ -6,13 +6,21 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 dependencies = [
+    "aiosqlite>=0.22.1",
     "deepagents>=0.7.5",
     # Imported directly by `pkb.agents.models`: the ollama client lets `httpx.ConnectError` escape
     # on its streaming path, so the failover predicate has to name httpx's exception types.
+    "fastapi>=0.141.1",
     "httpx>=0.28",
     "langchain-ollama>=1.1.0",
     "langgraph-checkpoint-sqlite>=3.1.1",
+    "mcp>=2.0.0",
+    "pypdf>=6.15.0",
     "ruamel-yaml>=0.18",
+    "sse-starlette>=3.4.8",
+    "textual>=1.0",
+    "trafilatura>=2.2.0",
+    "uvicorn>=0.52.1",
     "wcmatch>=11.0",
 ]
 
@@ -93,19 +101,51 @@ forbidden_modules = [
 ]
 
 [[tool.importlinter.contracts]]
-name = "I1/I2 layering — core < agents < service < server|tui"
+name = "I1/I2 layering — core < packs < agents < service < server|tui|clients"
 type = "layers"
 layers = [
     "(pkb.server) | (pkb.tui)",
+    # `pkb.clients` gets its OWN layer rather than sharing one with the transports. The `|` form is
+    # import-linter's *independent* delimiter, so siblings may not import each other — and it would
+    # forbid the one import `pkb.clients` exists for (arch §6: the approval helper "is imported by
+    # the TUI and the Telegram adapter"). Verified BROKEN on both `pkb.tui -> pkb.clients` and
+    # `pkb.server -> pkb.clients` before this was corrected. Sitting below `pkb.agents` also makes
+    # "the approval helper never touches the harness" a layers fact, and catches
+    # `pkb.clients -> pkb.tui` for free.
+    "(pkb.clients)",
     "(pkb.service)",
     "(pkb.agents)",
+    "(pkb.packs)",
     "pkb.contracts",
     "pkb.core",
 ]
 exhaustive = false
 
 [[tool.importlinter.contracts]]
-name = "I2 — transports never import the harness"
+name = "I2 — transports never import the harness, directly or transitively"
 type = "forbidden"
-source_modules = ["pkb.contracts"]
+# STRICT: indirect imports ARE checked. This is the contract that catches
+# `pkb.server.app -> pkb.agents.runtime -> langgraph`; `allow_indirect_imports` here would keep it
+# green while deleting exactly the check that matters (decision B, P-8).
+source_modules = ["pkb.contracts", "pkb.packs", "pkb.server", "pkb.tui", "pkb.clients"]
 forbidden_modules = ["deepagents", "langgraph", "langchain", "langchain_core", "pkb.agents"]
+
+[[tool.importlinter.contracts]]
+name = "I2 — the composition root names no harness module"
+type = "forbidden"
+# DIRECT-ONLY: `pkb.service` is the composition root — something must construct `PkbRuntime` — so a
+# transitive chain exists wherever that lives. What it may not do is *name* a harness module: it
+# reaches the harness through `pkb.agents`' two exported names and nothing else (SV-2, decision C).
+source_modules = ["pkb.service"]
+forbidden_modules = ["deepagents", "langgraph", "langchain", "langchain_core"]
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "I2 — the shared client layer is transport-free and UI-free"
+type = "forbidden"
+# Step 5's Telegram adapter lives INSIDE the daemon and calls PkbService directly, with no HTTP
+# round trip (D9) — MC-7's built test asserts it pulls no HTTP client. If any module under
+# `pkb.clients` imported one, that assertion would degrade from a structural fact into a discipline
+# about which submodule you happen to import. The httpx2 wrapper lives in `pkb.tui.client`.
+source_modules    = ["pkb.clients"]
+forbidden_modules = ["httpx", "httpx2", "textual", "fastapi", "starlette", "uvicorn"]

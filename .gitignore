@@ -10,4 +10,14 @@ htmlcov/
 dist/
 build/
 *.egg-info/
+# Both halves of the Telegram deployment's security live here: PKB_TELEGRAM_TOKEN and
+# PKB_TELEGRAM_OWNERS. `.env.example` is the committed template and is exempted below.
 .env
+.env.*
+!.env.example
+
+# The chat -> expert mapping and the daemon's database, if anyone keeps them in the checkout.
+*.telegram.json
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

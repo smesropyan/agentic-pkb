@@ -20,9 +20,12 @@ their own experience. So:
 If a human note is in fact wrong, the human edits it until it is right. That is their call, not
 yours. Your job ends at *this disagrees with that, here is why I think so*.
 
+This rule settles every conflict that has a human side to it. Two sources disagreeing with each
+other have none, and nothing above decides them — see the fourth axis below.
+
 ## What to compare
 
-Three axes, all three every time a full scan runs:
+Four axes, all four every time a full scan runs:
 
 1. **`notes/summary.md` against `references/summary.md`** — the two breadth views of the same topic.
    Disagreement here is the most valuable kind to find, because both files are read constantly.
@@ -30,6 +33,9 @@ Three axes, all three every time a full scan runs:
    ingested material meets lived experience.
 3. **Notes against notes** — the same person, at different times, under conditions they did not
    write down.
+4. **References against references** — two sources that contradict each other, including a fresh
+   reading of a source against the extraction of that same source already on disk. Neither side is
+   the human's, so this is the axis the rule at the top cannot decide.
 
 Compare meaning, not strings. Two statements can use none of the same words and say opposite things;
 two statements can look opposite and both be true under conditions neither one states. Use what you
@@ -60,8 +66,15 @@ When a conflict touches human content, do exactly three things to **the human co
    other file and the disagreement in one or two sentences;
 3. leave the body completely unchanged.
 
-The reference is neither tagged nor edited. It is not wrong; it merely disagrees with someone who
-was there.
+When the other side is a human's, the reference is neither tagged nor edited. It is not wrong; it
+merely disagrees with someone who was there.
+
+**When neither side is human**, there is no experience to prefer, so the flag goes on a reference
+instead — the same three acts, unchanged. Tag both when both are files in the tree; when one side is
+a reading you have just done and have not filed, the file on disk is the one that carries the flag.
+Do not merge the two accounts into one, do not prefer the later reading for being later, and do not
+drop the older text. Which source the human trusts on this point is exactly what they have to
+decide.
 
 Tagging is deliberately not gated, so a scan can run unattended and leave its findings for the human
 to walk through later. That freedom exists only because tagging changes no content. Adding one word

@@ -33,6 +33,7 @@ from deepagents.backends.protocol import SandboxBackendProtocol
 from pkb.agents import PkbRuntime as ExportedRuntime
 from pkb.agents import runtime as runtime_module
 from pkb.agents.expert import build_expert
+from pkb.agents.ingestion import INGEST_TOOL
 from pkb.agents.librarian import build_librarian
 from pkb.agents.paths import KB_MOUNT, SKILLS_MOUNT
 from pkb.agents.registry import AgentRegistry
@@ -1109,7 +1110,9 @@ async def test_a_rejected_topic_creates_nothing_lb7(kb: Path) -> None:
 async def test_an_expert_carries_a_scope_limited_create_subtopic_ex12(kb: Path) -> None:
     """Sub-topic creation belongs to the expert that owns the parent, and only inside its subtree."""
     async with opened(kb, scripted(says("hi"))) as rt:
-        assert [tool.name for tool in rt.tools_for(COOKING)] == [CREATE_SUBTOPIC]
+        # `ingest_source` joined the expert's tools with large-source ingestion (LS-11): it is the
+        # other per-topic tool, bound to this agent's own topic the same way `create_subtopic` is.
+        assert [tool.name for tool in rt.tools_for(COOKING)] == [CREATE_SUBTOPIC, INGEST_TOOL]
         assert rt.tools_for("topic/nobody") == []
 
         env = TopicToolEnv(kb_root=kb, snapshot=rt.snapshot, clock=lambda: TODAY)

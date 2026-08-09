@@ -375,7 +375,14 @@ def test_body_edit_gates_and_frontmatter_edit_does_not_rt24(snapshot: KbSnapshot
 
 
 def test_reference_depth_file_is_exempt_from_body_gate_rt24(gated_kb: Path) -> None:
-    """RT-24 covers `notes/` and extension folders only — references are AI-owned (Q4/C6)."""
+    """RT-24 covers `notes/` and extension folders only — references are AI-owned (Q4/C6).
+
+    **Amended 2026-08-07 (large-source ingestion).** The edit still gates, and the *reason* is the
+    whole point of the amendment: not `HUMAN_CONTENT_EDIT`, because a reference is not the human's
+    writing, but `REFERENCE_REWRITE` under RT-31, because a second reading replacing the first
+    overwrites an extraction the human has already read and there is no undo. Before the amendment
+    this asserted `None`, which was right while a source was written once and never touched again.
+    """
     snap = scan(gated_kb)
     assert (
         gate(
@@ -385,7 +392,7 @@ def test_reference_depth_file_is_exempt_from_body_gate_rt24(gated_kb: Path) -> N
             old_string="Sear it hot.",
             new_string="Sear it very hot.",
         )
-        is None
+        is GateReason.REFERENCE_REWRITE
     )
 
 
@@ -1225,3 +1232,27 @@ def test_a_crlf_spelled_edit_of_a_human_note_interrupts_rt24(gated_kb: Path) -> 
     action = sole_interrupt(agent, config)
     assert action["description"].startswith("Approval required: human-content-edit")
     assert target.read_text(encoding="utf-8") == human
+
+
+def test_a_file_that_cannot_be_decoded_is_protected_not_ignored_rt31(kb: Path) -> None:
+    """Three states, not two: absent, readable, and *there but unreadable* (RT-31, LS-12).
+
+    Every rule in the table reads `current is None` as "nothing here to protect", so folding
+    "exists but is not valid UTF-8" into `None` disarmed the whole table for exactly the files most
+    likely to hold something a human wrote by hand — a note saved by an editor whose default
+    encoding is not UTF-8 stopped gating its own overwrite. `UNREADABLE` is a sentinel no proposed
+    content can extend, so the content-diff rules fire and the write stops for a human.
+    """
+    rel = "Cooking/references/book/book.md"
+    target = kb / rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes("---\ntitle: Book\n---\n\n- crème de la crème.\n".encode("cp1252"))
+
+    reason = requires_approval(
+        "write_file",
+        rel,
+        {"file_path": f"/kb/{rel}", "content": "---\ntitle: Book\n---\n\n- Something else.\n"},
+        scan(kb),
+    )
+
+    assert reason is GateReason.REFERENCE_REWRITE

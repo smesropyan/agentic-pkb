@@ -39,6 +39,7 @@ from uuid import uuid4
 from pkb.agents.gates import CONFLICT_TAG
 from pkb.agents.paths import to_kb_relative
 from pkb.contracts import (
+    SCAN_THREAD_PREFIX,
     AgentEvent,
     ApprovalMode,
     RunEnd,
@@ -67,13 +68,9 @@ __all__ = [
     "scan_thread_id",
 ]
 
-SCAN_THREAD_PREFIX: Final = "scan:"
-"""Reserved thread-id prefix for a scan run (RT-58, Q9).
+# `SCAN_THREAD_PREFIX` is **re-exported from `pkb.contracts`** (C-1): Layer 3 must recognise a scan
+# thread to keep it out of every user-facing list (RT-58, SV-13) and cannot import this module.
 
-A conflict scan is machine bookkeeping, not a conversation: its context never enters a human thread,
-and Layer 3 filters these ids out of the thread list. Returning the id anyway keeps the option of
-showing scans in a collapsed "maintenance" list later without changing the run path.
-"""
 
 PENDING: Final = "pending"
 RUNNING: Final = "running"

@@ -9,8 +9,9 @@ implementation plan afterward.
 
 | Date | What changed | Why |
 |------|--------------|-----|
-| 2026-08-07 | §4, §5, §7, §8 corrected in five places where this document described a harness that does not exist as described. | Layers 1 and 2 were built, and a grounding pass **executed** every harness assumption against the pinned `deepagents 0.7.5` / `langchain 1.3.14` / `langgraph 1.2.10`. Five assumptions were wrong. Each correction below names the Layer 2 rules row (`D-1`, `D-6`, `D-11`, `D-12`, `D-15`) holding the executed evidence, so a later reader does not "fix" the text back. |
+| 2026-08-07 | §3, §4, §5, §7, §8 corrected in six places where this document described a harness that does not exist as described. | Layers 1 and 2 were built, and a grounding pass **executed** every harness assumption against the pinned `deepagents 0.7.5` / `langchain 1.3.14` / `langgraph 1.2.10`. Six assumptions were wrong. Each correction below names the Layer 2 rules row (`D-1`, `D-5`, `D-6`, `D-11`, `D-12`, `D-15`) holding the executed evidence, so a later reader does not "fix" the text back. §3's I3 deny-glob list is the sixth (D-5). |
 | 2026-08-07 | New decisions **D10** (Librarian routing is a harness-encoded workflow) and **D11** (one source, several experts); **D8** narrowed. §4 and §5 updated to match. | Ruled by the human after a live measurement of the Librarian: given a topic question it did **not** delegate — it read the topic folders itself and answered from raw files, with no topic skills, no `expert.md` persona and no per-topic voice, and on another run claimed *"the Cooking expert checked the knowledge base"* when no expert had run. |
+| 2026-08-07 | **§6's Telegram adapter becomes a channel per expert**, amending **D9**'s single-bot-with-`/connect` shape. §5's thread metadata paragraph now groups the thread list per expert. | Ruled by the human. `/connect` made "which expert am I talking to?" ambiguous, and a mis-sent note landed in the wrong topic with no undo (D6). The same ruling settles thread listing: a derived thread appears under the expert that ran it, not under the Librarian turn that spawned it — navigation is by subject. Recorded as `TG-1` and `Q2` in the Layer 3 rules. |
 
 ---
 
@@ -38,7 +39,7 @@ layers can be specified and built independently.
 | D4  | Custom daemon on the MIT LangGraph core — **not** LangGraph Platform | `langgraph-api` (the runtime behind `langgraph dev`) is Elastic License 2.0, requires `LANGGRAPH_CLOUD_LICENSE_KEY`, Postgres, and Redis. `langgraph`, `langgraph-checkpoint`, and `langgraph-checkpoint-sqlite` are MIT and provide everything needed: compiled graphs, durable threads, streaming, and `Command(resume=...)`. |
 | D5  | HTTP + SSE for human channels; MCP for programmatic agents | Two different audiences. ACP is a client↔agent protocol (editors, streaming, permission prompts); MCP is an agent↔capability protocol. External Project Manager agents want the PKB as a capability. |
 | D6  | KB tree is **plain markdown files** — no version control in the first draft | Keeps Layer 1 to a single responsibility (structure) and removes commit-policy questions (when, what message, what on failure) from the first build. Git is additive later: it observes the tree rather than changing how anything writes to it. See §10. |
-| D9  | The Telegram adapter is **hosted inside the daemon process**, calling `PkbService` directly | The bot's required lifetime *is* the daemon's lifetime. Hosting it in the TUI would tie it to a foreground terminal; hosting it standalone adds a third process and an auth boundary for no gain. It is enabled by config and supervised as a background task. |
+| D9  | The Telegram adapter is **hosted inside the daemon process**, calling `PkbService` directly. **Amended 2026-08-07**: it is a *channel per expert* — the chat selects the agent, and `/connect` is gone (§6). | The bot's required lifetime *is* the daemon's lifetime. Hosting it in the TUI would tie it to a foreground terminal; hosting it standalone adds a third process and an auth boundary for no gain. It is enabled by config and supervised as a background task. |
 | D7  | Skills use `skills/<name>/SKILL.md`, amending README §2.4 | deepagents' native format. Buys progressive disclosure and name-collision override resolution with no custom code. |
 | D8  | Each topic is its own compiled graph. **Amended 2026-08-07**: it is no longer registered with the Librarian as a `CompiledSubAgent` — the routing workflow invokes it directly (D10). | Dict-subagents are one-shot; README §1.6 requires multi-turn approval dialog. One artifact still serves both access paths. Experts keep `task` among themselves (their own general-purpose subagent); the Librarian does not get one, because with routing in code the tool is redundant and leaving it leaves the bypass. |
 | D10 | **Librarian routing is a harness-encoded workflow, not a model decision.** A turn is: (1) classify — the one model call, answered through a `route` tool; (2) fan out — code invokes every applicable expert; (3) merge — code composes the reply by attribution; (4) offer the answering experts for direct connection. Ruled by the human, 2026-08-07. | Measured: a Librarian holding a `task` tool and free to decide **did not delegate**, and once claimed an expert had contributed when none had run. The merge is the part that must not be a model call — attribution assembled from actual results cannot lie about who contributed, and a model asked to write the merge demonstrably does. When classification is uncertain the harness asks the human **which experts to engage, from a menu of candidates**; a wrong guess files knowledge in the wrong place and there is no undo (D6). |
@@ -148,12 +149,24 @@ pkb/
 │   ├── librarian.py        # root routing agent (classify step)
 │   ├── routing.py          # the fan-out and the merge — code, not a model (D10)
 │   ├── expert.py           # Topic Expert factory (template + expert.md override)
-│   ├── middleware/         # KbValidation, KbMaintenance, KbBreadth (§4), KbRouting (D10)
+│   ├── middleware/         # three: KbValidation, KbMaintenance, KbBreadth (§4). The routing
+│   │                       #   middleware is `RouteMiddleware` (D10) and lives in routing.py,
+│   │                       #   beside the fan-out and the merge it serves.
 │   └── runtime.py          # shared checkpointer, store, backend, locks, run/resume/cancel
 ├── contracts.py     # the Layer 2 ↔ Layer 3 seam: a leaf module, no harness imports (I2)
-├── service.py       # PkbService protocol + implementation
-├── server/          # Layer 3
-│   ├── app.py              # FastAPI; owns the daemon lifecycle
+├── packs.py         # context-pack assembly: a leaf beside contracts.py, importing only pkb.core
+│                    #   and pkb.contracts. Below the seam, not in pkb.agents and not in the
+│                    #   transport (Layer 3 decision G); only topic selection-by-classification
+│                    #   stays in Layer 2.
+├── service/         # Layer 3 — a package, not a module (Layer 3 decision C)
+│   ├── __init__.py         # the PkbService Protocol, harness-free
+│   ├── threads.py          # the threads table (§5)
+│   ├── proposals.py        # propose-only proposals (§6)
+│   ├── runs.py             # the daemon-owned run supervisor (Layer 3 decision A)
+│   └── runtime.py          # the one module permitted to import pkb.agents
+├── daemon.py        # composition root: opens PkbRuntime, calls create_app(open_service, …)
+├── server/          # Layer 3 — must not import pkb.agents, even transitively (I2, decision B)
+│   ├── app.py              # FastAPI app factory
 │   ├── routes.py
 │   ├── mcp.py              # mounted MCP server
 │   └── telegram.py         # daemon-hosted bot task (D9), optional via config
@@ -161,6 +174,13 @@ pkb/
 │   └── approval.py         # interrupt event → decision, used by TUI and Telegram
 └── tui/             # Textual client (separate process, HTTP + SSE)
 ```
+
+> **Corrected 2026-08-07 — the Layer 3 shape (Layer 3 rules decisions B, C, G and P-9).** This block
+> originally listed a single flat `service.py` and no `packs.py` or `daemon.py`. A flat module cannot
+> express the thing I2 most needs expressed: `pkb.server` must not import `pkb.agents` even
+> transitively, so *something else* has to open the runtime. `pkb/service/runtime.py` is that
+> something, named explicitly so a later `pkb/service/proposals.py` cannot inherit the exemption
+> silently, and `pkb/daemon.py` is the composition root that wires it to `create_app`.
 
 ---
 
@@ -270,19 +290,41 @@ registry concern, not a transport concern.
 
 ```python
 class PkbService(Protocol):
-    async def list_agents(self) -> list[AgentInfo]: ...
+    async def list_agents(self) -> list[AgentDescriptor]: ...
     async def list_threads(self, agent_id: str | None = None) -> list[Thread]: ...
     async def create_thread(self, agent_id: str) -> Thread: ...
     async def get_thread(self, thread_id: str) -> ThreadDetail: ...
-    def stream_run(self, thread_id: str, message: str) -> AsyncIterator[Event]: ...
-    def resume(self, thread_id: str, decisions: list[Decision]) -> AsyncIterator[Event]: ...
+    async def set_title(self, thread_id: str, title: str) -> Thread: ...
+    async def delete_thread(self, thread_id: str) -> None: ...
+    def start_run(self, thread_id: str, message: str, *,
+                  approval_mode: Literal["interactive", "propose_only"] = "interactive",
+                  ) -> AsyncIterator[Event]: ...
+    def resume(self, thread_id: str, interrupt_id: str,
+               decisions: list[Decision]) -> AsyncIterator[Event]: ...
     async def cancel(self, run_id: str) -> None: ...
+    async def list_proposals(self, agent_id: str | None = None) -> list[PendingProposal]: ...
+    async def get_proposal(self, proposal_id: str) -> PendingProposal: ...
+    async def dismiss_proposal(self, proposal_id: str) -> None: ...
+    async def run_scan(self, request: ScanRequest) -> ScanResult: ...
 ```
+
+> **Corrected 2026-08-07 — the Protocol sketch (Layer 3 rules C-3, SV-5, SV-15, SV-17, SV-20, RO-4,
+> RO-12, MC-8, AP-10).** The original sketch was wrong in five ways, all of them load-bearing.
+> `AgentInfo` is retired for `pkb.contracts.AgentDescriptor` — a Layer-3-owned type produced by
+> `pkb.agents.registry` would make `pkb.agents` import a transport, which is exactly the cycle the
+> leaf seam module exists to prevent. `stream_run` is `start_run`, because under Layer 3's decision A
+> the daemon owns the run and the SSE response merely subscribes. `resume` carries an `interrupt_id`,
+> or RT-40's staleness refusal is unreachable and a decision can land on an interrupt the human never
+> saw. `start_run` carries `approval_mode`, or MCP cannot get propose-only without importing the
+> harness. And the last five methods are not optional extras: an extra that lives only on the
+> concrete class is one the stub cannot fake, which forfeits §9's "everything above Layer 2 tests
+> against a stub".
 
 ### The `Event` union
 
 | Event | Payload | Consumed by |
 |-------|---------|-------------|
+| `run.started` | `contracts.RunHandle`: the server-minted run id, agent id, thread id | all |
 | `message.delta` | token text | TUI |
 | `message.complete` | full message | TUI, Telegram, MCP |
 | `tool.start` | tool name, argument summary | TUI |
@@ -290,8 +332,16 @@ class PkbService(Protocol):
 | `subagent.start` | subagent name | TUI |
 | `subagent.end` | subagent name, status | TUI |
 | `interrupt` | action requests, allowed decisions, optional diff | TUI, Telegram |
-| `run.end` | run id, final message | all |
+| `run.end` | run id, final message, `status: completed \| interrupted \| cancelled` | all |
 | `run.error` | error message, retryable flag | all |
+
+> **Corrected 2026-08-07 — what `run.end` means (Layer 3 rules P-7, SS-8, SS-9, AP-11).** Layer 2
+> emits `run.end` **whether or not the graph interrupted** (`events.py:473`), and a *cancelled* run
+> emits no terminal event at all (`events.py:464`). Read as "the run finished", this table builds a
+> client that says *done* over a thread parked on a human decision. So Layer 3 computes a `status`
+> envelope field on `run.end` and the run supervisor synthesizes `run.error code=cancelled` for the
+> cancelled case. The stream also opens with `run.started`, carrying the server-minted run id, so
+> cancel is never a race against a run whose id the client has not learned yet.
 
 Events are **normalized**, not proxied from LangGraph. The clients need different slices: the TUI
 wants token deltas, Telegram cannot use them (editing a message per token hits rate limits, so it
@@ -333,8 +383,12 @@ discovery surface.
 Two thread-id shapes are **derived rather than minted by a client**, and Layer 3 must recognize both:
 `<librarian-thread>::<agent-id>` for work the routing workflow gave an expert (§4), and
 `scan:<agent-id>:<uuid4>` for a conflict-scan run (§7). Both are ordinary threads — resumable,
-holding real history, carrying their own approvals. A routed thread belongs in the human's thread
-list as a child of the Librarian's; a scan thread is machine bookkeeping and belongs out of it.
+holding real history, carrying their own approvals. **Amended 2026-08-07: the thread list is grouped
+per expert.** A routed thread appears under **the expert that ran it**, not as a child of the
+Librarian turn that spawned it — navigation is by subject, because "what have I been doing with
+Cooking" is the question a human actually asks. The Librarian parent stays derivable
+(`librarian_thread_id()`) for a client that wants to show provenance, so nothing is lost by not
+storing it. A scan thread is machine bookkeeping and stays out of the list.
 
 ---
 
@@ -372,8 +426,11 @@ Runs as a supervised background task inside the daemon process and calls `PkbSer
 HTTP round trip, no second process, no auth boundary (D9). Enabled by config; absent config, the
 daemon starts without it.
 
-One bot. Default target is the Librarian; `/agents` lists, `/connect cooking` switches — direct
-expert access without a bot per topic. Approvals arrive as inline keyboard buttons.
+**Amended 2026-08-07: a channel per expert.** One bot, but the *chat* selects the agent — a Cooking
+channel talks to the Cooking expert, a Librarian channel routes. The daemon holds a `chat_id` →
+`agent_id` mapping; `/connect` is gone, and with it the "which expert am I talking to?" ambiguity
+that made a mis-sent note land in the wrong topic. A message from an unmapped chat is answered with
+instructions rather than routed to a default. Approvals arrive as inline keyboard buttons.
 
 `edit` is impractical on a phone, so the Telegram adapter narrows `allowed_decisions` to
 approve/reject and directs the human to the TUI for anything needing an edit.
@@ -412,7 +469,9 @@ Two behaviours are requirements from the README, not enhancements:
 
 ## 7. Layer 1 enforcement and the scan queue
 
-Two middleware, split because validation and regeneration want opposite timing.
+Two of Layer 2's four middleware, split because validation and regeneration want opposite timing.
+The other two are elsewhere and enforce nothing of Layer 1's: `KbBreadthMiddleware` (§4's `memory=`
+correction) and `RouteMiddleware` (D10, on the Librarian only).
 
 ### `KbValidationMiddleware.wrap_tool_call`
 
@@ -437,12 +496,20 @@ below the agent's decision-making rather than in its prompt.
 
 Flushes once per turn:
 
-1. Regenerate affected topic `index.md` files, including tag subtrees and cross-topic mappings.
-2. Regenerate root `tags.md` from tags actually used, aggregating `related_topics`.
-3. Regenerate the root catalog `index.md`.
-4. Update `updated` timestamps.
-5. Flag broken links and orphaned files.
-6. Enqueue conflict scans covering changed files.
+1. Bump `updated` on the touched files.
+2. Walk the tree once.
+3. Flag broken links and orphaned files.
+4. Regenerate every derived file: affected topic `index.md` files including tag subtrees and
+   cross-topic mappings, root `tags.md` from tags actually used aggregating `related_topics`, and
+   the root catalog `index.md`.
+5. Build coalesced conflict-scan requests covering the changed files, and return the report.
+
+> **Corrected 2026-08-07 — the internal ordering (Layer 1 rules MA-2).** This list originally
+> regenerated first and stamped fourth. The built `pkb/core/maintenance.py::flush` bumps `updated`
+> **before** any derived file is rendered, so a regeneration never reads a stale timestamp it is
+> about to change. GE-6 puts no dates in derived files either, so the practical consequence is
+> small — but two documents disagreeing about which half of a flush runs first is how the second
+> one gets "fixed" back.
 
 `wrap_tool_call` records touched paths in middleware state; `after_agent` consumes and clears them.
 Per-write regeneration would rewrite `tags.md` several times in one turn for no benefit.
@@ -473,9 +540,12 @@ runs the relevant topic expert on its own thread with a conflict-scan prompt. Fi
 
 ## 8. Concurrency and failure
 
-**Concurrency.** Runs stream concurrently, but the `after_agent` flush takes a single global KB write
-lock, because regeneration touches root `tags.md` and the root catalog. Two concurrent runs on the
-same thread return `409`.
+**Concurrency.** Runs stream concurrently, but the flush takes a single global KB write lock —
+wherever it runs — because regeneration touches root `tags.md` and the root catalog. Per §7's D-1
+correction the flush is delivered by `pkb.agents.runtime`'s `try/finally`, not by `after_agent`,
+which never executes on an aborted superstep; the lock is `PkbRuntime.write_lock` and it wraps
+`pkb.core.flush`, `scaffold_topic` and `regenerate_all`, not a middleware hook. Two concurrent runs
+on the same thread return `409`.
 
 > **Corrected 2026-08-07 — where the 409 comes from (Layer 2 rules D-15).** Not from the harness.
 > LangGraph OSS has **no multitask strategy** — that is a Platform feature — and verified,
@@ -516,9 +586,16 @@ the TUI asked about hours earlier. The thread list should be designed around it.
 |-------|---------|------------------|
 | `pkb.core` | pytest + `tmp_path`; golden files for generators; property tests for tag rules | no |
 | `pkb.agents` | middleware against a fake chat model; assert invalid writes never reach the backend | no |
-| `pkb.server` | FastAPI `TestClient` against a stub `PkbService` | no |
+| `pkb.server` | Against a stub `PkbService`: FastAPI `TestClient` for non-streaming routes and SSE frame *content*, a raw ASGI driver for over-time delivery and disconnect behaviour, `httpx2.ASGITransport` + `streamable_http_client` for the MCP mount | no |
 | `pkb.tui` | Textual `run_test()` pilot against the same stub | no |
 | end-to-end | live smoke tests behind an opt-in marker | yes |
+
+> **Corrected 2026-08-07 — `TestClient` cannot test streaming (Layer 3 rules P-4, C-11).** This row
+> originally named one tool. `_TestClientTransport.handle_request` **buffers the whole body**: fifty
+> SSE frames arrived as one chunk, and breaking after chunk 1 left the server generator running to
+> completion — so neither over-time delivery nor client-disconnect behaviour is observable through
+> it. `httpx2.ASGITransport` buffers identically. The row's *intent* — the whole server suite runs
+> free, fast, keyless and networkless — survives intact; only the single-tool claim was wrong.
 
 Because `PkbService` is a Protocol, everything above Layer 2 tests against a stub. Nearly the entire
 suite runs free and fast; live tests are a thin top layer. The stock langchain fakes cannot drive a
@@ -562,14 +639,20 @@ Bottom-up, one spec and plan per layer:
 
 1. **`pkb.core`** — schema, validator, generators, scaffolder. No LLM, no agents, fully TDD-able.
    Every guarantee above rests on it. **Built.**
-2. **`pkb.agents`** — runtime, registry, expert factory, Librarian, the middleware (three, not two —
-   see §4's `memory=` correction), default skills. **Built**, with the Librarian's routing workflow
-   (D10) as the one part specified but not yet implemented: see §1.4 of the Layer 2 rules for which
-   `LB-*` rules are designed-but-unproven and which are verified.
-3. **`pkb.service` + `pkb.server`** — the protocol, its implementation, HTTP routes, SSE, MCP mount.
-   **← next.**
+2. **`pkb.agents`** — runtime, registry, expert factory, Librarian, the middleware (four, not two:
+   three in `middleware/` per §4's `memory=` correction, plus `RouteMiddleware` in `routing.py`),
+   default skills, **and the Librarian's routing workflow (D10)**. **Built.** `pkb/agents/routing.py`
+   ships `RouteMiddleware`, `route_tool`, `FanOut`, `merge_reply`, `routing_menu` and
+   `expert_thread_id`/`librarian_thread_id`; `runtime.py` ships `_librarian_turn` and `fanout_limit`;
+   `tests/agents/test_routing.py` (25 tests) plus the LB-12/LB-13 tests in `test_librarian.py` cover
+   it, and a live 4/4 routing evaluation ran against the default model. Merged as `f8834e4` under
+   PR #2. The Layer 2 rules' §1.4 carries the per-rule markings.
+3. **`pkb.service` + `pkb.server`** — the protocol, its implementation, HTTP routes, SSE, MCP mount,
+   plus the `pkb.packs` leaf. Specified in the Layer 3 rules; **not built. ← next.**
 4. **`pkb.tui`** + **`pkb.clients.approval`** — Textual client, including the approval diff modal.
-5. **`pkb.server.telegram`** — daemon-hosted bot task, reusing the approval helper from step 4.
+   **Not built.**
+5. **`pkb.server.telegram`** — daemon-hosted bot task (a channel per expert, per D9 as amended),
+   reusing the approval helper from step 4. **Not built.**
 
 Each built layer has its own rules document with stable rule ids that its tests cite; where the
 implementation diverged from this document, the divergence is recorded there and the correction is
