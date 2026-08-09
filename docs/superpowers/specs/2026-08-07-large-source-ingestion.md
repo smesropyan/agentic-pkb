@@ -1,10 +1,85 @@
 # Large-source ingestion — books, papers, and anything that does not fit a turn
 
 **Date**: 2026-08-07
-**Status**: Designed, not built. Scheduled after build-order step 3.
+**Status**: **Built** (corrected 2026-08-09; this line read "Designed, not built" while
+`pkb/sources.py` and `pkb/agents/ingestion.py` had been shipping for two days). See §14.
 **Scope**: crosses all three layers — **no change in `pkb.core`** (the existing
 `references/<source>/<source>.md` shape carries it, with no new file role), new skills and a chunked
 workflow in `pkb.agents`, and pack granularity in `pkb.packs`.
+
+---
+
+## 14. Amended 2026-08-09 — what a research pass found, and what the human ruled
+
+Four probes drove the built loop against the live internet while grounding a web-research feature.
+The loop already accepts a URL: `ingest_source(origin)` states it in its own description, and an
+executed run fetched a page, staged it under `.inbox/` with a manifest and a digest, extracted title
+and author and date and site, read it section by section, and wrote a valid
+`references/<slug>/<slug>.md` carrying a `## Provenance` block, the original copied beside it and
+linked, and a `## Reading record`. `validate_tree` returned zero errors.
+
+The same probes found one hole and three sharp edges. LS-13 closes the hole. The human ruled the
+rest on 2026-08-09.
+
+### 14.1 The hole: a quotation nobody checked
+
+A probe handed the loop `- The author writes: "sourdough must be proofed at exactly 41 degrees for
+nine hours" (p. 212).` about a section on wild yeast, which the model had never been shown. The take
+was filed verbatim. `gainful: True`, `findings: ()`.
+
+Nothing in the loop compares a quoted span against the text the model was given. §5's whole argument
+is that a system must not report success for work it did not do, and this is that failure one level
+finer: the reading happened, and one sentence inside it did not.
+
+| # | Rule | Source | Severity | Acceptance test |
+|---|------|--------|----------|-----------------|
+| **LS-13** | **A quoted span of 40 characters or more must appear in the section window the model was shown**, compared after whitespace normalisation. A span that does not is a **held take**, recorded in the reading record as unverified and never written into the file's body. The check is code in `parse_takes`, never an instruction in a prompt. | executed 2026-08-09; §5; LB-18's precedent | error | Feed a fabricated quotation about a section the model never saw: the take is held, the file gains nothing, and the reading record names it. Feed a real quotation: it files unchanged. **no key** — *Why*: a fabricated quotation with a fabricated locator reads exactly like a real one, survives every review a human gives a long file, and lands in a tree with no undo (D6). |
+| **LS-14** | **The default fetcher identifies itself.** `_http_fetch` sends a descriptive `User-Agent` naming the tool. | executed 2026-08-09 | error | The header reaches the server. *Why*: `httpx`'s default agent is refused by Wikipedia with a 403, so the feature fails on exactly the sites a human pastes. |
+| **LS-15** | **An injected `Fetcher`'s exceptions become `FetchError`.** LS-7 already routes `FetchError` to the model as a refusal it can act on; a raw `httpx.ConnectError` from a caller-supplied fetcher escapes `stage()` untouched and aborts the superstep instead. | LS-7; executed 2026-08-09 | error | A fetcher that raises a transport error yields a `FetchError` naming the origin, and the turn continues. **no key** |
+| **LS-16** | **A fetched body is capped**, and a response past the cap is a `FetchError` naming the size rather than a staged file. | LS-7 | warning | A response over the cap raises rather than writing. *Why*: `.inbox` has no lifecycle (§14.3), so an unbounded fetch is an unbounded directory. |
+
+**LS-13's honest limit, stated so nobody mistakes its scope.** It catches a fabricated *quotation*.
+It does nothing about a fabricated *paraphrase*, and no substring check can. What compensates is
+already in the design: every filed bullet names the section it came from, the original is copied
+beside the file, and the reading record says what went unopened. A reader can check. LS-13 makes the
+checkable case mechanical and leaves the rest visible.
+
+### 14.2 Ruled 2026-08-09 — human content outranks static knowledge in a pack
+
+An implementation pack carries every reference in full and gives the human's own material only
+`notes/summary.md` plus `type.solution` notes. A plain `type.note` reaches neither pack. README §1.7
+says human content always wins over static knowledge, so the executed behaviour inverts the stated
+principle.
+
+**Ruled: fix the packs, notes first.** The human's own notes are the one input nothing else can
+supply, and a budget that distils them first spends its space on the material they could have got
+anywhere. This changes PK-9 and PK-10 in the Layer 3 rules; the amendment lives there.
+
+### 14.3 Ruled 2026-08-09 — the research decisions this spec inherits
+
+Two rulings taken while designing a research capability that does not exist yet. They are recorded
+here because the research spec will carry them and the reasoning was given once.
+
+**A research summary gates before it lands.** Today an AI-authored note reaches `notes/` with no
+approval at all: `requires_approval` returns `None` for `Cooking/notes/<anything>.md`. It arrives
+tagged `status.draft`, and nothing in Layers 3 or 4 surfaces a queue of drafts, so the marker is
+carried by a tag nobody reads. Research output is the material that becomes the human's prior, and
+they asked to see it first.
+
+**A rejected source is recorded in the research note.** LS-6 says a source that yields nothing leaves
+no trace in the topic, and that rule is right for its case: an expert declining material the
+Librarian fanned out to it is a cheap machine judgement that would be made the same way again. A
+human rejecting a candidate mid-research is a different act. Nothing records it today, so the next
+session on the same question surfaces the same article and the human declines it again. It belongs in
+the note that already records the research decisions, where they can read it.
+
+### 14.4 Not ruled, and worth naming
+
+`.inbox` has no lifecycle. It has no expiry, no sweep, and no marker separating a rejected candidate
+from a pending one from an ingested one, so it grows with every source ever considered. Nothing above
+Layer 2 can see it either: `grep -rn 'inbox' src/pkb/service/ src/pkb/server/ src/pkb/clients/
+src/pkb/tui/` returns nothing, so "show me what we found and have not filed" cannot be answered on
+any channel.
 
 ---
 

@@ -52,10 +52,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import logging
 import secrets
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Final
 
@@ -93,12 +94,21 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 __all__ = [
     "COMMANDS",
+    "PICKER_BUDGET",
+    "PICKER_DIGEST_SIZE",
+    "PICKER_LABEL_UNITS",
+    "PICKER_MESSAGES",
+    "PICKER_PREFIX",
+    "PICKER_ROWS",
     "Channel",
     "TelegramAdapter",
     "TelegramConfig",
     "callback_data",
     "counter",
     "keyboard_for",
+    "parse_picker",
+    "picker_callback",
+    "resolve_picker",
     "split_message",
     "utf16_len",
 ]
@@ -408,6 +418,135 @@ def keyboard_for(action: ActionView, handle: str, index: int) -> list[list[dict[
     ]
 
 
+# -- the channel picker (§10, TG-96 … TG-101) -----------------------------------------------
+
+PICKER_PREFIX: Final = "c1"
+"""The picker's own namespace inside ``callback_data`` (TG-97).
+
+Disjoint from :func:`callback_data`'s ``v1|handle|index|verb`` on two counts, and the second one is
+what makes the split safe. The prefixes differ, and the **field counts** differ: no agent id can
+hold a ``|`` (``pkb.core.paths._SLUG_ALPHABET`` is ``[a-z0-9-]`` and ``/`` joins the segments), so a
+picker payload has two fields where an approval payload has four. Each parser refuses the other's
+grammar, so a press on a keyboard drawn months ago reaches the handler that drew it.
+"""
+
+_PICKER_DIGEST: Final = "#"
+"""What marks a token as a digest of an agent id rather than the id itself (TG-97).
+
+Illegal in an agent id, so an inline token and a digest token can never be read for each other.
+"""
+
+PICKER_DIGEST_SIZE: Final = 8
+"""``blake2b`` bytes, giving 16 hex characters, so ``c1|#<digest>`` is 20 bytes flat (TG-97).
+
+``hashlib`` rather than ``xxhash``: xxhash reaches this process through langgraph and is not a
+declared dependency of this project, and decision R already forbids repeating that mistake.
+"""
+
+PICKER_BUDGET: Final = CALLBACK_DATA_LIMIT - len(f"{PICKER_PREFIX}|".encode())
+"""How many bytes of the 64 are left for the agent id: **61** (TG-97).
+
+Agent ids are ASCII by construction, so bytes equal characters and this arithmetic is exact.
+``librarian`` spends 9 of the 61 and ``topic/cooking/grilling`` spends 22, so the ordinary id rides
+inline. ``topic/`` plus one legal 80-character slug (``pkb.core.paths.MAX_SLUG_LENGTH``) is 86,
+which is 25 over — a topic name a human may type, which is why the digest fallback exists
+rather than a comment saying the case cannot happen. Neither PTB nor aiogram checks this at
+construction; the real API answers ``BUTTON_DATA_INVALID`` at 65 bytes, at the moment a thumb lands.
+"""
+
+PICKER_ROWS: Final = 12
+"""Rows per picker message — about one phone screen (TG-99, Q33)."""
+
+PICKER_MESSAGES: Final = 3
+"""Picker messages per ``/channels`` (TG-99, Q33).
+
+The bound is the **send budget**, which Telegram meters per chat rather than per topic (F-7), so
+every extra message here is a second an approval keyboard may be queued behind. Reasoned rather
+than measured, exactly as ``MAX_RECREATIONS`` was: nobody has run this against a thirty-agent
+catalog on a real phone.
+"""
+
+PICKER_LABEL_UNITS: Final = 48
+"""UTF-16 units a button label may take, TG-44's arithmetic (TG-96)."""
+
+
+def picker_callback(agent_id: str) -> str:
+    """``c1|<agent-id>``, or ``c1|#<digest>`` when the id does not fit 64 bytes (TG-97).
+
+    **No index, no position, no chat id and no topic id.** A positional encoding is the tempting one
+    and it is the dangerous one: a Telegram message keeps its buttons live forever while the catalog
+    moves under it, so row 7 of a month-old keyboard is a different expert, and the human gets a
+    channel for one they did not choose. That is TG-1's mis-file arriving through the affordance
+    built to prevent it.
+    """
+    token = agent_id
+    if len(token.encode()) > PICKER_BUDGET:
+        token = _PICKER_DIGEST + _picker_digest(agent_id)
+    data = f"{PICKER_PREFIX}|{token}"
+    if len(data.encode()) > CALLBACK_DATA_LIMIT:  # pragma: no cover - guarded by construction
+        raise ValueError(f"callback_data is {len(data.encode())} bytes, over Telegram's 64")
+    return data
+
+
+def _picker_digest(agent_id: str) -> str:
+    return hashlib.blake2b(agent_id.encode(), digest_size=PICKER_DIGEST_SIZE).hexdigest()
+
+
+def parse_picker(data: str) -> str | None:
+    """The token a press carries, and never the agent (TG-97, TG-98).
+
+    Resolution is a separate step because it reads the **live** catalog. A parser that answered with
+    an agent would be answering from the keyboard's drawing, which is a claim about a moment that
+    has passed.
+    """
+    prefix, separator, token = data.partition("|")
+    if not separator or prefix != PICKER_PREFIX or not token or "|" in token:
+        return None
+    return token
+
+
+def resolve_picker(token: str, catalog: Collection[str]) -> str | None:
+    """Which agent the token names, against the catalog as it stands now (TG-98).
+
+    A digest matching two catalog ids resolves to ``None`` and the press is refused rather than
+    picking one of them: the two answers are a channel for the expert the human tapped and a channel
+    for a different expert, and nothing on the screen would say which one they got.
+
+    An inline token comes back as it was written, catalog membership unchecked, because
+    :meth:`TelegramAdapter._channels` is where an unknown agent is answered by name — one refusal,
+    shared by the typed command and the press.
+    """
+    if not token.startswith(_PICKER_DIGEST):
+        return token
+    digest = token[len(_PICKER_DIGEST) :]
+    matched = {agent for agent in catalog if _picker_digest(agent) == digest}
+    return matched.pop() if len(matched) == 1 else None
+
+
+def _picker_label(agent_id: str, *, bound: bool) -> str:
+    """A marker and the agent **id**, cut to :data:`PICKER_LABEL_UNITS` keeping the tail (TG-96).
+
+    The id rather than the catalog title, because ids are unique by construction (GE-25, RG-11) and
+    titles are not: two sibling topics both titled *Cooking* would draw two identical rows over two
+    different experts.
+
+    The tail rather than the head, because ``topic/`` and the upper path repeat down the whole
+    keyboard and the leaf is what tells one row from the next.
+    """
+    marker = "✓" if bound else "+"
+    return f"{marker} {_tail(agent_id, PICKER_LABEL_UNITS - utf16_len(f'{marker} '))}"
+
+
+def _tail(text: str, limit: int) -> str:
+    """The last ``limit`` UTF-16 units, with the cut marked (TG-44)."""
+    if utf16_len(text) <= limit:
+        return text
+    cut = text
+    while cut and utf16_len(f"…{cut}") > limit:
+        cut = cut[1:]
+    return f"…{cut}"
+
+
 @dataclass
 class TelegramConfig:
     """Deployment configuration. **Never** read from the knowledge base (I3, TG-5)."""
@@ -487,6 +626,23 @@ class TelegramAdapter:
     without this two frames that discovered the same deletion each issued a ``createForumTopic``
     and one deletion produced two topics — spending both of ``MAX_RECREATIONS`` at once and leaving
     one of them addressed by nothing. See :meth:`_channel_died`.
+    """
+    _creations: dict[int, asyncio.Lock] = field(default_factory=dict, repr=False)
+    """One ``/channels`` at a time per **chat** (TG-77, TG-101).
+
+    The same defect :attr:`_repairs` names, on the creation path, and measured the same way. TG-77's
+    "creates nothing" is a check-then-act across three awaits: read the directory, read it again for
+    this agent, call ``createForumTopic``. Two updates that arrive together each get their own child
+    of the task group (:meth:`_poll`), so both read an empty directory and both create. Driven
+    against the fake, one double tap on a picker row produced **two** ``createForumTopic`` calls and
+    one directory row, because the row's primary key is ``(chat_id, agent_id)`` and the second write
+    replaced the first: the human is left with two topics of the same name, one of them addressed by
+    nothing, which the bot may never delete (TG-78) and no API can enumerate (F-5).
+
+    Per chat rather than per agent, because ``/channels all`` decides over the whole directory.
+    Nothing routes a turn under it, so the 284-second local-fallback argument that made
+    :meth:`_channel_lock` per-channel does not reach here: what waits is a second ``/channels``, and
+    what it waits for is one ``createForumTopic``.
     """
     _topics: bool = False
     """``getMe.has_topics_enabled``, probed once at startup (TG-75).
@@ -1166,6 +1322,13 @@ class TelegramAdapter:
 
     # -- /channels: the whole creation surface (TG-76, TG-87) --------------------------
 
+    def _creation_lock(self, chat_id: int) -> asyncio.Lock:
+        """One ``/channels`` at a time per chat (TG-77, TG-101). See :attr:`_creations`."""
+        lock = self._creations.get(chat_id)
+        if lock is None:
+            lock = self._creations[chat_id] = asyncio.Lock()
+        return lock
+
     async def _channels(
         self, channel: Channel, agent_id: str | None, arguments: Sequence[str]
     ) -> None:
@@ -1180,48 +1343,149 @@ class TelegramAdapter:
         The bind-here form exists for exactly that last reason: it is the only recovery path for a
         lost SQLite file. One command with two behaviours is a real ambiguity (Q30, ruled), and it
         is paid for by the reply naming which one occurred.
+
+        Everything from the directory read to the creation runs under :attr:`_creations`, one lock
+        per chat. TG-77's *"creates nothing"* is a check-then-act across three awaits, and a picker
+        row makes a second concurrent ``/channels`` one thumb movement rather than a re-typed
+        command: measured against the fake, a double tap produced two ``createForumTopic`` calls and
+        one directory row, leaving a duplicate topic the bot may never delete. The second caller now
+        reads the directory the first one wrote and answers with TG-77's pointer.
         """
         if not self._topics:
             await self._say(channel, _NO_TOPICS)
             return
         chat_id = channel.chat_id
         if not arguments:
-            await self._say(channel, await self._agents_text(channel, agent_id))
+            # TG-96: the roster is a keyboard, because `_binding_offer` telling a human to type
+            # `/channels <agent-id>` on a phone is an instruction that cannot be followed.
+            await self._picker(channel)
             return
-        catalog = self._catalog()
-        directory = await self._directory(chat_id)
-        if arguments[0] == "all":
-            wanted = [agent for agent in sorted(catalog) if agent not in set(directory.values())]
-            if not wanted:
-                await self._say(channel, "Every agent already has a channel in this chat.")
+        async with self._creation_lock(chat_id):
+            catalog = self._catalog()
+            directory = await self._directory(chat_id)
+            if arguments[0] == _ALL_AGENTS:
+                wanted = [
+                    agent for agent in sorted(catalog) if agent not in set(directory.values())
+                ]
+                if not wanted:
+                    await self._say(channel, "Every agent already has a channel in this chat.")
+                    return
+                for agent in wanted:
+                    await self._create_channel(channel, agent)
                 return
-            for agent in wanted:
-                await self._create_channel(channel, agent)
+            agent_id = arguments[0]
+            if agent_id not in catalog:
+                await self._say(channel, _NO_SUCH_AGENT.format(agent_id=agent_id))
+                return
+            existing = await self._channel_of(chat_id, agent_id)
+            if existing is not None:
+                # TG-77: creating nothing is the rule, not an optimisation. A second channel for one
+                # agent in one chat is that expert's history split in half, with nothing on screen
+                # saying which half a message went to.
+                await self._say(
+                    channel,
+                    _ALREADY.format(
+                        agent_id=agent_id,
+                        where="General" if existing.is_general else f"topic {existing.topic_id}",
+                    ),
+                )
+                return
+            if not channel.is_general and channel.topic_id not in directory:
+                await self.store.open_channel(chat_id, channel.topic_id, agent_id)
+                self._revive(chat_id, agent_id, channel.topic_id)
+                self._note_channel(agent_id)
+                await self._say(channel, _BOUND.format(agent_id=agent_id))
+                return
+            await self._create_channel(channel, agent_id)
+
+    async def _picker(self, channel: Channel) -> None:
+        """The catalog as buttons, one row per agent, in the order the service returned them.
+
+        No client-side sort of any kind (TG-96): not alphabetical, not unbound-first, not
+        most-recently-used. The TUI sidebar and ``/agents`` show the catalog's order, and a phone
+        that re-ranks makes the human's two views of one knowledge base disagree about where an
+        expert sits. TG-40 already ruled this for ``/threads`` and gave the reason — re-sorting
+        buries the row the human came back for.
+
+        The roster **is** the keyboard, so the body carries one instruction line and no second
+        listing. Two orderings on one screen is one that can disagree with the other.
+
+        A catalog too large for one keyboard becomes more keyboards, and the remainder is counted
+        (TG-99). Silent truncation would leave a human whose expert is missing unable to tell that
+        from an expert that does not exist, which is the distinction TG-3 exists to make visible. A
+        paging cursor is refused for the reason a positional payload is: the keyboard outlives the
+        catalog it was drawn from, so page 2 after a rename skips an agent without saying so.
+        """
+        catalog = self._catalog()
+        if not catalog:
+            # Never an empty keyboard: on a phone it reads as a delivery that went wrong.
+            await self._say(channel, _PICKER_EMPTY)
             return
-        agent_id = arguments[0]
-        if agent_id not in catalog:
-            await self._say(channel, _NO_SUCH_AGENT.format(agent_id=agent_id))
-            return
-        existing = await self._channel_of(chat_id, agent_id)
-        if existing is not None:
-            # TG-77: creating nothing is the rule, not an optimisation. A second channel for one
-            # agent in one chat is that expert's history split in half, with nothing on screen
-            # saying which half a message went to.
-            await self._say(
+        bound = set((await self._directory(channel.chat_id)).values())
+        agents = list(catalog)
+        drawn = agents[: PICKER_ROWS * PICKER_MESSAGES]
+        pages = [drawn[at : at + PICKER_ROWS] for at in range(0, len(drawn), PICKER_ROWS)]
+        undrawn = len(agents) - len(drawn)
+        for position, page in enumerate(pages):
+            body = counter(position, len(pages)) + _PICKER_HEADER
+            if undrawn and position == len(pages) - 1:
+                body += "\n\n" + _PICKER_MORE.format(count=undrawn)
+            await self._send(
                 channel,
-                _ALREADY.format(
-                    agent_id=agent_id,
-                    where="General" if existing.is_general else f"topic {existing.topic_id}",
-                ),
+                body,
+                [
+                    [
+                        {
+                            "text": _picker_label(agent, bound=agent in bound),
+                            "callback_data": picker_callback(agent),
+                        }
+                    ]
+                    for agent in page
+                ],
             )
+
+    async def _on_picker(self, query: Mapping[str, Any], callback_id: str, token: str) -> None:
+        """A row of the channel menu: answer, re-read the world, then run the typed command (TG-98).
+
+        **The drawing is never trusted.** A Telegram message keeps its buttons live forever, so the
+        state a row was marked against is a claim about a moment that has passed. Every authority is
+        read again here — the allow-list above, this chat's place in the mapping, the live catalog —
+        and the rest is read inside :meth:`_channels`, which is also what answers a press on an agent
+        that has left the catalog, on one that already has a channel, and on a bot whose Threaded
+        Mode was turned off after the keyboard was drawn.
+
+        **The same function the typed command calls**, so bind-or-create (Q30) is answered
+        identically through both doors. A second implementation of it would pass every other test in
+        the suite and then disagree with the typed form on the one case a human hits.
+
+        The callback is answered **before** the work (TG-61). A press that starts a
+        ``createForumTopic`` and answers afterwards leaves the button spinning until the query
+        expires, and a human with no other feedback presses again. The two checks that precede the
+        answer are a dict lookup and a registry read, because a refusal has to carry an alert and
+        Telegram keeps only the first answer to a query.
+        """
+        channel = _channel_of_query(query)
+        if channel is None or channel.chat_id not in self.config.chats:
+            await self._answer(callback_id, _PICKER_UNMAPPED, alert=True)
             return
-        if not channel.is_general and channel.topic_id not in directory:
-            await self.store.open_channel(chat_id, channel.topic_id, agent_id)
-            self._revive(chat_id, agent_id, channel.topic_id)
-            self._note_channel(agent_id)
-            await self._say(channel, _BOUND.format(agent_id=agent_id))
+        agent_id = resolve_picker(token, self._catalog())
+        if agent_id is None or agent_id == _ALL_AGENTS:
+            # TG-101: one press, one channel. `/channels all` stays typed, so the `all` branch is
+            # unreachable from a button by construction rather than by the picker declining to draw
+            # one — a fabricated payload reaches this handler too. Decision AA's three arguments
+            # against a burst of creations all survive being moved to a thumb.
+            await self._answer(callback_id, _PICKER_UNKNOWN, alert=True)
             return
-        await self._create_channel(channel, agent_id)
+        await self._answer(callback_id)
+        try:
+            here = (await self._directory(channel.chat_id)).get(channel.topic_id)
+            await self._channels(channel, here, [agent_id])
+        except Exception as exc:
+            # The poll loop swallows exceptions so one bad update cannot stop the bot, which would
+            # make a failure here silent — and TG-100 leaves the keyboard live, so the human would
+            # press again on a button that has already stopped working.
+            _log.warning("telegram: a channel button could not be applied", exc_info=True)
+            await self._say(channel, _PRESS_FAILED.format(reason=exc))
 
     async def _create_channel(self, where: Channel, agent_id: str) -> None:
         """One ``createForumTopic``, the agent's catalog title, and nothing else (TG-78).
@@ -1581,7 +1845,17 @@ class TelegramAdapter:
             await self._answer(callback_id, _REFUSED, alert=True)
             return
 
-        parsed = parse_callback(str(query.get("data", "")))
+        data = str(query.get("data", ""))
+        token = parse_picker(data)
+        if token is not None:
+            # TG-97: the two grammars are disjoint, so this branch is a cost choice rather than a
+            # correctness one, and the picker's test is the cheaper of the two. The kinds are kept
+            # apart at the earliest point there is: a channel press carries an agent id and touches
+            # no durable row, while an approval press carries a handle into one.
+            await self._on_picker(query, callback_id, token)
+            return
+
+        parsed = parse_callback(data)
         if parsed is None:
             await self._answer(callback_id, _UNREADABLE, alert=True)
             return
@@ -2795,6 +3069,30 @@ _ALREADY: Final = "{agent_id} already has a channel in this chat ({where}), so I
 _BOUND: Final = (
     "Bound this topic to {agent_id}. Nothing was created — anything you send here from now on goes "
     "to that expert."
+)
+_ALL_AGENTS: Final = "all"
+"""``/channels all``'s one argument, and a word no agent id can be (§9.13.5).
+
+Named rather than written twice, so the branch :meth:`TelegramAdapter._on_picker` refuses is the
+same branch :meth:`TelegramAdapter._channels` runs (TG-101).
+"""
+
+_PICKER_HEADER: Final = (
+    "Tap an expert to give it a channel in this chat. A ✓ marks one that has a channel here."
+)
+_PICKER_EMPTY: Final = (
+    "This knowledge base has no agents, so there is no channel to open. Add a topic to the tree and "
+    "its expert appears here."
+)
+_PICKER_MORE: Final = (
+    "{count} more agent(s) did not fit these buttons. Send /channels <agent-id> to reach one of "
+    "them, or /channels all to give a channel to every agent without one."
+)
+_PICKER_UNMAPPED: Final = (
+    "This chat is no longer connected to the knowledge base. Nothing was made."
+)
+_PICKER_UNKNOWN: Final = (
+    "That button names an expert I cannot find in the catalog. Nothing was made."
 )
 _CREATED: Final = "Created a new topic, {title}, for {agent_id}. Send it anything from there."
 _CREATE_FAILED: Final = (

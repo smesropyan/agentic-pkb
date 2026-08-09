@@ -47,9 +47,13 @@ packages = ["src/pkb"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q --strict-markers"
+# `-m "not live"` is what makes the marker's own promise true. Without it the help text below was
+# aspirational: the only thing keeping a plain `make test` off the network was a skipif on the
+# credential variables, so a developer who exported them started making real API calls on every run.
+# `pytest -m live` still selects them, because a command-line -m overrides the one in addopts.
+addopts = "-q --strict-markers -m 'not live'"
 markers = [
-    "live: hits a real model provider; requires an API key (deselected by default)",
+    "live: reaches a real provider over the network; needs credentials (deselected by default)",
 ]
 
 [tool.ruff]

@@ -356,7 +356,7 @@ in**.
 | `/agents` | The expert this channel talks to. It also lists every channel in this chat and the experts that have none. |
 | `/pending` | Everything waiting on you, across **every** expert. The summary lands here; each set of buttons goes to its own expert's topic when it has one. |
 | `/cancel` | Stop the run in **this** channel. It does not touch a run in another topic. |
-| `/channels` | List, bind or create channels ([§8](#8-a-channel-per-expert)). |
+| `/channels` | A menu of experts, one button each, to give one a channel. Bind and create by name too ([§8](#8-a-channel-per-expert)). |
 
 There is no `/connect` and no `/talk`. This bot has no hidden "current expert" that a message
 inherits. A topic title is on screen at the moment you hit send. A mode would not be.
@@ -434,9 +434,26 @@ nothing can reconstruct. Ask for them one command at a time:
 
 | | |
 |---|---|
-| `/channels` | Every channel in this chat, and every expert that has none. |
+| `/channels` | A menu: one button per expert. Tap one to give it a channel here. |
 | `/channels topic/cooking` | Give that expert a channel here. |
 | `/channels all` | One for every expert that has none. |
+
+`/channels` on its own answers with a keyboard rather than a list, so you never have to type an
+agent id on a phone:
+
+> Tap an expert to give it a channel in this chat. A ✓ marks one that has a channel here.
+>
+> [ ✓ librarian ]
+> [ ✓ topic/cooking ]
+> [ + topic/cooking/grilling ]
+
+A `+` row has no channel yet and a tap creates one. A `✓` row already has one and a tap answers with
+where it is. The buttons stay live, so a menu you scrolled past last month still works, and each
+tap re-reads the catalog rather than trusting what the row was drawn with. Tap three rows and you
+get three channels.
+
+Past 36 experts the menu says how many it left out and names the two typed forms. Use those for an
+expert whose row did not fit.
 
 `/channels <agent-id>` does one of two things, and **the reply always says which**:
 

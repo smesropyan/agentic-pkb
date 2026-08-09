@@ -883,6 +883,38 @@ async def test_a_second_channels_for_one_agent_creates_nothing_tg77(
 
 
 @pytest.mark.asyncio
+async def test_two_channels_commands_arriving_together_create_one_topic_tg77(
+    service: TopicService, store: SqliteTelegramStore, api: FakeBotApi, connection: Any
+) -> None:
+    """TG-77's "creates nothing" is a check-then-act across three awaits, so it needs a lock.
+
+    ``_poll`` gives every update its own child of the task group, so two ``/channels`` for one agent
+    delivered in one batch both read a directory with no row for it and both create. Measured before
+    the lock: two ``createForumTopic`` calls and **one** directory row, because the row is keyed on
+    ``(chat_id, agent_id)`` and the second write replaced the first. The chat is left holding a
+    second topic of the same name that nothing addresses, that the bot may never delete (TG-78) and
+    that no API can enumerate (F-5).
+
+    ``_repairs`` already names this defect on the recreation path. This is the same one, on the path
+    that runs when the human asks for a channel.
+    """
+    bot = await topical(service, store, api)
+
+    await asyncio.gather(
+        bot._dispatch(message_update(update_id=2, text=f"/channels {COOKING}")),
+        bot._dispatch(message_update(update_id=3, text=f"/channels {COOKING}")),
+    )
+    await drain(bot)
+
+    assert len(api.creates) == 1
+    cursor = await connection.execute(
+        f"SELECT COUNT(*) FROM {CHANNELS_TABLE} WHERE chat_id = ? AND agent_id = ?", (CHAT, COOKING)
+    )
+    assert (await cursor.fetchone())[0] == 1
+    assert "so I created nothing" in api.texts[-1]
+
+
+@pytest.mark.asyncio
 async def test_a_fresh_adapter_routes_an_existing_channel_without_recreating_it_tg77(
     service: TopicService, store: SqliteTelegramStore, api: FakeBotApi, journal: Journal
 ) -> None:
@@ -954,6 +986,50 @@ def test_nothing_on_the_protocol_can_change_or_remove_a_topic_tg78() -> None:
     for name in forbidden:
         assert name not in surface
         assert not [attr for attr in reached if name in attr], f"the adapter reaches for {name}"
+
+
+@pytest.mark.asyncio
+async def test_channels_with_no_arguments_answers_with_one_row_per_agent_tg87(
+    service: TopicService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """The no-argument form is the picker, and the roster it draws is the keyboard (TG-96, §10).
+
+    ``_binding_offer`` names ``/channels <agent-id>`` as the way out of an unbound topic, and a
+    phone has no other way to learn an agent id — the rule's own docstring calls that an instruction
+    that cannot be followed. A listing closed half of it; a row that creates the channel closes the
+    rest. The row count is the assertion, because a keyboard that drops an agent is a human unable
+    to tell a missing expert from one that does not exist.
+    """
+    bot = await topical(service, store, api)
+
+    await say(bot, "/channels")
+
+    keyboard = api.sent[-1]["kb"]
+    assert [len(row) for row in keyboard] == [1, 1, 1]
+    assert [button["callback_data"] for row in keyboard for button in row] == [
+        f"c1|{LIBRARIAN}",
+        f"c1|{COOKING}",
+        f"c1|{GRILLING}",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_with_threaded_mode_off_the_picker_draws_no_buttons_tg87(
+    service: TopicService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """A button that creates a topic in a chat that cannot hold one fails in the human's hand.
+
+    The toggle lives in BotFather rather than in this daemon's configuration, so the only useful
+    answer is the name of the setting, with nothing to press beside it.
+    """
+    bot = adapter(service, store, api)
+    await boot(bot)
+
+    await say(bot, "/channels")
+
+    assert [entry["kb"] for entry in api.sent] == [None]
+    assert "Threaded Mode" in api.texts[-1]
+    assert api.creates == []
 
 
 @pytest.mark.asyncio
