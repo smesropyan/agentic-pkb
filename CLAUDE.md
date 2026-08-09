@@ -16,6 +16,7 @@ mechanical structure enforced in code and the meaning curated in dialog with the
 | `docs/superpowers/specs/2026-08-08-pkb-telegram-layer5-rules.md` | Every Layer 5 rule (`TG-*`): the supervised bot task, the owner allow-list, the durable update ledger and approval prompts, the Bot API port, and every length, ordering and keyboard rule an approval on a phone depends on. Built. |
 | `docs/superpowers/specs/2026-08-07-large-source-ingestion.md` | Sources that do not fit a turn: one file per source with the arguments as sections, `.inbox` staging, re-ingestion and reconciliation. Crosses all three layers. Designed, not built. |
 | `docs/reference/deepagents-0.7.5-api-recon.md` | Verified signatures of the harness Layer 2 will use. |
+| `docs/how-to/telegram.md` | Not design — the operator's guide: @BotFather to approving a write from your phone, what every `/health` telegram field means, and the symptoms of each way it goes wrong. |
 
 ## Build order (architecture §11)
 
@@ -37,17 +38,29 @@ mechanical structure enforced in code and the meaning curated in dialog with the
    "As built" in the Layer 5 rules for the shipped `BotApi` surface, the two clauses of TG-48/TG-49
    that are deliberately not built, and what the conformance pass had to change.
 
-**Enable the bot** with `PKB_TELEGRAM_TOKEN` in the environment and a JSON file beside the SQLite
-database (`<db>.telegram.json`, or `--telegram-config`):
+**Enable the bot** with both halves of its security in the environment — `PKB_TELEGRAM_TOKEN` and
+`PKB_TELEGRAM_OWNERS` — and the chat mapping, which names no credential, in a JSON file beside the
+SQLite database (`<db>.telegram.json`, or `--telegram-config`):
 
+```sh
+cp .env.example .env && chmod 600 .env   # gitignored; `--env-file` points elsewhere
+```
 ```json
-{"chats": {"<chat_id>": "topic/cooking"}, "owners": [<your_user_id>]}
+{"chats": {"<chat_id>": "librarian"}}
 ```
 
-The token is read in `pkb.daemon` and nowhere else — neither telegram module may import `os`, and a
-built seam scan enforces it. `owners` is **the system's only authentication boundary**: a bot's
-username is discoverable and the token is a public inbound path into a tree with no undo, so an
-empty list refuses everyone. No token or no file leaves the bot off and the daemon serving.
+`PKB_TELEGRAM_OWNERS` is a comma- or space-separated list of Telegram *user* ids and it is **the
+system's only authentication boundary**: a bot's username is discoverable and the token is a public
+inbound path into a tree with no undo, so unset refuses everyone. It lives beside the token rather
+than in the mapping because it is the token's other half — whoever is on it can approve an
+irreversible write — which leaves one file to protect and one to gitignore. A mapping file that
+still carries `owners` is a **startup error** naming the variable, because an allow-list in a file
+nothing reads looks exactly like one that is in force. A real environment variable always wins over
+a line in `.env`, so a systemd unit or a container secret is never overridden by a stale file.
+
+Both are read in `pkb.daemon` and nowhere else — neither telegram module may import `os`, and a
+built seam scan enforces it. No token leaves the bot off and the daemon serving. Setup from nothing
+to approving a write from your phone: `docs/how-to/telegram.md`, and `.env.example` is the template.
 
 **The daemon owns runs.** A run is a plain `asyncio.Task` publishing into a per-run hub; an HTTP
 response subscribes to it. A dropped connection **detaches** — it never cancels — because D2's whole

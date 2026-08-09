@@ -78,9 +78,11 @@ class SubsystemState:
     state: str = "disabled"
     """Whether the supervised **task** is alive — never whether the subsystem can reach the
     network (TG-12). ``_supervise`` calls :meth:`running` before it awaits the task body, so a bot
-    whose token was revoked reports ``running`` with ``restarts: 0`` forever: it polls, gets a 401,
-    and the task never dies. :attr:`last_poll_ok_at` going stale is the only thing that says
-    otherwise, so nothing may infer reachability from this field."""
+    whose token was revoked reports ``running`` for the whole of its next poll while every request
+    is answered ``401`` — and it is stamped ``running`` again at the top of every restart, so a
+    sample taken at the wrong moment says ``running`` no matter how wrong the token is.
+    :attr:`last_poll_ok_at` is the only thing that says otherwise, so nothing may infer
+    reachability from this field."""
 
     restarts: int = 0
     last_error: str | None = None
