@@ -14,9 +14,10 @@ mechanical structure enforced in code and the meaning curated in dialog with the
 | `docs/superpowers/specs/2026-08-07-pkb-service-server-layer3-rules.md` | Every Layer 3 rule (`SV-*`, `RO-*`, `SS-*`, `AP-*`, `ST-*`, `MC-*`, `PK-*`): the service protocol, HTTP routes, SSE, approvals, packs, the MCP mount and the Telegram wiring. Built. |
 | `docs/superpowers/specs/2026-08-08-pkb-tui-clients-layer4-rules.md` | Every Layer 4 rule (`CL-*`, `DC-*`, `TU-*`): the shared approval helper, the SSE decoder, the transport and the Textual client. Built. |
 | `docs/superpowers/specs/2026-08-08-pkb-telegram-layer5-rules.md` | Every Layer 5 rule (`TG-*`): the supervised bot task, the owner allow-list, the durable update ledger and approval prompts, the Bot API port, and every length, ordering and keyboard rule an approval on a phone depends on. Built. |
-| `docs/superpowers/specs/2026-08-07-large-source-ingestion.md` | Sources that do not fit a turn: one file per source with the arguments as sections, `.inbox` staging, re-ingestion and reconciliation. Crosses all three layers. Designed, not built. |
+| `docs/superpowers/specs/2026-08-07-large-source-ingestion.md` | Every `LS-*` rule: sources that do not fit a turn — one file per source with the arguments as sections, `.inbox` staging, re-ingestion and reconciliation. Crosses all three layers. **Built** as `pkb.sources` + `pkb.agents.ingestion` — see its "As built" section; the status header at the top is stale. |
 | `docs/reference/deepagents-0.7.5-api-recon.md` | Verified signatures of the harness Layer 2 will use. |
-| `docs/how-to/telegram.md` | Not design — the operator's guide: @BotFather to approving a write from your phone, what every `/health` telegram field means, and the symptoms of each way it goes wrong. |
+| `docs/how-to/getting-started.md` | Not design, and **the one to read first**: a fresh clone to a knowledge base with something in it. Install, the daemon, the model, a worked first conversation with real transcripts, daily use, the other doors, symptom-first troubleshooting, and what is not built. Every command in it was executed. |
+| `docs/how-to/telegram.md` | Not design — the phone deep-dive, and it assumes `getting-started.md`: @BotFather to approving a write from your phone, what every `/health` telegram field means, and the symptoms of each way it goes wrong. |
 
 ## Build order (architecture §11)
 
@@ -74,10 +75,15 @@ because step 5's Telegram adapter runs *inside* the daemon and calls `PkbService
 approval helper is the one place an interrupt becomes a `Decision`, so both human channels answer
 identically; only the rendering differs.
 
-Large-source ingestion has its own spec and is not built. It changes **nothing** in `pkb.core`: one
-physical file per source with the arguments as sections inside it is the shape Layer 1 already
-implements. What it adds is in `pkb.agents` — per-kind extraction skills and a resumable, chunked
-workflow that walks a source through a windowed reader rather than a whole-file `read_file`.
+Large-source ingestion has its own spec and **is built** (2026-08-07). It changes **nothing**
+in `pkb.core`: one physical file per source with the arguments as sections inside it is the shape
+Layer 1 already implements. What it adds is `pkb.sources` (a leaf module: extraction and staging, no
+harness import) and `pkb.agents.ingestion` — a resumable, chunked loop that walks a source through a
+windowed reader rather than a whole-file `read_file`. **The loop is code, not a tool the model may
+decline to call**: the harness asks one bounded question per section and the sections that yielded
+nothing are named in the file, because the failure this shape exists to prevent is a confident
+write-up of the part that fit in one context window with nothing recording that the rest was never
+opened. Reached from any Topic Expert in plain language — `docs/how-to/getting-started.md` §6.
 
 ## Models
 

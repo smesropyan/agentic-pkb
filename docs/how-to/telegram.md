@@ -17,6 +17,11 @@ their private chat with the same bot, on their own topic — and they need to be
 Ten minutes, start to finish. Every command, path, variable name, JSON key and log line below comes
 from the code or from a real run of it.
 
+**This assumes a daemon you can already start** — a clone, `make install`, a knowledge base
+directory and `python -m pkb.daemon` — and it does not explain what an approval or a topic expert
+is. If any of that is new, read [`getting-started.md`](getting-started.md) first; the bot is one of
+the doors it describes, not the front one.
+
 ---
 
 ## 1. Create the bot
