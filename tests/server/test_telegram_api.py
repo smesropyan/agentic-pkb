@@ -58,6 +58,7 @@ from pkb.server.telegram_api import (
     POLL_TIMEOUT,
     READ_BUDGET,
     RETRY_CODES,
+    TOPIC_NAME_LIMIT,
     TRANSPORT_CODE,
     BotApi,
     HttpBotApi,
@@ -1052,6 +1053,31 @@ async def test_send_document_uploads_from_memory_and_writes_nothing_tg71() -> No
     assert len(call.body["caption"]) == 1024
 
 
+@pytest.mark.asyncio
+async def test_naming_a_topic_addresses_it_and_truncates_the_title_tg105() -> None:
+    """``editForumTopic`` addresses a topic by ``message_thread_id`` and carries one other key.
+
+    The truncation matters more here than on the creation: the caller has already written the
+    durable row, so a 400 on the length of a catalog title would leave a bound channel that the
+    reply promised to name and did not. No icon of any kind, for the reason ``createForumTopic``
+    carries none.
+
+    The result is dropped rather than returned (TG-106, F-13). Telegram answers ``True``, and an
+    answer this layer may not read as proof the topic is alive is one no caller should be handed.
+    """
+    fake = FakeBotApi()
+
+    async with serving(fake) as api:
+        assert await api.edit_forum_topic(CHAT, 101, "C" * 300) is None
+
+    call = fake.calls_to("editForumTopic")[-1]
+    assert call.body == {
+        "chat_id": CHAT,
+        "message_thread_id": 101,
+        "name": "C" * TOPIC_NAME_LIMIT,
+    }
+
+
 # --------------------------------------------------------------------------------------
 # § The seam itself (TG-67, TG-68, TG-70)
 # --------------------------------------------------------------------------------------
@@ -1078,10 +1104,15 @@ def test_the_http_client_implements_the_protocol_exactly_tg67() -> None:
         "edit_message",
         "clear_keyboard",
         # §9/TG-76: the one method that creates a channel. Listed literally rather than derived, so
-        # that a *forum-mutating* method — rename, close, reopen, delete — cannot arrive on this
+        # that a *forum-mutating* method — close, reopen, delete, unpin — cannot arrive on this
         # Protocol without a test saying so. TG-78 forbids all four by name: the topic is the
         # human's record of what they approved, on a system with no undo.
         "create_forum_topic",
+        # §12/TG-105: the one method that names a channel, arriving with TG-78's amendment. It runs
+        # once per channel, at the moment the bot takes a topic as one, because a channel Telegram
+        # called "New Chat" is an expert decision AE prints no name for. It is on this list for the
+        # same reason as the line above: an addition beside it is an addition a reader must defend.
+        "edit_forum_topic",
     }
     for name in sorted(methods):
         assert inspect.signature(getattr(HttpBotApi, name)) == inspect.signature(

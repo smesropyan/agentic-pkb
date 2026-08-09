@@ -534,6 +534,73 @@ async def test_a_press_on_an_agent_that_already_has_a_channel_points_at_it_tg98(
     assert len(api.creates) == before
     assert f"{COOKING} already has a channel" in api.texts[-1]
     assert str(topic_id) in api.texts[-1]
+    assert adapter_module._ALREADY_HERE.format(agent_id=COOKING) in api.to(topic_id)
+
+
+@pytest.mark.asyncio
+async def test_a_press_on_a_row_whose_topic_was_deleted_repairs_it_tg102(
+    service: TopicService, store: SqliteTelegramStore, api: PickyBotApi
+) -> None:
+    """The sequence a human ran on the live bot on 2026-08-09, through the button they pressed.
+
+    They deleted the Cooking topic in their client and tapped Cooking's row. The row's channel is
+    still in the directory, so TG-77 refuses to create a second one, which is right; the pointer it
+    answers with used to go to General, where it proved nothing. TG-82 and TG-83 recreate a dead
+    channel and both are triggered by a **failed send**, so a pointer that never touches the topic
+    leaves the expert unreachable from the phone, permanently and in silence.
+
+    Delivered into the channel it names, the pointer raises ``message thread not found`` and the
+    repair that was already built runs. The human is told in the channel they were standing in,
+    because TG-100 leaves the keyboard live and unmarked and a press answered only somewhere else
+    reads as a press that did nothing.
+    """
+    bot = await topical(service, store, api)
+    await say(bot, "/channels")
+    cooking = await channel_for(bot, api, COOKING)
+    api.missing_thread_errors = True
+    api.delete_topic(cooking)
+
+    await deliver(bot, press(picker_callback(COOKING), update_id=7))
+
+    live = int(api.next_topic_id)
+    assert live != cooking
+    assert await store.channels(CHAT) == {live: COOKING}
+    assert api.to(live) == [adapter_module._ALREADY_HERE.format(agent_id=COOKING)]
+    assert adapter_module._REOPENED.format(agent_id=COOKING, title="Cooking") in api.to(GENERAL)
+
+
+@pytest.mark.asyncio
+async def test_a_double_tap_on_a_dead_row_recreates_one_topic_tg102(
+    service: TopicService, store: SqliteTelegramStore, api: PickyBotApi
+) -> None:
+    """A thumb landing twice on a row whose topic is gone must produce one topic, not two.
+
+    TG-101's double tap is the same gesture against the create branch, and it produced two
+    ``createForumTopic`` calls and one directory row before ``_creations[chat_id]`` existed. The
+    repair branch reaches ``createForumTopic`` by a different road, so it gets its own assertion:
+    two topics here would spend both of ``MAX_RECREATIONS`` on one deletion and leave a second
+    topic carrying the expert's title that nothing addresses and the bot may never delete (TG-78).
+
+    The second press answers from the row the first one repaired, so the human is pointed at the
+    live topic rather than told about the dead one.
+    """
+    bot = await topical(service, store, api)
+    cooking = await channel_for(bot, api, COOKING)
+    api.missing_thread_errors = True
+    api.delete_topic(cooking)
+    row = picker_callback(COOKING)
+
+    await asyncio.gather(
+        bot._dispatch(press(row, update_id=90, query_id="first")),
+        bot._dispatch(press(row, update_id=91, query_id="second")),
+    )
+    await drain(bot)
+
+    live = int(api.next_topic_id)
+    assert [entry["name"] for entry in api.creates] == ["Cooking", "Cooking"], "one create, one fix"
+    assert await store.channels(CHAT) == {live: COOKING}
+    assert api.to(live) == [adapter_module._ALREADY_HERE.format(agent_id=COOKING)] * 2
+    assert api.texts[-1] == adapter_module._ALREADY.format(agent_id=COOKING, where=f"topic {live}")
 
 
 @pytest.mark.asyncio
@@ -897,3 +964,36 @@ def test_the_picker_channel_is_the_pressed_message_channel_tg98() -> None:
     query = press(picker_callback(COOKING), topic_id=808)["callback_query"]
 
     assert adapter_module._channel_of_query(query) == Channel(CHAT, 808)
+
+
+# --------------------------------------------------------------------------------------
+# § a press that binds also names (TG-105)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_press_inside_an_unbound_topic_binds_it_and_names_it_tg105(
+    service: TopicService, store: SqliteTelegramStore, api: PickyBotApi
+) -> None:
+    """A press and a typed command run one function (TG-98), and the press is the door the human hit.
+
+    They made the topic in their own client, where Telegram called it *New Chat*, opened the picker
+    inside it and tapped the Cooking row. Decision AE prints no agent id on an ordinary reply in a
+    channel, on the ground that the topic header names the expert, so a channel that keeps
+    Telegram's own name leaves an unnamed expert writing to a tree with no undo. A second
+    implementation of bind-or-create would pass every other assertion in this file and disagree with
+    the typed form here.
+    """
+    bot = await topical(service, store, api)
+
+    await deliver(bot, press(picker_callback(COOKING), topic_id=101))
+
+    assert api.of("create_forum_topic") == [], "a press on an unbound topic binds it"
+    assert api.of("edit_forum_topic") == [{"chat_id": CHAT, "topic_id": 101, "name": "Cooking"}]
+    assert dict(await store.channels(CHAT)) == {101: COOKING}
+    assert "named it Cooking" in api.texts[-1]
+    # TG-61, for the work this rule added. The rename is a network call the press now waits on, and
+    # a query answered after it leaves the button spinning until Telegram expires it, which is the
+    # state a human answers by pressing again.
+    kinds = [kind for kind, _ in api.journal]
+    assert kinds.index("answer_callback") < kinds.index("edit_forum_topic")

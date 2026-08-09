@@ -1382,21 +1382,114 @@ class TelegramAdapter:
                 # TG-77: creating nothing is the rule, not an optimisation. A second channel for one
                 # agent in one chat is that expert's history split in half, with nothing on screen
                 # saying which half a message went to.
-                await self._say(
-                    channel,
-                    _ALREADY.format(
-                        agent_id=agent_id,
-                        where="General" if existing.is_general else f"topic {existing.topic_id}",
-                    ),
-                )
+                await self._point_at(channel, existing, agent_id)
                 return
             if not channel.is_general and channel.topic_id not in directory:
                 await self.store.open_channel(chat_id, channel.topic_id, agent_id)
                 self._revive(chat_id, agent_id, channel.topic_id)
                 self._note_channel(agent_id)
-                await self._say(channel, _BOUND.format(agent_id=agent_id))
+                # TG-105: the bot has just taken this topic as a channel, so the bot names it. The
+                # durable write goes first (TG-106), so a rename that fails leaves a channel that
+                # works and a reply that says the name did not change.
+                title = self._catalog().get(agent_id, agent_id)
+                reason = await self._name_channel(channel, agent_id, title)
+                if reason is None:
+                    await self._say(channel, _BOUND.format(agent_id=agent_id, title=title))
+                else:
+                    await self._say(
+                        channel,
+                        _BOUND_UNNAMED.format(agent_id=agent_id, title=title, reason=reason),
+                    )
                 return
             await self._create_channel(channel, agent_id)
+
+    async def _point_at(self, typed_in: Channel, existing: Channel, agent_id: str) -> None:
+        """TG-77's pointer, sent **into the channel it names** (TG-102, TG-104, decisions AI, AJ).
+
+        A human deleted the Cooking topic, tapped its picker row, and was told *"topic/cooking
+        already has a channel in this chat (topic 101), so I created nothing"* about a topic
+        Telegram had deleted, in a channel that was not it. The channel was then unrecoverable from
+        the phone. TG-82 and TG-83 recreate a dead channel and **both are triggered by a failed
+        send**; nothing will ever send into a deleted topic, because no message can arrive from one
+        (F-5) and the one message that named it went somewhere else. The bot held the address of a
+        dead topic, the code that repairs a dead topic, and no path between them.
+
+        Sending the pointer through the channel it names is that path. On a live channel it points
+        at a place the human can open, rather than at a topic id every Telegram client hides
+        (§9.10 struck the same id from TG-74's reply). On a dead one it raises ``message thread not
+        found``, which is TG-83's trigger, so the repair that already exists, is already tested and
+        was already unreachable runs. **There is no second recovery path here**, and there must not
+        be: §9.10 defect 3 and §9.11 defect A are both what this layer does when repair grows a
+        second door.
+
+        **The agent id goes with the send.** An unattributed send cannot be routed by TG-82's
+        retirement, resolves its repair through the directory rather than the row, and is what
+        §9.12 defect 4 measured as a channel pinned to General for the life of the daemon.
+
+        **The typing channel gets its own line, and only when it is a different channel.** The
+        human is standing in General when they tap; TG-100 leaves the picker keyboard live and
+        unmarked after a press, so a press answered only somewhere else reads as a press that did
+        nothing, and the next thing the thumb does is press again. Two lines in one topic is the
+        noise that shape avoids, so a command typed in the channel it names gets one message.
+
+        **The count is cleared first** (TG-103, decision AJ). ``MAX_RECREATIONS`` bounds the repairs
+        the bot makes on its own, and a human tapping a row is the decision the bound defers to.
+        Cleared afterwards it would be too late: the repair this call triggers would read a count
+        already at the bound and retire the channel, telling the human their expert had moved to
+        General by way of the tap meant to bring it back.
+
+        **The clear reads and writes under :meth:`_repair_lock`, and writes the row's own topic id**
+        (TG-103, §11.8). ``open_channel`` sets ``topic_id`` as well as the count, so the two
+        statements are a check-then-act on a column :meth:`_repair` owns and writes two awaits away.
+        That is the third instance of the shape in this file, after ``_channel_died``'s ``known``
+        guard and the picker's double press. Measured against the fake: an unattended send that
+        discovered the same deletion inside the row read finished its repair first, and the clear
+        then wrote the **dead** topic id back over it. The directory named a topic Telegram had
+        deleted, and the topic the bot had just created stood on the human's phone addressed by
+        nothing, which is §9.12 defect 4's silent topic produced by the repair itself. The lock is
+        released before the pointer goes out, because the pointer's own failure takes that lock.
+
+        **A General pin left by a failed recreation is dropped here** (TG-104). ``_repair`` answers a
+        ``createForumTopic`` failure by re-addressing the channel to General and leaving the row
+        naming the topic, and that mapping has no expiry: every later send is re-addressed before it
+        can fail, so nothing reaches TG-83 again and ``_POINTER_LOST`` keeps naming a command that
+        provably does nothing. The human asking for the channel by name is what clears it, which is
+        the argument :meth:`_revive` makes for a retirement.
+        """
+        chat_id = existing.chat_id
+        async with self._repair_lock(existing):
+            row = await self.store.channel(chat_id, agent_id)
+            if row is not None and int(row["recreations"]):
+                # `open_channel` is the write TG-87's revival already makes, so both doors leave a
+                # channel the human just asked for with the same allowance. Skipped at zero so the
+                # ordinary pointer writes nothing and `created_at` keeps naming the moment the human
+                # made the channel rather than the last time they asked about it.
+                await self.store.open_channel(chat_id, int(row["topic_id"]), agent_id)
+            if not existing.is_general and self._moved.get(existing) == existing.general:
+                # TG-104: a `createForumTopic` that failed leaves the row naming the topic and pins
+                # the channel to General in process memory. Every later send is then re-addressed
+                # **before** it can fail, so TG-83's trigger never fires for that channel again and
+                # the pointer below reaches General rather than the topic. Measured: two
+                # `/channels topic/cooking` after one failed recreation issued zero further
+                # `createForumTopic` calls and answered `_POINTER_LOST` both times, which names that
+                # exact command as the way out. The human asking for the channel by name is the act
+                # `_revive` answers for a retirement, so the pin goes and the pointer can die again.
+                del self._moved[existing]
+        await self._say(existing, _ALREADY_HERE.format(agent_id=agent_id), agent_id=agent_id)
+        if existing == typed_in:
+            return
+        # Read after the send, from the function every send already asks: the same channel means the
+        # topic was alive, a different topic means TG-83 repaired it, and General means the
+        # recreation failed and TG-82 fell back. Nothing new is recorded to make this decidable.
+        landed = self._route_out(existing, agent_id)
+        if landed == existing:
+            where = "General" if existing.is_general else f"topic {existing.topic_id}"
+            await self._say(typed_in, _ALREADY.format(agent_id=agent_id, where=where))
+        elif landed.is_general:
+            await self._say(typed_in, _POINTER_LOST.format(agent_id=agent_id))
+        else:
+            title = self._catalog().get(agent_id, agent_id)
+            await self._say(typed_in, _REOPENED.format(agent_id=agent_id, title=title))
 
     async def _picker(self, channel: Channel) -> None:
         """The catalog as buttons, one row per agent, in the order the service returned them.
@@ -1492,8 +1585,13 @@ class TelegramAdapter:
 
         No ``icon_color`` and no ``icon_custom_emoji_id``: every parameter on this Protocol has to
         be implemented by every fake, and neither has a rule behind it. The binding is by topic
-        **id**, so a human renaming the topic afterwards changes nothing — and the bot never renames,
-        closes or deletes one, because the topic is the human's record of what they approved.
+        **id**, so a human renaming the topic afterwards changes nothing, and the bot leaves that
+        rename standing (TG-105). The bot closes and deletes nothing, ever, because the topic is the
+        human's record of what they approved.
+
+        **This path issues no ``editForumTopic``** and a test pins that. The name arrives with the
+        creation, so a second call would be the policing TG-105 refuses, on the one path where it
+        would also be redundant.
 
         A failure is reported in the chat rather than raised: the human asked for a channel and the
         useful answer is that they did not get one, not a restarted bot.
@@ -1516,6 +1614,65 @@ class TelegramAdapter:
         self._revive(where.chat_id, agent_id, topic_id)
         self._note_channel(agent_id)
         await self._say(where, _CREATED.format(agent_id=agent_id, title=title))
+
+    async def _name_channel(self, channel: Channel, agent_id: str, title: str) -> str | None:
+        """Name a topic the bot has just taken as a channel (TG-78 amended, TG-105, TG-106).
+
+        Called from the bind branch of :meth:`_channels` and from nowhere else. The create branch
+        needs no rename, because ``createForumTopic`` carries the title already.
+
+        **Why the bot renames at all**, after a rule that said it never would. A human made a topic
+        in their own client, where Telegram called it *New Chat*, and bound it with ``/channels
+        topic/cooking`` from inside it. The bind wrote the row, answered *"Bound this topic"* and
+        left the name, so the human then talked to an expert whose name appeared nowhere on the
+        screen. Decision AE prints no agent id on an ordinary reply inside a channel, and the ground
+        it gives is that the topic header names the expert. A channel called *New Chat* removes that
+        ground and leaves an unattributed conversation in front of a tree with no undo, which is the
+        ambiguity TG-1 deleted ``/connect`` for. TG-78 was right about the human's furniture and
+        wrong about ownership: taking a topic as a channel is the act that stops it being furniture.
+
+        **The rename is unconditional** (decision AK). A build that renamed only a topic still
+        carrying a Telegram default, or only one whose name differs from the title, needs the
+        current name. No Bot API method returns one. One message carries one: ``forum_topic_created``
+        reaches :meth:`_on_service` with the name on it, for a topic the human made by hand as well
+        as for one the bot made, so the condition would run off a **copy** of a value Telegram owns
+        and the human may change. That is TG-102's shape: ``forum_topic_edited`` carries every later
+        rename and TG-92 silences it, a restart drops the copy, and a topic that predates the mapping
+        never produced one. The condition would then fire by uptime, answering *"already Cooking"*
+        for a topic titled *New Chat*, which is the failure this method exists to end; the *New Chat*
+        form of it would fire by locale on top, because Telegram picks that string and translates it.
+        Losing a deliberate title costs two taps and is announced in the reply the same second;
+        skipping costs a permanently unnamed expert, in silence.
+
+        **Nothing after this call renames anything** (TG-105). No inbound message, no restart, no
+        catalog title change (Q36), and a human who renames the channel afterwards has made a
+        decision that stands. TG-78's original instinct holds from here on.
+
+        **A failure is a reason, never a repair** (TG-106). The caller has already written the
+        durable row, so the channel works and the reply says the name did not change. This never
+        reaches TG-82 or TG-83: a rename delivers nothing, so nothing was lost and there is nothing
+        to re-send, and creating a topic in answer would give an agent a second channel one line
+        after it got its first, which is TG-77's split history produced by the fix for a missing
+        title. **The outcome is not a liveness signal in either direction** (TG-102): F-13 measured
+        one method of this API answering ``ok: true`` for a topic Telegram had deleted, so success
+        proves nothing, and failure proves nothing either. Nothing is written from it.
+
+        ``with_retry`` is the same transport rule every other call here runs under, and it needs no
+        branch for a dead topic: ``400`` is absent from ``RETRY_CODES``, so ``message thread not
+        found`` propagates on the first attempt and lands in the same reply as any other refusal.
+
+        ``agent_id`` names the log line and ``title`` goes on the wire. The caller computes the
+        title once and passes it, so the call and the reply can never name two different titles.
+        """
+        try:
+            await with_retry(
+                lambda: self.api.edit_forum_topic(channel.chat_id, channel.topic_id, title)
+            )
+        except TelegramError as exc:
+            self._note_send_failed(exc)
+            _log.warning("telegram: could not name the topic for %s: %s", agent_id, exc)
+            return str(exc)
+        return None
 
     def _revive(self, chat_id: int, agent_id: str, topic_id: int) -> None:
         """A channel the bot had given up on is answering again (TG-82, TG-84).
@@ -3066,10 +3223,55 @@ _NO_SUCH_AGENT: Final = (
     "Send /agents to see what there is."
 )
 _ALREADY: Final = "{agent_id} already has a channel in this chat ({where}), so I created nothing."
-_BOUND: Final = (
-    "Bound this topic to {agent_id}. Nothing was created — anything you send here from now on goes "
-    "to that expert."
+_ALREADY_HERE: Final = (
+    "{agent_id} already has a channel in this chat, and this is it. I created nothing."
 )
+"""TG-77 amended: the pointer, delivered **into** the channel it names (TG-102, decision AI).
+
+On a live channel this is the useful half of the answer, because it points at a place the human can
+open rather than at a topic id every Telegram client hides. On a dead one the send raises
+``message thread not found``, which is TG-83's trigger, so the repair that was already built runs.
+"""
+
+_REOPENED: Final = (
+    "{agent_id}'s topic had been deleted, so I made a new one, {title}. Everything for that expert "
+    "goes there from now on."
+)
+"""The typing channel's answer when the pointer found the topic gone and TG-83 repaired it.
+
+The human has to be told a new topic exists. Without this line the tap that recovered their expert
+looks exactly like the tap that found it healthy, while their chat quietly gained a topic.
+"""
+
+_POINTER_LOST: Final = (
+    "{agent_id}'s topic had been deleted and I could not make a new one, so that expert's messages "
+    "are arriving in this chat's General for now. Send /channels {agent_id} to try again."
+)
+"""The typing channel's answer when the recreation itself failed and TG-82 fell back to General."""
+
+_BOUND: Final = (
+    "Bound this topic to {agent_id} and named it {title}. Nothing was created. Anything you send "
+    "here from now on goes to that expert."
+)
+"""TG-87's bind, and the name TG-105 gives the topic in the same breath.
+
+The title is stated because the bot changed it. A human who made this topic in their own client saw
+Telegram call it *New Chat*, and a rename they learn about by noticing it later is a rename they
+read as their client misbehaving. Renaming it back is theirs to do and the bot leaves it alone from
+here (TG-78 amended).
+"""
+
+_BOUND_UNNAMED: Final = (
+    "Bound this topic to {agent_id}. Anything you send here from now on goes to that expert.\n"
+    "I could not name it {title}: {reason}\n"
+    "The binding stands. You can rename the topic yourself."
+)
+"""TG-106: the bind succeeded and the rename did not, and the reply says both.
+
+The durable write runs first, so this is a channel that works. Reporting the rename as done would
+leave the human reading *New Chat* under a line claiming the topic is called *Cooking*, and the next
+thing they doubt is the binding.
+"""
 _ALL_AGENTS: Final = "all"
 """``/channels all``'s one argument, and a word no agent id can be (§9.13.5).
 

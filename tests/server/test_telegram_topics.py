@@ -149,8 +149,16 @@ class FakeBotApi:
     missing_thread_errors: bool = False
     get_me_error: BaseException | None = None
     create_error: BaseException | None = None
+    rename_error: BaseException | None = None
     send_error: BaseException | None = None
     pending: list[Mapping[str, Any]] = field(default_factory=list)
+
+    names: dict[int, str] = field(default_factory=dict)
+    """What each topic is called, as a human reads it off the tab (TG-105).
+
+    A topic the human made in their own client is absent from here until the bot names it, which is
+    the state the defect was reported from: Telegram called it *New Chat* and the bot left it.
+    """
 
     # -- the calls ---------------------------------------------------------------------
 
@@ -180,7 +188,23 @@ class FakeBotApi:
         if self.create_error is not None:
             raise self.create_error
         self.next_topic_id += 1
+        self.names[self.next_topic_id] = name
         return {"message_thread_id": self.next_topic_id, "name": name}
+
+    async def edit_forum_topic(self, chat_id: int, topic_id: int, name: str) -> None:
+        """TG-105. The name a human would read on the tab, so the tests can read it too.
+
+        ``rename_error`` drives TG-106, and the fake keeps answering for a topic it has already
+        deleted unless a test asks otherwise: F-13 measured one method of this API doing exactly
+        that, and a fake that raised on a dead topic by default would hide a build that read the
+        answer as proof the topic is alive.
+        """
+        self.journal.append(
+            ("edit_forum_topic", {"chat_id": chat_id, "topic_id": topic_id, "name": name})
+        )
+        if self.rename_error is not None:
+            raise self.rename_error
+        self.names[topic_id] = name
 
     async def send_message(
         self,
@@ -289,6 +313,10 @@ class FakeBotApi:
     @property
     def creates(self) -> list[dict[str, Any]]:
         return self.of("create_forum_topic")
+
+    @property
+    def renames(self) -> list[dict[str, Any]]:
+        return self.of("edit_forum_topic")
 
     @property
     def cleared(self) -> list[dict[str, Any]]:
@@ -955,19 +983,25 @@ async def test_create_forum_topic_is_given_the_title_and_nothing_else_tg78(
     }
 
 
-def test_nothing_on_the_protocol_can_change_or_remove_a_topic_tg78() -> None:
+def test_nothing_on_the_protocol_can_remove_or_silence_a_topic_tg78() -> None:
     """A bot that tidies the human's chat destroys evidence on a system with no undo (D6).
 
-    The topic is their record of what they approved and the rename may have been deliberate, so
-    ``editForumTopic``, ``closeForumTopic``, ``reopenForumTopic``, ``deleteForumTopic``,
-    ``unpinAllForumTopicMessages`` and ``deleteMessage`` are absent by construction rather than by
-    convention — a method that does not exist cannot be called from a ``finally``.
+    The topic is their record of what they approved, so ``closeForumTopic``, ``reopenForumTopic``,
+    ``deleteForumTopic``, ``unpinAllForumTopicMessages`` and ``deleteMessage`` are absent by
+    construction rather than by convention — a method that does not exist cannot be called from a
+    ``finally``.
+
+    ``edit_forum_topic`` is on the surface (TG-78 amended, TG-105) and it is the one exception, so
+    the assertion under it is that the adapter reaches for it from **one** place. A second call site
+    is how "name it once, at the moment of ownership" becomes "police the name", and the human's own
+    title reverts on a schedule they cannot see.
     """
     surface = {name for name in vars(BotApi) if not name.startswith("_")}
     assert surface == {
         "get_me",
         "get_updates",
         "create_forum_topic",
+        "edit_forum_topic",
         "send_message",
         "send_document",
         "answer_callback",
@@ -977,15 +1011,17 @@ def test_nothing_on_the_protocol_can_change_or_remove_a_topic_tg78() -> None:
     # The attribute names the adapter actually reaches for, from its AST rather than its text: the
     # module *documents* why `delete_message` is absent, and a substring scan over prose would fail
     # on the explanation instead of on the call.
-    reached = {
+    reached = [
         node.attr
         for node in ast.walk(ast.parse(inspect.getsource(adapter_module)))
         if isinstance(node, ast.Attribute)
-    }
-    forbidden = ("delete_message", "delete_forum", "close_forum", "reopen_forum", "edit_forum")
+    ]
+    forbidden = ("delete_message", "delete_forum", "close_forum", "reopen_forum", "unpin_all")
     for name in forbidden:
         assert name not in surface
         assert not [attr for attr in reached if name in attr], f"the adapter reaches for {name}"
+    assert reached.count("edit_forum_topic") == 1, "one wire call, or the bot polices names"
+    assert reached.count("_name_channel") == 1, "and one caller of it, for the same reason"
 
 
 @pytest.mark.asyncio
@@ -1488,6 +1524,290 @@ async def test_retirement_in_one_chat_does_not_retire_the_agent_in_another_tg82(
 
 
 # --------------------------------------------------------------------------------------
+# § the row is not proof its topic exists (TG-102, TG-103, TG-77 amended)
+#
+# The human's own sequence, found on the live bot on 2026-08-09: the Cooking channel exists in the
+# directory, the human deleted the Cooking topic from their phone, and they tap the Cooking row of
+# the `/channels` picker. Before the fix the bot answered "topic/cooking already has a channel in
+# this chat (topic 101), so I created nothing" about a topic Telegram had deleted, in a channel
+# that was not it. The channel was then unrecoverable from the phone, because TG-82 and TG-83
+# repair a dead channel and both are triggered by a **failed send**, while no message can ever
+# arrive from a deleted topic (F-5).
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_pointer_into_a_deleted_topic_repairs_the_channel_tg102(
+    service: TopicService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """The whole defect, end to end: a durable row is not proof its topic still exists.
+
+    The pointer is delivered **into** the channel it names, so the send raises ``message thread not
+    found`` (F-11) and TG-83's repair runs. Nothing else recovers this channel: no update announces
+    a deletion, no inbound message can come from a topic that is gone, and the only message that
+    named the dead topic used to go to the channel the command was typed in.
+
+    Without the routing this file asserts, every other assertion about the pointer still passes,
+    which is how the defect shipped.
+    """
+    bot = await topical(service, store, api)
+    cooking = await channel_for(bot, api, COOKING)
+    api.missing_thread_errors = True
+    api.delete_topic(cooking)
+
+    await say(bot, f"/channels {COOKING}", update_id=2)
+
+    live = int(api.next_topic_id)
+    pointer = adapter_module._ALREADY_HERE.format(agent_id=COOKING)
+    assert live != cooking
+    # The send that carried the dead id is the detection. A build that answers only in the typing
+    # channel never makes it, and the repair below never runs.
+    assert pointer in api.to(cooking)
+    assert len(api.creates) == 2
+    assert await store.channels(CHAT) == {live: COOKING}
+    assert api.to(live) == [pointer]
+    assert adapter_module._REOPENED.format(agent_id=COOKING, title="Cooking") in api.to(GENERAL)
+
+
+@pytest.mark.asyncio
+async def test_the_pointer_for_a_live_channel_creates_nothing_tg102(
+    service: TopicService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """TG-77 is unchanged where it was right: a second channel for one agent is still refused.
+
+    The pointer lands in the channel it names, which is the useful place for it on a live channel:
+    the topic is somewhere the human can open, and a topic id is invisible in every Telegram client
+    (§9.10 struck exactly that id from TG-74's reply).
+    """
+    bot = await topical(service, store, api)
+    cooking = await channel_for(bot, api, COOKING)
+
+    await say(bot, f"/channels {COOKING}", update_id=2)
+
+    assert len(api.creates) == 1
+    assert await store.channels(CHAT) == {cooking: COOKING}
+    assert api.to(cooking) == [adapter_module._ALREADY_HERE.format(agent_id=COOKING)]
+    assert api.texts[-1] == adapter_module._ALREADY.format(
+        agent_id=COOKING, where=f"topic {cooking}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_pointer_typed_in_the_channel_it_names_answers_once_tg77(
+    service: TopicService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """Two messages exist because the human is looking somewhere else. Here they are not.
+
+    ``/channels topic/cooking`` typed inside Cooking's own topic gets one line. A second line
+    saying "it is over there" about the topic it is printed in is the noise the shape avoids.
+    """
+    bot = await topical(service, store, api)
+    cooking = await channel_for(bot, api, COOKING)
+    sent = len(api.sent)
+
+    await say(bot, f"/channels {COOKING}", topic_id=cooking, update_id=3)
+
+    assert [entry["text"] for entry in api.sent[sent:]] == [
+        adapter_module._ALREADY_HERE.format(agent_id=COOKING)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_pointer_repairs_a_silently_relocated_channel_too_tg80(
+    service: TopicService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """The other shape of the same fact, and the one F-13 says is live on this API.
+
+    ``sendChatAction`` answers ``ok: true`` for a topic Telegram deleted, so a send that succeeds is
+    a real way to lose a message. The pointer is checked by TG-80's response comparison exactly as
+    every other send is, and the repair it reaches is the same one.
+    """
+    bot = await topical(service, store, api)
+    cooking = await channel_for(bot, api, COOKING)
+    api.delete_topic(cooking)
+
+    await say(bot, f"/channels {COOKING}", update_id=2)
+
+    live = int(api.next_topic_id)
+    assert len(api.creates) == 2
+    assert await store.channels(CHAT) == {live: COOKING}
+    assert api.to(live) == [adapter_module._ALREADY_HERE.format(agent_id=COOKING)]
+
+
+@pytest.mark.asyncio
+async def test_a_human_request_never_spends_the_recreation_allowance_tg103(
+    service: TopicService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """TG-82's cap bounds a loop, and a thumb is not a loop (decision AJ).
+
+    A person exploring the picker deletes the topic and taps the row three times inside a minute.
+    Counted against the cap, the third tap answers with a retirement notice instead of a channel:
+    the button stops doing what its label says, on the deployment's own owner, at the moment they
+    are learning what the feature does.
+    """
+    bot = await topical(service, store, api)
+    live = await channel_for(bot, api, COOKING)
+    api.missing_thread_errors = True
+
+    for attempt in range(MAX_RECREATIONS + 1):
+        api.delete_topic(live)
+        await say(bot, f"/channels {COOKING}", update_id=10 + attempt)
+        live = int(api.next_topic_id)
+        row = await store.channel(CHAT, COOKING)
+        assert row is not None and row["retired"] is False
+        assert row["recreations"] == 1, "the count is cleared by the request that triggered it"
+
+    assert len(api.creates) == MAX_RECREATIONS + 2
+    assert "stopped making new ones" not in api.transcript
+    assert await store.channels(CHAT) == {live: COOKING}
+
+
+@pytest.mark.asyncio
+async def test_a_request_clears_a_count_the_bot_ran_up_on_its_own_tg103(
+    service: TopicService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """Repairs the bot made unattended still count, and the human's request still clears them.
+
+    The clear happens **before** the pointer goes out. Afterwards it would be too late: the repair
+    the request triggers would read a count already at the bound and retire the channel, telling the
+    human their expert had moved to General by way of the tap meant to bring it back.
+    """
+    bot = await topical(service, store, api)
+    live = await channel_for(bot, api, COOKING)
+    api.missing_thread_errors = True
+    for attempt in range(MAX_RECREATIONS):
+        api.delete_topic(live)
+        await bot._say(Channel(CHAT, live), f"reply {attempt}", agent_id=COOKING)
+        live = int(api.next_topic_id)
+    spent = await store.channel(CHAT, COOKING)
+    assert spent is not None and spent["recreations"] == MAX_RECREATIONS
+
+    await say(bot, f"/channels {COOKING}", update_id=20)
+
+    cleared = await store.channel(CHAT, COOKING)
+    assert cleared is not None and cleared["recreations"] == 0
+    api.delete_topic(live)
+    await bot._say(Channel(CHAT, live), "one more reply", agent_id=COOKING)
+    repaired = await store.channel(CHAT, COOKING)
+    assert repaired is not None and repaired["retired"] is False
+    assert repaired["recreations"] == 1
+    assert "stopped making new ones" not in api.transcript
+
+
+@pytest.mark.asyncio
+async def test_a_channel_pinned_to_general_by_a_failed_create_is_asked_again_tg104(
+    service: TopicService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """A ``createForumTopic`` failure pinned the channel to General for the life of the daemon.
+
+    ``_repair`` writes ``_moved[channel] = channel.general`` and leaves the durable row naming the
+    topic. ``_route_out`` reads that mapping before anything else, so every later send is
+    re-addressed **before** it can fail: TG-83's trigger never fires for that channel again, the
+    pointer TG-102 relies on arrives in General, and ``_POINTER_LOST`` answers by naming the very
+    command that just did nothing. Measured before TG-104: two more ``/channels topic/cooking``,
+    zero further ``createForumTopic`` calls, two identical lines, and a restart as the only cure.
+
+    The failed request also costs the human nothing durable: ``recreations`` stays at zero, so the
+    retry repairs rather than answering with a retirement notice.
+    """
+    bot = await topical(service, store, api)
+    cooking = await channel_for(bot, api, COOKING)
+    api.missing_thread_errors = True
+    api.delete_topic(cooking)
+    api.create_error = TelegramError("createForumTopic", 400, "Bad Request: nope")
+
+    await say(bot, f"/channels {COOKING}", update_id=2)
+
+    row = await store.channel(CHAT, COOKING)
+    assert row is not None
+    assert row["recreations"] == 0 and row["retired"] is False
+    assert adapter_module._POINTER_LOST.format(agent_id=COOKING) in api.to(GENERAL)
+    assert bot._moved[Channel(CHAT, cooking)] == Channel(CHAT, GENERAL)
+
+    api.create_error = None
+    creates = len(api.creates)
+    await say(bot, f"/channels {COOKING}", update_id=3)
+
+    live = int(api.next_topic_id)
+    assert len(api.creates) == creates + 1, "the pointer has to reach the topic to fail again"
+    assert live != cooking
+    assert await store.channels(CHAT) == {live: COOKING}
+    assert api.to(live) == [adapter_module._ALREADY_HERE.format(agent_id=COOKING)]
+    assert adapter_module._REOPENED.format(agent_id=COOKING, title="Cooking") in api.to(GENERAL)
+    sent = len(api.sent)
+    await bot._say(Channel(CHAT, cooking), "a reply for that expert", agent_id=COOKING)
+    assert [entry["topic_id"] for entry in api.sent[sent:]] == [live]
+
+
+@pytest.mark.asyncio
+async def test_the_count_clear_never_writes_a_topic_id_a_repair_moved_tg103(
+    service: TopicService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """The clear reads the row and writes it back, and a repair owns the column it writes.
+
+    The two statements are a check-then-act across an await, and this file has shipped that shape
+    twice: ``_channel_died``'s ``known`` guard and the picker's double press. An unattended send
+    that discovers the same deletion inside the row read finishes its repair first; the clear then
+    writes the **dead** topic id back over it, so the directory names a topic Telegram deleted and
+    the topic the bot had just created is addressed by nothing. That is §9.12 defect 4's silent
+    topic, and this time the repair produces it.
+
+    Driven with the competing send as a real task, because that is how it arrives: the outbox pump
+    and every run reply are separate tasks from the one handling a command.
+    """
+    bot = await topical(service, store, api)
+    first = await channel_for(bot, api, COOKING)
+    api.missing_thread_errors = True
+    api.delete_topic(first)
+    await bot._say(Channel(CHAT, first), "an unattended reply", agent_id=COOKING)
+    second = int(api.next_topic_id)
+    spent = await store.channel(CHAT, COOKING)
+    assert spent is not None and spent["recreations"] == 1, "the clear only writes above zero"
+    api.delete_topic(second)
+
+    settled = store.channel
+    racing: list[asyncio.Task[None]] = []
+
+    async def contended(chat_id: int, agent_id: str) -> Mapping[str, Any] | None:
+        row = await settled(chat_id, agent_id)
+        if not racing:
+            racing.append(
+                asyncio.ensure_future(
+                    bot._say(Channel(CHAT, second), "one more unattended", agent_id=COOKING)
+                )
+            )
+            for _ in range(20):
+                await asyncio.sleep(0.005)
+        return row
+
+    store.channel = contended  # type: ignore[method-assign]
+    try:
+        await say(bot, f"/channels {COOKING}", update_id=50)
+    finally:
+        store.channel = settled  # type: ignore[method-assign]
+        await asyncio.gather(*racing)
+
+    row = await store.channel(CHAT, COOKING)
+    assert row is not None
+    assert int(row["topic_id"]) not in api.deleted, "the directory names a topic Telegram deleted"
+    assert await store.channels(CHAT) == {int(api.next_topic_id): COOKING}
+
+
+def test_no_method_of_this_api_is_used_as_a_liveness_probe_tg102() -> None:
+    """``sendChatAction`` answers ``ok: true`` for a topic Telegram deleted (F-13, executed).
+
+    A control on a topic created minutes earlier answered ``ok: true`` as well, so the call reports
+    the same success either way and a check built on it would confirm every dead channel as alive.
+    The only thing that proves a topic exists is a send the human can see, which is why the pointer
+    goes through the channel rather than beside it.
+    """
+    source = inspect.getsource(adapter_module)
+
+    assert "chat_action" not in source
+    assert not [name for name in dir(BotApi) if "chat_action" in name]
+
+
+# --------------------------------------------------------------------------------------
 # § attribution follows exposure (TG-85, TG-88, TG-89)
 # --------------------------------------------------------------------------------------
 
@@ -1976,6 +2296,208 @@ async def test_a_description_that_never_landed_anywhere_carries_no_buttons_tg56(
     assert [entry for entry in api.sent if entry["kb"]] == [], "TG-55: a hand-off, not a keyboard"
     assert "(full text above)" not in api.transcript, "the marker would be a lie"
     assert "the TUI" in api.transcript
+
+
+# --------------------------------------------------------------------------------------
+# § the channel carries the expert's name (TG-105, TG-106, TG-78 amended)
+# --------------------------------------------------------------------------------------
+
+HUMAN_TOPIC = 101
+"""The topic the human made in their own Telegram client, where Telegram called it *New Chat*.
+
+Masked, as every id in this file is: the repository is public. The number matches §11's, which
+stands for the same object for the same reason.
+"""
+
+BOUND_AND_NAMED = (
+    "Bound this topic to topic/cooking and named it Cooking. Nothing was created. Anything you "
+    "send here from now on goes to that expert."
+)
+"""Golden text (TG-105). The title has to be in the reply, so the human learns the name changed in
+the same second rather than by noticing their tab later and doubting their client."""
+
+
+@pytest.mark.asyncio
+async def test_binding_a_hand_made_topic_names_it_after_the_expert_tg105(
+    service: TopicService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """The human's exact sequence, and the one the live bot got wrong.
+
+    They made the topic in their own client, where Telegram named it *New Chat*, then bound it with
+    ``/channels topic/cooking`` from inside it (TG-87's bind-here form, the recovery path for a lost
+    database). The bind wrote the row and left the name, so the tab said *New Chat* and decision AE
+    printed no agent id on any ordinary reply in it — a conversation with an unnamed expert that
+    writes to a tree with no undo, which is the ambiguity TG-1 deleted ``/connect`` for.
+    """
+    bot = await topical(service, store, api)
+
+    await say(bot, f"/channels {COOKING}", topic_id=HUMAN_TOPIC)
+
+    assert api.creates == [], "the bind creates nothing, which is how the name got left behind"
+    assert api.renames == [{"chat_id": CHAT, "topic_id": HUMAN_TOPIC, "name": "Cooking"}]
+    assert api.names[HUMAN_TOPIC] == "Cooking", "the tab the human reads"
+    assert dict(await store.channels(CHAT)) == {HUMAN_TOPIC: COOKING}
+    assert api.texts[-1] == BOUND_AND_NAMED
+
+
+@pytest.mark.asyncio
+async def test_creating_a_channel_names_the_topic_and_renames_nothing_tg105(
+    service: TopicService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """The create path already names what it makes, so a rename there is a second call for nothing.
+
+    This is the assertion a later change drops silently: a build that renamed after every ownership
+    event would pass the bind test above and send two calls where one is needed, and the second one
+    is the call TG-78 spent a section refusing.
+    """
+    bot = await topical(service, store, api)
+
+    await say(bot, f"/channels {COOKING}")
+
+    assert [entry["name"] for entry in api.creates] == ["Cooking"]
+    assert api.renames == [], "createForumTopic carried the title; a rename would be policing"
+    assert api.names[api.next_topic_id] == "Cooking"
+
+
+@pytest.mark.asyncio
+async def test_nothing_after_the_bind_renames_the_channel_again_tg105(
+    service: TopicService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """Naming once is ownership; naming again is policing, and the failure is silent.
+
+    A human who renames the channel has made a decision and TG-78's original instinct holds from
+    that moment. Without this, their chosen title reverts on a schedule they cannot see — on the
+    next message, or on a restart.
+    """
+    bot = await topical(service, store, api)
+    await say(bot, f"/channels {COOKING}", topic_id=HUMAN_TOPIC)
+    api.journal.clear()
+
+    await say(bot, "where does the steak note go?", topic_id=HUMAN_TOPIC)
+    await say(bot, f"/channels {COOKING}", topic_id=HUMAN_TOPIC)
+    await boot(bot)
+
+    assert api.renames == [], "an ordinary message, a second /channels and a restart rename nothing"
+    assert api.creates == [], "TG-77's pointer still creates nothing"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_rename_leaves_the_channel_bound_and_says_so_tg106(
+    service: TopicService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """The bind is the thing the human asked for and it must survive the rename failing.
+
+    The durable write runs first, so this is a channel that works. Rolling the bind back would
+    answer the one recovery path for a lost database (F-5) with nothing, and reporting the rename as
+    done would leave the human reading *New Chat* under a line claiming the topic is called
+    *Cooking* — after which the next thing they doubt is the binding.
+    """
+    api.rename_error = TelegramError("editForumTopic", 500, "Internal Server Error")
+    bot = await topical(service, store, api)
+
+    await say(bot, f"/channels {COOKING}", topic_id=HUMAN_TOPIC)
+
+    assert dict(await store.channels(CHAT)) == {HUMAN_TOPIC: COOKING}, "the binding stands"
+    assert api.texts[-1] == (
+        "Bound this topic to topic/cooking. Anything you send here from now on goes to that "
+        "expert.\n"
+        "I could not name it Cooking: editForumTopic failed: 500 Internal Server Error\n"
+        "The binding stands. You can rename the topic yourself."
+    )
+    assert "named it" not in api.texts[-1], "a reply that claims the name is a reply that lies"
+
+
+@pytest.mark.asyncio
+async def test_a_rename_that_names_a_dead_topic_never_repairs_tg106(
+    service: TopicService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """A rename delivers nothing, so its failure is not TG-83's trigger and must not reach it.
+
+    Repairing here would give an agent a second channel one line after it got its first — TG-77's
+    split history, produced by the fix for a missing title — and it would be the second recovery
+    path §11.5 refuses. The reply carries the reason and the bot stops there.
+    """
+    api.rename_error = TelegramError("editForumTopic", 400, "Bad Request: message thread not found")
+    bot = await topical(service, store, api)
+
+    await say(bot, f"/channels {COOKING}", topic_id=HUMAN_TOPIC)
+
+    assert api.creates == [], "a failed rename never recreates a topic"
+    assert dict(await store.channels(CHAT)) == {HUMAN_TOPIC: COOKING}
+    assert bot._route_out(Channel(CHAT, HUMAN_TOPIC), COOKING) == Channel(CHAT, HUMAN_TOPIC), (
+        "no channel was marked dead by a call that delivered nothing"
+    )
+    assert "message thread not found" in api.texts[-1]
+
+
+@pytest.mark.asyncio
+async def test_a_rename_that_answers_for_a_deleted_topic_proves_nothing_tg106(
+    service: TopicService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """F-13's shape: one method of this API answers ``ok: true`` for a topic Telegram deleted.
+
+    So a rename that answers is not evidence the topic is alive, and nothing is recorded from it.
+    The **send** under it is what finds the deletion, exactly as TG-102 says, and the repair that
+    runs is TG-83's, reached from the send it has always been reached from. The journal order is the
+    assertion: rename, then send, then create. A build that read the rename's answer as a liveness
+    check would produce the same three calls in the wrong order, or skip the repair outright.
+    """
+    bot = await topical(service, store, api)
+    api.missing_thread_errors = True
+    api.delete_topic(HUMAN_TOPIC)
+
+    await say(bot, f"/channels {COOKING}", topic_id=HUMAN_TOPIC)
+
+    assert api.renames == [{"chat_id": CHAT, "topic_id": HUMAN_TOPIC, "name": "Cooking"}]
+    order = [kind for kind, _ in api.journal if kind in {"edit_forum_topic", "create_forum_topic"}]
+    assert order == ["edit_forum_topic", "create_forum_topic"], "the send found it, not the rename"
+    assert len(api.creates) == 1, "one repair, from TG-83, and none from the rename"
+
+
+@pytest.mark.asyncio
+async def test_two_binds_of_one_agent_at_once_name_one_topic_tg105(
+    service: TopicService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """The fourth check-then-act in this file would be the rename, so it gets the same test.
+
+    Three have shipped here already: the deleted-topic repair, two picker presses making two topics,
+    and two concurrent ``/channels`` for one agent. The bind reads the directory, writes the row and
+    then renames, which is a decision carried across three awaits. Both callers taking the bind
+    branch would name two topics for one agent and leave the second row's write to the unique index,
+    so the human would read *Cooking* on a topic nothing routes to.
+
+    :attr:`_creations` is what makes this one caller, and the second caller answers with TG-77's
+    pointer because it reads the directory the first one wrote.
+    """
+    bot = await topical(service, store, api)
+
+    await asyncio.gather(
+        bot._dispatch(message_update(1, topic_id=HUMAN_TOPIC, text=f"/channels {COOKING}")),
+        bot._dispatch(message_update(2, topic_id=HUMAN_TOPIC + 1, text=f"/channels {COOKING}")),
+    )
+
+    assert api.renames == [{"chat_id": CHAT, "topic_id": HUMAN_TOPIC, "name": "Cooking"}]
+    assert api.creates == [], "the second caller creates nothing, so it names nothing"
+    assert dict(await store.channels(CHAT)) == {HUMAN_TOPIC: COOKING}
+
+
+@pytest.mark.asyncio
+async def test_a_stranger_cannot_name_a_topic_tg105(
+    service: TopicService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """The rename is a write to the human's chat, so it sits behind the one boundary this layer has.
+
+    ``editForumTopic`` changes something every client displays, and the allow-list (TG-20, decision
+    X) is the only authentication in the deployment. A stranger who found the bot's username could
+    otherwise retitle the human's topics one command at a time, and nothing in the chat would say who
+    did it.
+    """
+    bot = await topical(service, store, api)
+
+    await say(bot, f"/channels {COOKING}", topic_id=HUMAN_TOPIC, sender=STRANGER)
+
+    assert api.renames == []
+    assert dict(await store.channels(CHAT)) == {}
 
 
 # --------------------------------------------------------------------------------------

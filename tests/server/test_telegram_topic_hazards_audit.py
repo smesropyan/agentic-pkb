@@ -106,6 +106,12 @@ class AuditBotApi:
         self.topics.setdefault(chat_id, set()).add(self.next_topic_id)
         return {"message_thread_id": self.next_topic_id, "name": name}
 
+    async def edit_forum_topic(self, chat_id: int, topic_id: int, name: str) -> None:
+        """TG-105. Present because every fake implements every method, and never reached here."""
+        self.journal.append(
+            ("edit_forum_topic", {"chat_id": chat_id, "topic_id": topic_id, "name": name})
+        )
+
     async def send_message(
         self,
         chat_id: int,

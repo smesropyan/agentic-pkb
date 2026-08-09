@@ -6,9 +6,12 @@ SV-1, SV-10, SV-18, SV-22 and SV-25 — the isolation would switch off the check
 transport. Executed both ways to confirm it.
 
 Everything here is behind :class:`BotApi` so the adapter, which holds every rule, can be driven
-against a fake with no socket and no token. Eight methods is the whole surface — the eighth,
+against a fake with no socket and no token. Nine methods is the whole surface. The eighth,
 :meth:`HttpBotApi.create_forum_topic`, arrived with topics (TG-78) and is the only call in the
-package that creates anything on Telegram's side.
+package that creates anything on Telegram's side. The ninth,
+:meth:`HttpBotApi.edit_forum_topic`, is the only call that changes anything the human can see
+besides a message, and it runs once per channel, at the moment the bot takes a topic as one
+(TG-78 amended, TG-105).
 
 Five details are measured against the real API rather than recalled, and each is a silent failure:
 
@@ -216,7 +219,7 @@ def landed_topic_id(message: Mapping[str, Any]) -> int:
 
 
 class BotApi(Protocol):
-    """The eight calls the adapter makes. A Protocol so every rule above it tests against a fake.
+    """The nine calls the adapter makes. A Protocol so every rule above it tests against a fake.
 
     ``edit_message`` and ``clear_keyboard`` are two methods rather than one because they map to two
     Telegram methods with different blast radii (TG-63, TG-67): one rewrites the text, the other
@@ -228,11 +231,14 @@ class BotApi(Protocol):
     assumption is the opposite, and acting on it puts an unknown parameter on the one call that
     disarms an irreversible button.
 
-    Nothing that **changes** a topic is on this Protocol and nothing will be (TG-78, decision AD):
-    no ``edit_forum_topic``, ``close_forum_topic``, ``reopen_forum_topic``, ``delete_forum_topic``,
-    ``unpin_all_forum_topic_messages`` — and no ``delete_message``. Every method here has to be
-    implemented by every fake in the suite, and a bot that tidies the human's chat destroys the only
-    surviving record of what they approved on a system with no undo (D6).
+    **One method changes a topic and it is the last one that will** (TG-78 amended, TG-105):
+    :meth:`edit_forum_topic`, called once per channel, at the moment the bot takes a topic as one.
+    ``close_forum_topic``, ``reopen_forum_topic``, ``delete_forum_topic``,
+    ``unpin_all_forum_topic_messages`` and ``delete_message`` stay off, for TG-78's original reason.
+    Every method here has to be implemented by every fake in the suite, and a bot that tidies the
+    human's chat destroys the only surviving record of what they approved on a system with no undo
+    (D6). Naming a channel is the opposite act: it writes the expert's name onto the surface
+    decision AE points at when it prints no name on an ordinary reply.
     """
 
     async def get_me(self) -> Mapping[str, Any]:
@@ -259,6 +265,21 @@ class BotApi(Protocol):
 
         The one creation path in the layer (TG-76): never at startup, never when the catalog gains
         an agent, only in answer to a human's ``/channels``.
+        """
+        ...
+
+    async def edit_forum_topic(self, chat_id: int, topic_id: int, name: str) -> None:
+        """Name a topic the bot has taken as a channel (TG-78 amended, TG-105, TG-106).
+
+        ``name`` and nothing else beside the address: no ``icon_custom_emoji_id``, for the reason
+        :meth:`create_forum_topic` carries no ``icon_color``.
+
+        **This returns nothing, and the absence is the rule.** Telegram answers ``True`` here, and
+        the layer above may act on neither that answer nor its absence: F-13 measured
+        ``sendChatAction`` answering ``ok: true`` for a topic Telegram had deleted, so no method of
+        this API is a liveness probe (TG-102). A caller handed the result would eventually read it
+        as one. A failure raises :class:`TelegramError` the way every call here does, and TG-106
+        rules what the adapter may do with it: report it, and nothing else.
         """
         ...
 
@@ -428,6 +449,25 @@ class HttpBotApi:
             await self._call(
                 "createForumTopic", {"chat_id": chat_id, "name": name[:TOPIC_NAME_LIMIT]}
             )
+        )
+
+    async def edit_forum_topic(self, chat_id: int, topic_id: int, name: str) -> None:
+        """TG-78 (amended), TG-105. The one call here that changes a topic the human can see.
+
+        Truncated at :data:`TOPIC_NAME_LIMIT` exactly as the creation is, and for a sharper reason:
+        the caller has already written the durable row, so a 400 on the length of a catalog title
+        would leave a bound channel that this call promised to name and did not.
+
+        The result is dropped rather than returned (TG-102, TG-106): Telegram answers ``True``, and
+        an answer this layer may not act on is one no caller should be handed.
+        """
+        await self._call(
+            "editForumTopic",
+            {
+                "chat_id": chat_id,
+                "message_thread_id": topic_id,
+                "name": name[:TOPIC_NAME_LIMIT],
+            },
         )
 
     async def get_updates(
