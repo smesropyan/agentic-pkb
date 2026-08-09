@@ -109,6 +109,12 @@ class FakeRuntime:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
         self.script: list[AgentEvent] = []
+        self.started: list[tuple[str, str]] = []
+        """``(agent_id, thread_id)`` per :meth:`run`, so a test can assert **zero** runs (SV-12).
+
+        A refusal that arrives after the graph has already been invoked is not a refusal — the turn
+        has written by then, and this knowledge base has no undo (D6)."""
+
         self.pending: ApprovalRequest | None = None
         self.messages: tuple[MessageView, ...] = ()
         self.deleted: list[str] = []
@@ -126,6 +132,7 @@ class FakeRuntime:
         approval_mode: ApprovalMode = "interactive",
         run_id: str | None = None,
     ) -> AsyncIterator[AgentEvent]:
+        self.started.append((agent_id, thread_id))
         for event in self.script:
             yield event
 
@@ -337,12 +344,61 @@ async def test_a_derived_thread_with_no_row_still_resolves_sv12(tmp_path: Path) 
     fan-out and the insert, a row deleted, a client that only ever saw the id in a merged reply. If
     resolution needed the row, that thread would become unopenable and any approval parked in its
     checkpoint would be unreachable from every channel.
+
+    The **parent** row is here on purpose (SV-12 amended 2026-08-09): it is what says the routing
+    happened, and it is always there in the real case because ``create_thread`` wrote it before the
+    fan-out could derive anything from it. Only the derived row is missing, which is the case this
+    rule is about.
     """
     async with thread_store(tmp_path / "pkb.sqlite") as store:
-        derived = store.derived_id(mint_thread_id(), GRILLING)
+        parent = mint_thread_id()
+        await store.create(parent, LIBRARIAN, title=None, origin_channel="tui")
+        derived = store.derived_id(parent, GRILLING)
 
         assert await store.get(derived) is None
         assert await store.resolve_agent(derived) == GRILLING
+
+
+@pytest.mark.asyncio
+async def test_a_derived_id_whose_parent_never_existed_is_refused_sv12(tmp_path: Path) -> None:
+    """A ``<uuid4>::<agent-id>`` anyone can type is not a conversation, and opening it forges one.
+
+    Executed against the shipped build: ``POST /threads/<fresh-uuid4>::topic/cooking/runs`` answered
+    **200** with a full event stream, ran a real expert turn against a checkpoint nothing had ever
+    written, and left a permanent ``kind:"routed"`` row whose ``parent_thread_id`` 404s — an orphan
+    ``/threads`` lists forever and no cascade deletes, because ``delete_cascade`` reaches children
+    from a parent that does not exist.
+
+    The distinction that keeps SV-12 intact: a *lost row* is recoverable because the checkpoint is
+    still the authority and there is something to recover. A fabricated parent has no checkpoint and
+    never had one, so self-registering it is not repair — it is creation, from a string.
+    """
+    async with thread_store(tmp_path / "pkb.sqlite") as store:
+        forged = store.derived_id(mint_thread_id(), GRILLING)
+
+        with pytest.raises(UnknownThreadError):
+            await store.resolve_agent(forged)
+        assert await store.get(forged) is None
+        assert await store.list_threads() == []
+
+
+@pytest.mark.asyncio
+async def test_a_run_on_a_forged_derived_id_starts_nothing_sv12(tmp_path: Path) -> None:
+    """The refusal has to land **before** the graph runs, not merely before the row is written.
+
+    An expert turn writes into the tree and there is no undo (D6), so a 404 that arrives after the
+    run has streamed is a 404 about work that already happened. This drives the service path the
+    HTTP route calls, and asserts the two things that must both be zero.
+    """
+    runtime = FakeRuntime(tmp_path / "pkb.sqlite")
+    async with service_over(tmp_path / "pkb.sqlite", runtime) as (service, store):
+        forged = store.derived_id(mint_thread_id(), COOKING)
+
+        with pytest.raises(UnknownThreadError):
+            await service.start_run(forged, "file this under Cooking")
+
+        assert runtime.started == []
+        assert await store.list_threads() == []
 
 
 @pytest.mark.asyncio

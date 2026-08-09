@@ -19,9 +19,10 @@ statement, and that is the whole answer to "what breaks under concurrent access"
 
 **The row is an index for discovery, never the authority on existence** (SV-12). The checkpoint is
 the authority. A derived ``<parent>::<agent-id>`` thread is openable, runnable and resumable from
-its id alone with no row at all; touching one registers the row as a side effect. That asymmetry is
-what stops a missing row from hiding a pending approval — the one failure arch §8 promises cannot
-happen.
+its id alone with no row of its own — **provided its parent is a thread that exists** (SV-12 amended
+2026-08-09) — and touching one registers the row as a side effect. That asymmetry is what stops a
+missing row from hiding a pending approval, the one failure arch §8 promises cannot happen; the
+parent condition is what stops a fabricated id from manufacturing one.
 
 What is *not* here is as deliberate as what is: no ``parent_thread_id`` column and no ``kind``
 column. Both are pure functions of the thread id (LB-14), and a cached parentage column is a second
@@ -46,6 +47,7 @@ from pkb.contracts import (
     agent_for_thread,
     expert_thread_id,
     is_scan_thread,
+    librarian_thread_id,
 )
 from pkb.service import Thread
 
@@ -363,6 +365,20 @@ class ThreadStore:
         still open, run and resume it. The table answers only for a minted ``uuid4``, which carries
         no agent in its own name.
 
+        **But the parent has to exist** (SV-12 amended 2026-08-09). ``<parent>::<agent-id>`` is
+        openable, runnable, resumable and self-registering *only when ``<parent>`` is a thread that
+        is there*; otherwise the id names no conversation and this raises. Measured before the
+        amendment: ``POST /threads/<fresh-uuid4>::topic/cooking/runs`` answered **200** with a full
+        event stream, ran a real expert turn against a checkpoint nothing had ever written, and left
+        a permanent ``kind:"routed"`` row whose ``parent_thread_id`` 404s. SV-12's own reasoning —
+        the row is an index for discovery and the checkpoint is the authority — is about a thread
+        the fan-out really created and whose row was lost. A derived id whose parent never existed
+        has no checkpoint and never had one: nothing was lost, so there is nothing to recover, and
+        self-registering it manufactures an orphan that ``/threads`` lists forever and that no
+        cascade will ever delete (``delete_cascade`` reaches children from a parent that is gone).
+        The real case is untouched, because after a fan-out ``create_thread`` made the parent row
+        before the derivation existed.
+
         A ``scan:`` thread refuses outright rather than resolving: it is machine bookkeeping whose
         context must never enter a human conversation (RT-58, SV-13).
         """
@@ -370,6 +386,13 @@ class ThreadStore:
             raise UnknownThreadError(f"{thread_id!r} is a maintenance thread and cannot be opened")
         by_shape = agent_for_thread(thread_id)
         if by_shape is not None:
+            parent = librarian_thread_id(thread_id)
+            if parent is not None and await self.get(parent) is None:
+                raise UnknownThreadError(
+                    f"no thread {parent!r}, so {thread_id!r} names no conversation: a derived "
+                    f"thread is the record of a routing that happened, and its parent is what says "
+                    f"it did"
+                )
             return by_shape
         row = await self.get(thread_id)
         if row is None:

@@ -30,6 +30,16 @@ protected are in one place and the file that remains names no credential at all.
 Neither telegram module may read either — they cannot even import ``os`` without failing the built
 SV-22 scan — and neither may read the knowledge base, because deployment configuration living in KB
 content would let an agent's own write change which agent a chat talks to.
+
+**Topics add no configuration, and that is a ruling rather than an omission** (§9, TG-75, TG-76).
+The file keeps its one key: ``chats``, now naming the agent of each chat's *General* area (TG-73).
+Whether the bot may use topics at all is not ours to declare — it is ``getMe.has_topics_enabled``,
+a BotFather toggle the adapter probes once at startup — and which topics exist is not ours either:
+a topic id is minted by Telegram, invisible in every client and unenumerable afterwards, so the
+human expresses that decision by typing ``/channels`` and the id lands in the bot's own directory
+(decision AB). What this module does about topics is therefore exactly two things: warn when a
+chat's General is not the Librarian (:func:`_warn_general_not_librarian`), and seed ``/health`` from
+that directory before the bot makes its first request (:func:`_seed_channel_agents`).
 """
 
 from __future__ import annotations
@@ -42,6 +52,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
+from pkb.contracts import LIBRARIAN_AGENT_ID
 from pkb.server.app import ServerConfig, create_app
 from pkb.server.health import HealthState, SubsystemState
 from pkb.server.telegram import TelegramConfig
@@ -49,6 +60,8 @@ from pkb.server.telegram_api import shield_credentialed_http_logs
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from fastapi import FastAPI
+
+    from pkb.service.telegram import TelegramStore
 
 __all__ = [
     "DEFAULT_ENV_FILE",
@@ -170,6 +183,9 @@ def build_app(
         # commit nothing did — `_telegram_task` existed and was never called, so the bot could not
         # start through the daemon by any path while every direct-drive test passed.
         _describe_telegram(health.telegram, telegram)
+        # TG-73. Configuration, so it is knowable here and nowhere earlier, and it is said once at
+        # startup rather than in the chat (Q29).
+        _warn_general_not_librarian(telegram)
         # TG-16. `HttpBotApi` installs this itself, but here it lands *before* the supervised task
         # ever builds one — and the first thing that task does is a credentialed request. Wiring
         # time is the only moment guaranteed to precede every client in the process.
@@ -194,11 +210,41 @@ def _describe_telegram(block: SubsystemState, config: TelegramConfig) -> None:
     it is crash-looping or cancelled — which is exactly when a human reads ``/health``. Computing
     them inside the bot would make the answer disappear at the only moment anybody wants it.
 
-    ``agents`` is the **distinct** set the mapping names, never a count: two chats may address one
-    expert (TG-25), so a length comparison would report a phantom unmapped agent.
+    ``agents`` is the **distinct** set the mapping names, never a count: two channels may address one
+    expert (TG-25), so a length comparison would report a phantom unmapped agent. Since topics it is
+    only the *configured* half of the answer — each chat's General (TG-73) — and the channel
+    directory's half is unioned in by :func:`_seed_channel_agents` once the store is open (TG-11).
     """
     block.chats = len(config.chats)
     block.agents = frozenset(config.chats.values())
+
+
+def _warn_general_not_librarian(config: TelegramConfig) -> None:
+    """Say once, at startup, when a chat's General names an expert rather than the Librarian (TG-73).
+
+    General is the part of a private chat that carries no ``message_thread_id``, and it is the **only
+    channel whose title names no agent** — every other one is a topic with the expert's title above
+    the keyboard. So it is the single place TG-1's "which expert am I talking to?" ambiguity can
+    survive topics, and the Librarian is the one agent for which that ambiguity is harmless, because
+    routing is what it does.
+
+    A warning rather than a rule, deliberately (decision Z): today's deployments map their one chat
+    to whatever agent they wanted on their phone, frequently one expert, and refusing to start would
+    break every one of them at upgrade for a stylistic gain. Q29 keeps it out of the chat too — a
+    per-start notice on a daemon that stays up for weeks is either invisible or, under a restart
+    loop, spam — so this line and that channel's own ``/agents`` output are where it shows.
+    """
+    for chat_id, agent_id in sorted(config.chats.items()):
+        if agent_id != LIBRARIAN_AGENT_ID:
+            _log.warning(
+                "telegram chat %d has %r in its General area rather than %r: messages sent outside "
+                "a topic go to that expert, and General is the one channel whose title does not say "
+                "so — `/agents` there names it, and `/channels %s` gives it a topic of its own",
+                chat_id,
+                agent_id,
+                LIBRARIAN_AGENT_ID,
+                agent_id,
+            )
 
 
 def _telegram_task(
@@ -240,10 +286,12 @@ def _telegram_task(
         connection = state.get("connection")
         if connection is None:  # pragma: no cover - the lifespan opens it before workers start
             raise RuntimeError("Layer 3's SQLite connection is not open")
+        store = SqliteTelegramStore(connection)
+        await _seed_channel_agents(store, health)
         async with HttpBotApi(token=config.token) as api:
             adapter = TelegramAdapter(
                 service=service,
-                store=SqliteTelegramStore(connection),
+                store=store,
                 api=api,
                 config=config,
                 health=health,
@@ -251,6 +299,30 @@ def _telegram_task(
             await adapter.run()
 
     return start
+
+
+async def _seed_channel_agents(store: TelegramStore, block: SubsystemState) -> None:
+    """Union the channel directory's agents into ``/health`` before the bot says a word (TG-11).
+
+    ``health.telegram.agents`` is what the ``/health`` endpoint subtracts from the catalog to answer
+    *"which topics are unreachable from my phone"* (``unmapped_agents``, ``app.py``). Before topics
+    the whole answer was configuration and :func:`_describe_telegram` had it at wiring time. Now half
+    of it is a table the human filled with ``/channels`` — a topic id is minted by Telegram, invisible
+    in every client and unenumerable afterwards (F-5), so the directory is the only record that
+    ``topic/cooking`` is reachable at all.
+
+    **Read here rather than in the adapter**, and that placement is the whole of TG-11's stated
+    property: the seed happens once, before the first credentialed request, so a bot that then
+    crash-loops on a revoked token still serves a correct ``unmapped_agents`` — which is exactly the
+    moment somebody is reading ``/health``. The adapter adds to the set on every create (TG-77); it
+    never needs to rebuild it.
+
+    ``setup()`` is called first because the tables may not exist yet on a fresh deployment and this
+    is the earliest reader. It is idempotent and additive (TG-28), and the adapter calls it again at
+    the top of its own run.
+    """
+    await store.setup()
+    block.agents = block.agents | await store.channel_agents()
 
 
 def telegram_config_path(db_path: Path) -> Path:

@@ -11,9 +11,10 @@ What is faked and what is not:
 * **real** — `build_app`, `create_app`, the lifespan, `_start_workers`, `_supervise`, `/health`,
   the config loader, the logging filter. Those are the wiring under test.
 * **faked** — `open_service` (a stub service, so no runtime, no model, no SQLite), `HttpBotApi`
-  and `TelegramAdapter` (so nothing opens a socket to `api.telegram.org`). The fakes are
-  substituted on the modules `_telegram_task` imports *inside* its body, which is where the daemon
-  actually resolves them.
+  and `TelegramAdapter` (so nothing opens a socket to `api.telegram.org`), and
+  `SqliteTelegramStore` (so the TG-11 seed of the channel directory needs no database). The fakes
+  are substituted on the modules `_telegram_task` imports *inside* its body, which is where the
+  daemon actually resolves them.
 
 Nothing here writes under a `kb_root` (I3, TG-71) and nothing here needs a bot token that is real.
 
@@ -55,7 +56,7 @@ from pkb.daemon import (
 )
 from pkb.server.telegram import TelegramAdapter as RealTelegramAdapter
 from pkb.server.telegram import TelegramConfig
-from tests.server.stub import COOKING, LIBRARIAN, StubService
+from tests.server.stub import COOKING, GRILLING, LIBRARIAN, StubService
 
 BASE_URL = "http://127.0.0.1:8000"
 """A ``Host`` header with a port — the MCP mount rejects a portless one before any route runs."""
@@ -135,6 +136,34 @@ STARTED: list[FakeAdapter] = []
 """Every adapter the daemon actually constructed and ran, in order."""
 
 
+DIRECTORY: set[str] = set()
+"""The channel directory's agents, as :class:`FakeStore` reports them (TG-11, TG-77).
+
+Module level and cleared by ``wiring`` for the same reason ``STARTED`` is: the daemon builds the
+store inside the supervised closure, so a test can only reach it through what the closure imports.
+"""
+
+
+@dataclass
+class FakeStore:
+    """``SqliteTelegramStore``'s two startup methods, and nothing else (TG-11).
+
+    The daemon now reads the channel directory *itself*, before the adapter runs, because
+    ``unmapped_agents`` has to stay right while the bot is crash-looping — which is exactly when
+    somebody reads ``/health``. So the sentinel connection is no longer enough on its own: something
+    has to answer ``setup()`` and ``channel_agents()`` without a real SQLite file behind it.
+    """
+
+    connection: Any
+    setups: int = 0
+
+    async def setup(self) -> None:
+        self.setups += 1
+
+    async def channel_agents(self) -> frozenset[str]:
+        return frozenset(DIRECTORY)
+
+
 async def _forever() -> None:
 
     await asyncio.Event().wait()
@@ -142,12 +171,15 @@ async def _forever() -> None:
 
 @pytest.fixture(autouse=True)
 def wiring(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[FakeAdapter]]:
-    """Substitute the three things the closure imports, and clear the record between tests."""
+    """Substitute the things the closure imports, and clear the record between tests."""
     STARTED.clear()
+    DIRECTORY.clear()
     monkeypatch.setattr("pkb.server.telegram.TelegramAdapter", FakeAdapter)
     monkeypatch.setattr("pkb.server.telegram_api.HttpBotApi", FakeBotApi)
+    monkeypatch.setattr("pkb.service.telegram.SqliteTelegramStore", FakeStore)
     yield STARTED
     STARTED.clear()
+    DIRECTORY.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -198,8 +230,9 @@ def pristine_http_loggers() -> Iterator[None]:
 @pytest.fixture
 def service() -> StubService:
     stub = StubService()
-    # Layer 3's SQLite connection, which `_telegram_task` refuses to start without. The fake store
-    # never touches it, so a sentinel is enough to prove the closure looked for it.
+    # Layer 3's SQLite connection, which `_telegram_task` refuses to start without. Neither the
+    # fake store nor the fake adapter touches it, so a sentinel is enough to prove the closure
+    # looked for it.
     stub.connection = object()  # type: ignore[attr-defined]
     return stub
 
@@ -402,6 +435,59 @@ def test_health_names_the_agents_no_chat_can_reach_tg11(
     unmapped = set(payload["telegram"]["unmapped_agents"])
     assert COOKING not in unmapped
     assert LIBRARIAN in unmapped
+
+
+def test_health_counts_an_agent_the_channel_directory_reaches_as_mapped_tg11(
+    tmp_path: Path, opened: StubService
+) -> None:
+    """Half the answer is now a table the human filled with ``/channels``, not the config file.
+
+    Since topics, ``chats`` names only each chat's General (TG-73); every other channel is a row in
+    ``pkb_telegram_channels``, because a topic id is minted by Telegram, invisible in every client
+    and unenumerable afterwards — the directory is the only record that ``topic/cooking/grilling``
+    is reachable at all. Without the seed, an agent the human gave a topic to yesterday is listed as
+    unreachable today, which reads as the bot having lost it and invites a second ``/channels``.
+
+    Seeded **here**, in the composition root, rather than in the adapter: that is what keeps TG-11's
+    stated property true, since the answer has to survive a bot that is crash-looping on a revoked
+    token.
+    """
+    DIRECTORY.add(GRILLING)
+    app = app_for(tmp_path, enabled_config(chats={CHAT: LIBRARIAN}))
+
+    with TestClient(app, base_url=BASE_URL) as client:
+        running_adapter()  # the seed happens in the closure, before the adapter is constructed
+        payload = client.get("/health").json()
+
+    unmapped = set(payload["telegram"]["unmapped_agents"])
+    assert GRILLING not in unmapped
+    assert LIBRARIAN not in unmapped
+    assert COOKING in unmapped
+
+
+def test_a_general_area_that_is_not_the_librarian_is_warned_about_at_startup_tg73(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """General is the one channel whose title names no agent, so it is the one that must be said.
+
+    Every topic carries its expert's title above the keyboard; General carries the word *"General"*.
+    So it is the single place TG-1's "which expert am I talking to?" ambiguity survives topics, and
+    a human whose General quietly answers as Cooking finds out by having a note filed somewhere they
+    did not choose — into a tree with no undo (D6).
+
+    A warning and not a refusal (decision Z): every deployment that exists today maps its one chat
+    to whatever agent it wanted on the phone, frequently one expert, and refusing to start would
+    break all of them at upgrade for a stylistic gain. The Librarian chat is asserted silent because
+    a warning that fires for the correct configuration is one nobody reads.
+    """
+    with caplog.at_level(logging.WARNING, logger="pkb.daemon"):
+        app_for(tmp_path, enabled_config(chats={CHAT: COOKING, OTHER_CHAT: LIBRARIAN}))
+
+    warnings = [
+        record.getMessage() for record in caplog.records if record.levelno >= logging.WARNING
+    ]
+    assert sum(COOKING in message for message in warnings) == 1
+    assert not any(str(OTHER_CHAT) in message for message in warnings)
 
 
 # --------------------------------------------------------------------------------------
@@ -667,14 +753,20 @@ async def admits(config: TelegramConfig, *, sender: int, chat_id: int = CHAT) ->
     """Put one private message through the **real** adapter's admission check (TG-19, TG-20).
 
     ``RealTelegramAdapter`` is bound at import time, before the ``wiring`` fixture replaces the
-    module attribute, so this is the shipped ``_admit`` rather than a restatement of it in the
-    test. Nothing here opens a socket: ``_admit`` reads the config and, only for an unmapped chat,
-    the in-memory outbox — which is why the three collaborators can be ``None``.
+    module attribute, so this is the shipped check rather than a restatement of it in the test.
+    Nothing here opens a socket: the check reads the config and nothing else, which is why the three
+    collaborators can be ``None``.
+
+    Who is admitted and where a message goes were one method (``_admit``) and are now two —
+    ``_sender_ok`` and ``_route`` (TG-72, TG-95): a channel changed what a message is addressed
+    *to*, and deliberately not who may say yes. This helper drives the first, and answers with the
+    chat's General agent when the sender passes, so the assertions below read as they always did.
     """
     bot = RealTelegramAdapter(
         service=cast(Any, None), store=cast(Any, None), api=cast(Any, None), config=config
     )
-    return await bot._admit({"chat": {"id": chat_id, "type": "private"}, "from": {"id": sender}})
+    message = {"chat": {"id": chat_id, "type": "private"}, "from": {"id": sender}}
+    return config.chats.get(chat_id) if bot._sender_ok(message) else None
 
 
 @pytest.mark.parametrize(

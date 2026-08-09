@@ -263,7 +263,8 @@ Against the empty tree above, verbatim:
     "flush": {"last_report_at": "2026-08-09T02:36:53Z", "findings": 0},
     "telegram": {"enabled": false, "state": "disabled", "restarts": 0, "last_error": null,
                  "last_error_at": null, "started_at": null, "chats": 0, "last_poll_ok_at": null,
-                 "last_send_error": null, "invalid_chats": [], "unmapped_agents": ["librarian"]},
+                 "last_send_error": null, "invalid_chats": [], "topics_enabled": false,
+                 "channels": 0, "retired_channels": [], "unmapped_agents": ["librarian"]},
     "mcp": {"mounted": true, "sessions": 0}
 }
 ```
@@ -1020,12 +1021,14 @@ A chat with a bot. One of your experts files whatever you send. The daemon owns 
 approval it asks for is a pair of buttons you can press hours later, from anywhere.
 
 **→ [`telegram.md`](telegram.md)**: ten minutes, start to finish. It covers how to create the bot,
-the two secrets, the chat-to-agent mapping, the five commands, and its own symptom-first
-troubleshooting.
+the two secrets, the chat-to-agent mapping, a topic per expert, the six commands, and its own
+symptom-first troubleshooting.
 
-Two things to know before you read it. **One human with one bot gets one chat, and therefore one
-agent.** Map it to `librarian`, which is the only way one chat reaches the whole tree. The owner
-allow-list is the **only** authentication boundary in the system.
+Two things to know before you read it. **One human with one bot gets one chat, and that chat holds
+one conversation per expert**: a Telegram topic each, once you turn on BotFather's Threaded Mode and
+ask for them. The mapping file names the expert for the part outside every topic. Map that to
+`librarian`, the one agent that reaches the whole tree by routing. The owner allow-list is the
+**only** authentication boundary in the system.
 
 This guide ran nothing against Telegram.
 

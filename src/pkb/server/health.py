@@ -93,16 +93,29 @@ class SubsystemState:
 
     chats: int = 0
     """How many chats the deployment mapping names (TG-11). Set by the composition root from the
-    config it loads; the bot never mutates the mapping (TG-17), so this never changes at runtime."""
+    config it loads; the bot never mutates the mapping (TG-17), so this never changes at runtime.
+
+    Still **chats**, not channels, and the distinction is the point since topics: one chat holds one
+    General plus every topic the human asked for, so this counts the human-configured file's lines
+    and :attr:`channels` counts what the bot was asked to create beside them."""
 
     agents: frozenset[str] = frozenset()
-    """The **distinct** agent ids that mapping names (TG-11, TG-25).
+    """Every agent id reachable from Telegram — the mapping's values **union the channel directory's**
+    (TG-11, amended 2026-08-09 by TG-72/TG-77).
 
-    A set rather than a count, because two chats may legitimately map to one agent: the answer to
+    A set rather than a count, because two channels may legitimately address one agent: the answer to
     "which topics are unreachable from my phone" is a set difference against the catalog, and a
     length comparison would call a healthy two-chat deployment complete while a topic sits
     unreachable. It is deliberately **not** in :meth:`payload` — ``/health`` publishes the
-    difference (``unmapped_agents``), which is the part a human can act on."""
+    difference (``unmapped_agents``), which is the part a human can act on.
+
+    Since topics, the mapping is only half the answer: ``config.chats[chat_id]`` names the agent of
+    each chat's General (TG-73) and every *other* channel is a row in ``pkb_telegram_channels``,
+    which the human created with ``/channels`` and the daemon knows only by reading the store. So the
+    composition root seeds this from ``store.channel_agents()`` at wiring time and the adapter adds
+    to it on every create. Seeding in the daemon rather than in the bot is the whole of TG-11's
+    stated property: the answer stays correct while the bot is crash-looping, which is exactly when
+    somebody reads ``/health``."""
 
     last_poll_ok_at: str | None = None
     """When ``getUpdates`` last returned (TG-12). Written by the adapter, never by the supervisor.
@@ -124,6 +137,43 @@ class SubsystemState:
     one, and the bad entry subtracted nothing from ``unmapped_agents`` either. Like
     :attr:`last_send_error` it never changes :attr:`~HealthState.status`: the subsystem is running,
     one line of configuration is wrong."""
+
+    topics_enabled: bool = False
+    """Whether this bot may use topics in a private chat — ``getMe.has_topics_enabled`` (TG-75).
+
+    **``False`` is the correct default and the correct answer for most deployments**: Threaded Mode
+    is a per-bot BotFather toggle that is off until a human flips it, and with it off the adapter
+    behaves byte-identically to the pre-topics build — no ``message_thread_id`` on any send, no
+    ``createForumTopic``, no directory writes. Probed once at startup and re-probed only on a
+    restart, so it is a fact about the deployment rather than a per-send question.
+
+    Published because it is the first thing to look at when ``/channels`` answers "turn on Threaded
+    Mode" and the human is certain they already did: the toggle and the daemon's belief about it are
+    two different things, and only one of them is visible in BotFather."""
+
+    channels: int = 0
+    """How many channels the directory holds — ``pkb_telegram_channels`` (TG-77).
+
+    A count, not a set, because the *identities* already reach ``/health`` through :attr:`agents`
+    and the difference (``unmapped_agents``) is what a human acts on. What the count adds is the
+    other direction: a directory of zero with topics enabled says nobody has run ``/channels`` yet,
+    which is a different problem from a directory of twelve where one agent is missing."""
+
+    retired_channels: tuple[str, ...] = ()
+    """Agent ids whose channel no longer routes, and why it is reported rather than repaired.
+
+    Two things retire a channel and both are reported here, because to a human they are one
+    question — *"why is Grilling not answering in its own topic?"*:
+
+    * the human deleted the topic and it was recreated ``MAX_RECREATIONS`` times already (TG-82), so
+      the agent's traffic falls back to General with an agent-id first line (TG-85);
+    * the agent left the catalog, so its channel is retired and the Telegram topic is left standing
+      (TG-79) — nothing is deleted, and re-adding the agent revives the binding.
+
+    Reported and nothing more, exactly like :attr:`invalid_chats` and for the same reason (TG-13):
+    the subsystem is running and delivering, one channel is taking a longer road. Without the field
+    the only trace of either case is a single line in the chat that scrolls away, and the human's
+    conclusion is that the bot lost their expert."""
 
     @property
     def enabled(self) -> bool:
@@ -184,6 +234,9 @@ class SubsystemState:
             "last_poll_ok_at": self.last_poll_ok_at,
             "last_send_error": self.last_send_error,
             "invalid_chats": self.invalid_chats,
+            "topics_enabled": self.topics_enabled,
+            "channels": self.channels,
+            "retired_channels": self.retired_channels,
         }
 
 
@@ -236,6 +289,13 @@ class HealthState:
         against :attr:`SubsystemState.agents` happens there rather than in the bot. Computing it in
         the bot would make the answer disappear exactly when the bot is crash-looping, which is the
         moment a human is reading ``/health``.
+
+        **What it means since topics** (TG-3 amended, TG-72): agents with no **channel** — no
+        mapped chat's General *and* no row in the channel directory — rather than agents with no
+        chat. The endpoint's arithmetic is unchanged; what changed is :attr:`SubsystemState.agents`,
+        which the daemon now seeds from the store. So an empty list means every topic in the
+        catalog is reachable from the phone, and a listed agent is one the human would have to run
+        ``/channels <agent-id>`` for — which is the action the field exists to prompt.
         """
         total, pending = threads
         return {

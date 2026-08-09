@@ -6,9 +6,11 @@ SV-1, SV-10, SV-18, SV-22 and SV-25 — the isolation would switch off the check
 transport. Executed both ways to confirm it.
 
 Everything here is behind :class:`BotApi` so the adapter, which holds every rule, can be driven
-against a fake with no socket and no token. Seven methods is the whole surface.
+against a fake with no socket and no token. Eight methods is the whole surface — the eighth,
+:meth:`HttpBotApi.create_forum_topic`, arrived with topics (TG-78) and is the only call in the
+package that creates anything on Telegram's side.
 
-Four details are measured against the real API rather than recalled, and each is a silent failure:
+Five details are measured against the real API rather than recalled, and each is a silent failure:
 
 * **``allowed_updates`` is passed on every poll.** It **persists server-side**: whatever the last
   caller left is what the bot is subscribed to. Found live on a real bot stuck at ``['message']`` —
@@ -23,6 +25,13 @@ Four details are measured against the real API rather than recalled, and each is
 * **The limits are exact.** 4097 characters → ``400 message is too long``; 65 bytes of
   ``callback_data`` → ``400 BUTTON_DATA_INVALID``; 64 fits. All three confirmed against
   ``api.telegram.org``.
+* **A send into a deleted topic succeeds.** In a *private* chat Telegram answers ``ok: true``,
+  ignores the ``message_thread_id`` and delivers the message to General
+  (tdlib/telegram-bot-api#854). No error is raised, no update announces the deletion, and no method
+  enumerates a chat's topics — so the **response is the only witness**. That is why every send here
+  returns the whole ``Message`` rather than a ``message_id``, and why
+  :func:`landed_topic_id` exists: TG-80 compares what came back against what was sent, and a caller
+  that inspects only exceptions detects nothing, forever.
 
 Two things leave this module, and only two: a :class:`TelegramError` (TG-15) and a result mapping.
 An ``httpx`` exception never does, because the layer above imports no HTTP client on purpose
@@ -47,15 +56,19 @@ from pkb.server.health import redact
 __all__ = [
     "ALLOWED_UPDATES",
     "CALLBACK_DATA_LIMIT",
+    "GENERAL",
     "LINK_PREVIEW",
+    "MAX_RECREATIONS",
     "MESSAGE_LIMIT",
     "POLL_TIMEOUT",
     "READ_BUDGET",
     "RETRY_CODES",
+    "TOPIC_NAME_LIMIT",
     "TRANSPORT_CODE",
     "BotApi",
     "HttpBotApi",
     "TelegramError",
+    "landed_topic_id",
     "shield_credentialed_http_logs",
     "with_retry",
 ]
@@ -69,6 +82,36 @@ CALLBACK_DATA_LIMIT: Final = 64
 """Bytes. Confirmed: 65 → `BUTTON_DATA_INVALID`, 64 → OK. An interrupt id does not fit beside a
 verb and an index, which is why a button carries a short token and the adapter holds the mapping."""
 
+GENERAL: Final = 0
+"""TG-72. The topic id of the part of a private chat that carries **no** ``message_thread_id``.
+
+``0`` rather than ``None`` because it is a database key, an index component and a dict key on three
+code paths above this one, and SQLite treats NULLs as distinct in a unique index — a nullable column
+would let two General rows coexist for one chat (decision Y). Telegram's topic ids are message ids
+and start at 1, so ``0`` is permanently free and can never collide with a real topic. On the **wire**
+it means *omit the key*: `message_thread_id: 0` is not a value Telegram has a meaning for, so no send
+here ever writes one."""
+
+TOPIC_NAME_LIMIT: Final = 128
+"""Characters in a ``createForumTopic`` name, per the documented range of 1 to 128.
+
+Unlike the limits above this one is **not** live-verified and cannot be until Threaded Mode is on
+(the real bot answers `400 the chat is not a forum` today). A name is truncated rather than sent
+whole for the same reason ``answer_callback`` truncates its text and ``send_document`` its caption:
+this module owns the wire limits, and on the *creation* path a rejected call costs the channel
+itself — a topic titled with the first 128 characters of a long catalog title is legible, and a 400
+is an agent the human cannot reach from their phone."""
+
+MAX_RECREATIONS: Final = 2
+"""TG-82. How many times a channel whose topic was deleted may be recreated before it is retired.
+
+It lives here, beside the one call that creates a topic, because the adapter enforces the bound and
+the store only counts (`rebind_channel` returns the running count). Unbounded recreation is a loop
+against a human deliberately deleting a topic — one `createForumTopic` and one notification per turn
+of it — and refusing to repair at all makes that expert's approvals undeliverable, which is the
+outcome Q20 rejected. Two survives an accidental deletion and a fat-fingered second one without
+becoming a fight."""
+
 POLL_TIMEOUT: Final = 25
 """Seconds Telegram holds a poll open with nothing pending. Confirmed: `timeout=5` returned at 5.4s."""
 
@@ -77,7 +120,13 @@ READ_BUDGET: Final = POLL_TIMEOUT + 15
 
 ALLOWED_UPDATES: Final = ("message", "edited_message", "callback_query")
 """Passed on **every** poll. See the module docstring: this setting persists on Telegram's side, and
-a narrowed one silently drops button presses forever."""
+a narrowed one silently drops button presses forever.
+
+**Topics added nothing to it, and that is the rule** (TG-91). Topic lifecycle arrives as *service
+messages* inside an ordinary ``message`` — and deletion produces no update of any kind. The reflex on
+a new Telegram feature is to subscribe to a new update kind; here that would be subscribing to
+something that does not exist while implying the deletion case is covered. It is not covered and
+cannot be, which is exactly why TG-80 reads the send response instead."""
 
 LINK_PREVIEW: Final = {"is_disabled": True}
 """TG-47. Sent on every method that accepts it. Without it Telegram's servers **fetch** every URL a
@@ -102,6 +151,9 @@ past the point where the human would rather see the failure in ``/health``."""
 
 _RETRY_AFTER: Final = "retry_after"
 
+_MISSING_THREAD: Final = "message thread not found"
+"""The one description Telegram uses for "the topic you named is gone" (TG-83, F-3)."""
+
 
 class TelegramError(Exception):
     """A refusal from the Bot API, carrying its own code and any ``retry_after``."""
@@ -115,20 +167,100 @@ class TelegramError(Exception):
         # `/health` and the log (the redaction in `pkb.server.health` is the backstop, not the plan).
         super().__init__(f"{method} failed: {code} {description}")
 
+    @property
+    def is_missing_thread(self) -> bool:
+        """TG-83: this send named a topic that no longer exists — recreate and re-send, never retry.
+
+        **This is a substring match on a human-readable string, and that is fragile.** It is here
+        anyway because the alternative does not exist: Telegram returns a bare ``400`` for the whole
+        Bad Request family, and the only machine-readable field on the envelope — ``parameters`` —
+        carries ``retry_after`` and ``migrate_to_chat_id`` and nothing that discriminates one 400
+        from another. There is no error code, no sub-code and no typed field for this case. So the
+        fragility is bought, not chosen, and three things pay for it:
+
+        * **It is in one place.** The match lives on the error rather than at the call sites, so the
+          day Telegram rewords the description there is one line to change, not one per send.
+        * **``code == 400`` is required.** Without it a 500 whose body happened to echo the phrase —
+          or a proxy's error page — would be read as a deleted topic and trigger a recreation.
+        * **Both outcomes are survivable, asymmetrically.** A false *positive* recreates a topic that
+          was fine: a spurious channel, visible, deletable, bounded at
+          :data:`MAX_RECREATIONS`. A false *negative* is an ordinary error the adapter already
+          handles. Neither is an irreversible write, which is the bar this layer is held to.
+
+        Matching case-insensitively because the description arrives prefixed (``Bad Request: message
+        thread not found``) and the prefix's casing is not something to depend on.
+
+        Note that ``400`` is deliberately absent from :data:`RETRY_CODES`, so :func:`with_retry`
+        already propagates this on the first attempt — TG-83's *"never retryable, never counted
+        toward TG-8's backoff"* needs no extra branch, only this discriminator. Re-sending would
+        re-issue the same dead id three times per message, forever.
+        """
+        return self.code == 400 and _MISSING_THREAD in self.description.casefold()
+
+
+def landed_topic_id(message: Mapping[str, Any]) -> int:
+    """Where a send actually went, read off the ``Message`` it returned (TG-80).
+
+    The counterpart to the ``topic_id`` that went out: compare the two and a difference means the
+    topic was deleted while the send said ``ok: true`` and delivered to General.
+
+    **Absence is the ordinary answer, not a malformed one.** Telegram omits ``message_thread_id``
+    entirely for a message in General — which is precisely what a stray send looks like, so the
+    absent case maps to :data:`GENERAL` rather than raising. A caller doing
+    ``response.get("message_thread_id") != sent`` gets this right by accident for the stray case and
+    wrong for a General send, where ``None != 0``; one function so neither has to be reasoned about
+    twice.
+    """
+    landed = message.get("message_thread_id")
+    return landed if isinstance(landed, int) else GENERAL
+
 
 class BotApi(Protocol):
-    """The seven calls the adapter makes. A Protocol so every rule above it tests against a fake.
+    """The eight calls the adapter makes. A Protocol so every rule above it tests against a fake.
 
     ``edit_message`` and ``clear_keyboard`` are two methods rather than one because they map to two
     Telegram methods with different blast radii (TG-63, TG-67): one rewrites the text, the other
     removes the buttons and leaves every character of the message alone.
+
+    **Only the send family carries a topic** (TG-90, F-6). ``edit_message``, ``clear_keyboard`` and
+    ``answer_callback`` address a message by ``chat_id`` + ``message_id`` — or by query id — and take
+    no thread parameter, in a topic exactly as in General. That is stated here because the obvious
+    assumption is the opposite, and acting on it puts an unknown parameter on the one call that
+    disarms an irreversible button.
+
+    Nothing that **changes** a topic is on this Protocol and nothing will be (TG-78, decision AD):
+    no ``edit_forum_topic``, ``close_forum_topic``, ``reopen_forum_topic``, ``delete_forum_topic``,
+    ``unpin_all_forum_topic_messages`` — and no ``delete_message``. Every method here has to be
+    implemented by every fake in the suite, and a bot that tidies the human's chat destroys the only
+    surviving record of what they approved on a system with no undo (D6).
     """
 
-    async def get_me(self) -> Mapping[str, Any]: ...
+    async def get_me(self) -> Mapping[str, Any]:
+        """The bot's own ``User``.
+
+        Beyond proving the token valid, this is the **only** call that reports
+        ``has_topics_enabled`` — the per-bot BotFather *Threaded Mode* toggle, off by default. TG-75
+        probes it once at startup and the whole topic feature hangs off the answer; there is
+        deliberately no second call for it.
+        """
+        ...
 
     async def get_updates(
         self, offset: int | None, *, timeout: int = POLL_TIMEOUT
     ) -> Sequence[Mapping[str, Any]]: ...
+
+    async def create_forum_topic(self, chat_id: int, name: str) -> Mapping[str, Any]:
+        """Create a topic in a private chat and return the ``ForumTopic`` (TG-76, TG-78).
+
+        Its ``message_thread_id`` **is** the channel id — the value every later send to this agent
+        carries and the directory row stores. ``name`` and nothing else: no ``icon_color`` and no
+        ``icon_custom_emoji_id``, because neither has a rule behind it and every parameter here is
+        one more thing every fake must implement.
+
+        The one creation path in the layer (TG-76): never at startup, never when the catalog gains
+        an agent, only in answer to a human's ``/channels``.
+        """
+        ...
 
     async def send_message(
         self,
@@ -136,12 +268,39 @@ class BotApi(Protocol):
         text: str,
         *,
         keyboard: Sequence[Sequence[Mapping[str, str]]] | None = None,
-    ) -> Mapping[str, Any]: ...
+        topic_id: int = GENERAL,
+    ) -> Mapping[str, Any]:
+        """Send, and return the **whole** ``Message`` — the caller must read it, not discard it.
+
+        ``topic_id`` is a *request*; the ``message_thread_id`` on the returned ``Message`` is where
+        the message actually went, and the two are not the same fact (TG-80). A send into a topic the
+        human deleted answers ``ok: true``, drops the parameter and delivers to General, so a caller
+        that treats this return value as void has a bot posting one expert's approval keyboards under
+        another expert's name with no error anywhere. Compare with :func:`landed_topic_id`; a
+        mismatch means the topic is gone.
+        """
+        ...
 
     async def send_document(
-        self, chat_id: int, filename: str, content: bytes, caption: str = ""
-    ) -> Mapping[str, Any]: ...
+        self,
+        chat_id: int,
+        filename: str,
+        content: bytes,
+        caption: str = "",
+        *,
+        topic_id: int = GENERAL,
+    ) -> Mapping[str, Any]:
+        """As :meth:`send_message`, for the overflow document — and read back the same way.
 
+        An overflow document is sent *before* the keyboard it belongs to, so a document that silently
+        landed in General is the first half of a split approval.
+        """
+        ...
+
+    # No `topic_id` on any of the three below, and none is coming: see the class docstring
+    # (TG-90, F-6). `answerCallbackQuery` addresses a query by its id; `editMessageText` and
+    # `editMessageReplyMarkup` address a message by `chat_id` + `message_id`, which are unique
+    # within a chat regardless of which topic the message sits in.
     async def answer_callback(
         self, callback_id: str, text: str = "", *, show_alert: bool = False
     ) -> None: ...
@@ -255,7 +414,21 @@ class HttpBotApi:
         return f"{self.base_url}/bot{self.token}"
 
     async def get_me(self) -> Mapping[str, Any]:
+        """TG-75: the whole ``User``, because ``has_topics_enabled`` is on it and only on it."""
         return dict(await self._call("getMe", {}))
+
+    async def create_forum_topic(self, chat_id: int, name: str) -> Mapping[str, Any]:
+        """TG-76, TG-78. The one call in this package that creates something on Telegram's side.
+
+        With *Threaded Mode* off this answers ``400 Bad Request: the chat is not a forum`` — executed
+        against the real bot. The adapter is expected never to reach here in that state, because
+        TG-75 gates on :meth:`get_me`; the 400 is the backstop, not the check.
+        """
+        return dict(
+            await self._call(
+                "createForumTopic", {"chat_id": chat_id, "name": name[:TOPIC_NAME_LIMIT]}
+            )
+        )
 
     async def get_updates(
         self, offset: int | None, *, timeout: int = POLL_TIMEOUT
@@ -284,6 +457,7 @@ class HttpBotApi:
         text: str,
         *,
         keyboard: Sequence[Sequence[Mapping[str, str]]] | None = None,
+        topic_id: int = GENERAL,
     ) -> Mapping[str, Any]:
         """TG-47: ``link_preview_options`` goes on **every** send, not on the ones that look like
         they contain a URL. A reply is knowledge-base content and a diff is a proposed write; a
@@ -297,18 +471,28 @@ class HttpBotApi:
         which is the same class of failure as the markup error that killed the TUI's renderer.
         Plain text cannot fail that way, and the entities Telegram would have drawn are worth
         nothing beside an approval that reaches the phone.
+
+        **The return value is not optional to read** (TG-80): it is the ``Message``, and its
+        ``message_thread_id`` is where this message actually landed. See :func:`landed_topic_id`.
         """
         body: dict[str, Any] = {
             "chat_id": chat_id,
             "text": text,
             "link_preview_options": dict(LINK_PREVIEW),
         }
+        _address(body, topic_id)
         if keyboard:
             body["reply_markup"] = {"inline_keyboard": [list(row) for row in keyboard]}
         return dict(await self._call("sendMessage", body))
 
     async def send_document(
-        self, chat_id: int, filename: str, content: bytes, caption: str = ""
+        self,
+        chat_id: int,
+        filename: str,
+        content: bytes,
+        caption: str = "",
+        *,
+        topic_id: int = GENERAL,
     ) -> Mapping[str, Any]:
         """The whole description, in memory, never written to disk (I3 and plain hygiene).
 
@@ -316,12 +500,18 @@ class HttpBotApi:
         transport failures are wrapped here rather than there (TG-15). An overflow document is sent
         *before* the keyboard it belongs to, so a raw ``ConnectError`` escaping this method would
         restart the bot with a human halfway through an approval.
+
+        The ``Message`` comes back for the same reason as :meth:`send_message` (TG-80); a multipart
+        field is a string on the wire, so the topic is stringified rather than sent as a number.
         """
         client = self._client(poll=False)
+        data = {"chat_id": str(chat_id), "caption": caption[:1024]}
+        if topic_id != GENERAL:
+            data["message_thread_id"] = str(topic_id)
         try:
             response = await client.post(
                 f"{self._url}/sendDocument",
-                data={"chat_id": str(chat_id), "caption": caption[:1024]},
+                data=data,
                 files={"document": (filename, content, "text/plain")},
             )
         except httpx.HTTPError as exc:
@@ -352,6 +542,9 @@ class HttpBotApi:
 
         No ``parse_mode``, for the same reason as :meth:`send_message` (TG-46): an edit re-parses
         the whole text, so a mode here would 400 on exactly the diffs that were safe to send.
+
+        And **no topic** (TG-90, F-6): ``editMessageText`` addresses by ``chat_id`` + ``message_id``,
+        which are unique within a chat whichever topic the message sits in.
         """
         await self._call(
             "editMessageText",
@@ -376,6 +569,13 @@ class HttpBotApi:
         surviving record of what was approved, that erases the evidence at the exact moment it
         starts to matter — a week later, when the human scrolls back to find out what they said yes
         to. Buttons and prose are separate concerns and Telegram gives them separate methods.
+
+        **No topic parameter, and the assumption that there should be one is the dangerous one**
+        (TG-90, F-6). ``editMessageReplyMarkup`` takes ``chat_id`` + ``message_id`` and nothing else;
+        passing a thread id is at best ignored and at worst a 400 on the single call that disarms an
+        irreversible button — inside a ``finally``, where the failure is silent. This is also what
+        makes TG-81 workable: the response that *revealed* a stray send already carries the
+        ``message_id`` needed to disarm it, and no topic is needed to use it.
         """
         await self._call("editMessageReplyMarkup", {"chat_id": chat_id, "message_id": message_id})
 
@@ -411,6 +611,18 @@ class HttpBotApi:
         )
 
 
+def _address(body: dict[str, Any], topic_id: int) -> None:
+    """Put a topic on an outgoing send body — or, for General, put nothing (TG-72).
+
+    The key is **omitted**, never sent as ``0`` and never as ``null``. ``0`` is this codebase's
+    spelling of "the General area", chosen because it is a database key upstream (decision Y); it is
+    not a value Telegram has a meaning for, and sending one is how a General message becomes a 400 on
+    a topic id that never existed.
+    """
+    if topic_id != GENERAL:
+        body["message_thread_id"] = topic_id
+
+
 def _transport_error(method: str, exc: httpx.HTTPError) -> TelegramError:
     """Turn an ``httpx`` failure into the one error type this module raises (TG-15).
 
@@ -444,6 +656,10 @@ async def with_retry(call: Any, *, attempts: int = 3, backoff: float = 0.5) -> A
     about the request and would fail identically three times over, and a ``409`` means a second
     poller holds the same token (TG-9) — retrying that one does not resolve the collision, it
     *is* the collision, and the adapter has a dedicated slow re-probe for it.
+
+    ``400 message thread not found`` (TG-83) is one of those, and deliberately: the topic is gone, so
+    three attempts are three re-sends of the same dead id. It reaches the adapter on the first
+    attempt with :attr:`TelegramError.is_missing_thread` set, and never touches ``restarts``.
     """
     for attempt in range(attempts):
         try:

@@ -5,14 +5,23 @@ daemon owns the run, so an approval it asks for (a delete, a new topic, a confli
 arrives as a pair of buttons on your phone. Press them hours later, from anywhere. The daemon keeps
 running and the turn keeps its state.
 
-**Read this before you plan a layout.** The daemon addresses agents by chat. A chat maps to exactly
-one agent, so "which expert am I talking to?" always has one answer. Telegram gives a person exactly
-**one** private chat per bot. The daemon holds exactly **one** bot token, and it refuses groups and
-channels ([§2](#2-find-your-user-id-and-your-chat-id), TG-19). One human with one bot therefore has
-one chat and **one** agent on their phone. Map it to `librarian` unless you have a reason not to.
-The Librarian classifies what you send and routes it to the right expert, and that routing is the
-only way one chat reaches a whole tree. A second entry in the mapping is a second **person**, with
-their own private chat with the same bot, on their own topic. Add their id to the allow-list too.
+**Read this before you plan a layout.** The daemon addresses agents by **channel**. A channel is one
+Telegram topic, or the part of the chat outside every topic. Telegram calls that part **General**. A
+channel maps to exactly one agent, so "which expert am I talking to?" always has one answer, and on
+a phone it is the title above the keyboard.
+
+Telegram gives a person exactly one private chat per bot, and the daemon holds exactly one token.
+Turn on **Threaded Mode** in BotFather and that one chat holds a topic per expert, created on
+request with `/channels` ([§8](#8-a-channel-per-expert)). The toggle is off by default and the bot
+works without it; with it off there is one channel, it is General, and one human has one agent.
+
+**Map General to `librarian` unless you have a reason not to.** General is the only channel whose
+title names no expert, so it is the one place the "which expert?" question can go unanswered. The
+Librarian is the one agent for which that is harmless, because classifying what you send and routing
+it onward is its whole job. The daemon refuses groups and broadcast channels
+([§2](#2-find-your-user-id-and-your-chat-id), TG-19). A topic sits *inside* a private chat, so a
+channel per expert stays within that rule. A second entry in the mapping is a second **person**,
+with their own private chat with the same bot. Add their id to the allow-list too.
 
 Setup takes about ten minutes. Every command, path, variable name, JSON key and log line below comes
 from the code or from a real run of it.
@@ -40,7 +49,7 @@ It asks for a display name, then a username ending in `bot`. It replies with a t
 
 That token *is* the bot. Anyone who holds it can read every message you send to the bot, and can
 send messages as the bot. Keep it out of your shell history, your screenshots and your chats with an
-assistant. See [§10](#10-revoking-a-token).
+assistant. See [§11](#11-revoking-a-token).
 
 If you already have a bot, `/token` in BotFather reprints its token.
 
@@ -77,7 +86,7 @@ Two cautions on that command:
   The daemon takes the token from the environment and not from a flag for that same reason. On a
   single-user laptop this is fine. On a shared box, do this step somewhere else.
 * Do it **before** the daemon starts. Telegram allows exactly one `getUpdates` consumer per token,
-  so a `curl` against a running daemon gives one of you a `409 Conflict` ([§9](#9-troubleshooting)).
+  so a `curl` against a running daemon gives one of you a `409 Conflict` ([§10](#10-troubleshooting)).
 
 Group and channel ids are negative. The daemon refuses them at startup, and only private chats are
 eligible (TG-19). A group is many senders with no identity check in front of a tree that has no
@@ -149,10 +158,22 @@ The mapping lives beside the SQLite database, at `<db>.telegram.json`. With the 
 }
 ```
 
-That is the one-human deployment, and `librarian` is the recommendation. You have one chat with this
-bot, so a chat mapped to a topic makes that topic reachable and nothing else. The Librarian instead
-classifies each note and routes it to the expert it belongs to. Map your chat to a topic only if you
-want a dedicated notebook for one subject and nothing else on your phone.
+That is the one-human deployment, and `librarian` is the recommendation.
+
+**This file maps General, and only General.** Every other channel in the chat is a topic you create
+from the phone with `/channels`, and the topic id Telegram mints for it lives in the daemon's own
+database ([§8](#8-a-channel-per-expert)). There is nothing to hand-edit here. No Telegram client
+shows a topic id, so you could not have typed one.
+
+Map General straight to a topic expert if you want. The daemon allows it and says so at startup:
+
+```
+WARNING __main__: telegram chat 987654321 has 'topic/cooking' in its General area rather than 'librarian': messages sent outside a topic go to that expert, and General is the one channel whose title does not say so — `/agents` there names it, and `/channels topic/cooking` gives it a topic of its own
+```
+
+That mapping works, and `/agents` in General names the agent. With Threaded Mode off, General is the
+*only* thing your phone reaches, and `librarian` is the only mapping that reaches a whole tree from
+one channel.
 
 A second entry is a second person, with their own private chat and their own user id. Put their id
 in `PKB_TELEGRAM_OWNERS` as well, or the bot ignores everything they send and answers nothing:
@@ -191,7 +212,7 @@ business; delete that line if you want yours in version control.)
 
 Two chats may map to the same agent, for two people on one topic. The file's shape makes one chat
 with two agents impossible. A file that still carries an `"owners"` key is a **startup error** and
-not a warning. See [§9](#9-troubleshooting).
+not a warning. See [§10](#10-troubleshooting).
 
 The daemon reads the mapping **once, at startup**. Restart the daemon after you edit it.
 
@@ -243,9 +264,10 @@ curl -s http://127.0.0.1:8765/health | python3 -m json.tool
 ```
 
 `/health` returns `200` while the process serves, and degradation shows up in the body. The
-`telegram` block below is verbatim from a real run: one chat mapped to `librarian`, against a
-two-topic knowledge base, with a token BotFather never issued. That bad token is why it is
-crash-looping:
+`telegram` block below is from a real run: one chat mapped to `librarian`, against a two-topic
+knowledge base, with a token BotFather never issued. That token crash-loops the bot, and it leaves
+the three topic fields at their startup defaults. The bot never got as far as `getMe`, so it never
+learned whether it has topics:
 
 ```json
 "telegram": {
@@ -259,6 +281,9 @@ crash-looping:
     "last_poll_ok_at": null,
     "last_send_error": null,
     "invalid_chats": [],
+    "topics_enabled": false,
+    "channels": 0,
+    "retired_channels": [],
     "unmapped_agents": ["topic/cooking", "topic/woodworking"]
 }
 ```
@@ -270,11 +295,14 @@ crash-looping:
 | `restarts` | How many times that task crashed and the supervisor restarted it. Watch whether the number climbs; one sample says little. |
 | `last_error`, `last_error_at` | The last crash, redacted. Often too generic to use (see above). The log holds the real cause. |
 | `started_at` | When the task first reached `running`. |
-| `chats` | How many chats your mapping names. This is configuration and not traffic, and it never changes at runtime. |
+| `chats` | How many chats your mapping names. It counts **chats**; `channels` below counts the topics. This is configuration and it never changes at runtime. |
 | `last_poll_ok_at` | **The reachability field.** The bot stamps it every time `getUpdates` returns. |
 | `last_send_error` | The last outbound failure, redacted. The daemon reports it and never turns `degraded` because of it. |
 | `invalid_chats` | Mapped chats that name an agent which does not exist. The bot answers those chats as unmapped. |
-| `unmapped_agents` | Agents with **no** chat pointing at them. You cannot address them directly from a phone. |
+| `topics_enabled` | BotFather's **Threaded Mode** for this bot, read once from `getMe` at startup. `false` means the deployment runs as it did before topics existed, and `/channels` answers with the BotFather instruction instead of creating anything. |
+| `channels` | How many topics you have bound to an expert, across every chat. General is not counted: it is configuration, and `chats` holds it. Zero with `topics_enabled: true` means you have not run `/channels` yet. |
+| `retired_channels` | Experts whose topic you deleted more than twice, so the bot stopped making new ones. Their messages arrive in General with the agent id on the first line until you send `/channels <agent-id>` ([§8](#8-a-channel-per-expert)). |
+| `unmapped_agents` | Agents with **no** channel pointing at them: no chat's General, no topic. You cannot address them directly from a phone. |
 
 Two fields need more than a table row.
 
@@ -289,24 +317,28 @@ alternates between `running` and `restarting`, `restarts` reached 5 in the first
 `last_poll_ok_at` stays `null` throughout. The retry backoff doubles from 1 s to a ceiling of 60 s.)
 
 **The daemon computes `unmapped_agents` on every `/health` request**, as the set difference between
-the live agent catalog and the agent ids your mapping names. On a one-chat deployment every topic is
-in it, which is correct: the Librarian your chat *is* mapped to reaches them by routing rather than
-by address. Read it the other way round if you mapped your chat straight to a topic. Everything
-listed there is then unreachable from your phone, and nothing else reports that condition. You
-create a topic, the bot carries on ignoring it, and no line anywhere says why.
+the live agent catalog and the agents your mapping names **plus the ones that have a topic**. With
+Threaded Mode off, every topic expert is in it, which is correct: the Librarian your chat is mapped
+to reaches them by routing rather than by address. With it on, the list is your work queue.
+`/channels <agent-id>` takes a name off it, so it shrinks as you go. Read it the other way round if
+you mapped General straight to a topic and never turned Threaded Mode on: everything listed is then
+unreachable from your phone, and nothing else reports that condition. You create a topic in the
+knowledge base, the bot carries on ignoring it, and no line anywhere says why.
 
 Elsewhere in the body, top-level `"status": "degraded"` means an *enabled* subsystem is not
 `running`. A failed send or a bad mapping line never causes it.
 
 ## 7. Use it
 
-**Send a note.** Type into the mapped chat. The daemon runs one turn on that chat's current
-conversation, with the agent the chat is mapped to. The reply comes back as one or more messages.
+**Send a note.** Type into a mapped channel. The daemon runs one turn on that channel's current
+conversation, with the agent that channel talks to. The reply comes back as one or more messages.
 The bot splits a long reply on line boundaries and numbers the parts `(1/2)`. It never summarises.
 
-**Three lines typed as three messages is fine.** The bot serializes a chat's messages. The second
-waits for the first turn to finish and then runs on its own. You get two replies, in order, and no
-refusal.
+**Three lines typed as three messages is fine.** The bot serializes each channel's messages. The
+second waits for the first turn to finish and then runs on its own. You get two replies, in order,
+and no refusal. Turns in *different* topics do not wait for each other. A turn on the local fallback
+model takes about 284 seconds, and one of those in Cooking would otherwise freeze every other expert
+on your phone for five minutes, with nothing on screen saying why.
 
 The bot refuses a message in the one case the lock cannot cover: something **else** started a run on
 that same conversation, and the TUI is the common cause. The refusal reads *"Still finishing your
@@ -314,26 +346,33 @@ last message — send this again in a moment. It was not sent: …"*, and it quo
 re-sending is one long-press away. A second, different refusal (*"There is an approval waiting on
 this conversation, so this was not sent"*) re-posts the buttons you have not answered yet.
 
-**The five commands.** There are no others.
+**The six commands.** There are no others, and every one of them acts on **the channel you typed it
+in**.
 
 | | |
 |---|---|
-| `/new` | Start a fresh conversation here. The old one stays in the thread list. |
-| `/threads` | This expert's conversations, most in need of attention first. |
-| `/agents` | The expert this chat talks to, and the experts configured across all chats. |
-| `/pending` | Everything waiting on you, across **every** expert. It re-posts the buttons. |
-| `/cancel` | Stop the run in this chat. |
+| `/new` | Start a fresh conversation here. The old one stays in the thread list. A `/new` in General leaves every topic's conversation alone. |
+| `/threads` | The conversations of this channel's expert, most in need of attention first. The listing is read-only, and nothing in it re-points the channel at a conversation. |
+| `/agents` | The expert this channel talks to. It also lists every channel in this chat and the experts that have none. |
+| `/pending` | Everything waiting on you, across **every** expert. The summary lands here; each set of buttons goes to its own expert's topic when it has one. |
+| `/cancel` | Stop the run in **this** channel. It does not touch a run in another topic. |
+| `/channels` | List, bind or create channels ([§8](#8-a-channel-per-expert)). |
 
-There is no `/connect`. The mapping file binds a chat to its expert, by design, because a chat that
-can re-point itself files a note into the wrong topic.
+There is no `/connect` and no `/talk`. This bot has no hidden "current expert" that a message
+inherits. A topic title is on screen at the moment you hit send. A mode would not be.
 
 **An approval** arrives as the whole description, then the buttons:
 
 1. First, the complete description of what would be written.
-2. Then a second message. It carries any validation failures at the top with their rule ids, the
-   tool and the reason (`write_file · delete`), the line **"There is no undo for this."** when the
-   reason warrants it, a preview of the description, and the buttons. **Approve** and **Reject** get
-   one row each, because on a phone one row is one thumb.
+2. Then a second message. It carries any validation failures at the top with their rule ids, **the
+   expert this write belongs to**, the tool and the reason (`write_file · delete`), the line
+   **"There is no undo for this."** when the reason warrants it, a preview of the description, and
+   the buttons. **Approve** and **Reject** get one row each, because on a phone one row is one thumb.
+   Every approval names the expert, even inside that expert's own topic. A lock-screen preview
+   strips the topic title, and so do a forward and General's scrollback. None of them strips the
+   first line. If the Librarian routed the write to another expert, the line carries that
+   conversation's id as well. The id tells you the write is landing somewhere other than where you
+   are reading.
 3. Press one. The bot answers the button, then runs the turn. Three of the reasons ask for a second
    tap before that (below). The outcome arrives as a **new** message (`Answered: 1 approved.`) and
    the buttons go away. The description you decided against keeps its text, because this chat is the
@@ -359,19 +398,138 @@ nothing until you answer every one**. Answer half of them and the turn stays par
 
 **Not built, on purpose:** attachments (the bot replies that it can only read text and downloads
 nothing); editing a proposal from the phone; a typed rejection reason; groups; webhooks (long
-polling only, because a webhook needs a public HTTPS endpoint on a daemon that has no auth); and
-**push notification of an approval raised in the TUI** (D3 shares state, not streams). You will
-notice the last one. An approval that a desk-started run waits on does not ping your phone. Ask for
-it with `/pending`.
+polling only, because a webhook needs a public HTTPS endpoint on a daemon that has no auth);
+re-pointing a channel at one of the conversations `/threads` lists (a 36-character id typed on a
+phone, and afterwards the channel would carry no sign it had moved); and **push
+notification of an approval raised in the TUI** (D3 shares state, not streams). You will notice the
+last one. An approval that a desk-started run waits on does not ping your phone. Ask for it with
+`/pending`.
 
-## 8. Change something
+## 8. A channel per expert
 
-**Restart the daemon** after you edit the mapping, add a topic or rotate the token. The daemon reads
-all of it once, at startup. Conversations, pending approvals and open button prompts live in SQLite
-and survive the restart. On the way back up, the bot re-posts the keyboard for anything still
-parked, and it tells any chat whose message was lost mid-crash to send it again.
+One chat, one topic per expert, each with its own conversation and its own approvals. All of this is
+optional. Everything above works without it, and with the toggle off the bot behaves as it did
+before topics existed.
 
-## 9. Troubleshooting
+### Turn on Threaded Mode
+
+In [@BotFather](https://t.me/BotFather), open your bot's settings and turn on **Threaded Mode**. The
+toggle is off by default and it is per bot. It is the only way to get topics in a one-to-one chat,
+and no setting on the daemon substitutes for it.
+
+**Then restart the daemon.** The daemon asks `getMe` once, at startup, and nothing else decides the
+answer. Confirm with `/health`: `telegram.topics_enabled` is `true`. Until it is, `/channels` answers
+
+> This bot does not have topics turned on, so there is one channel here and it is this one. Turn on
+> Threaded Mode for this bot in BotFather to get a channel per expert.
+
+and creates nothing.
+
+### Give an expert a channel
+
+The bot creates no topic on its own. A knowledge base with thirty topics would otherwise become a
+phone chat with thirty conversations, and the four you open would sit behind twenty-six you never
+do. No Telegram API lists a chat's topics afterwards either, so a half-finished burst leaves a state
+nothing can reconstruct. Ask for them one command at a time:
+
+| | |
+|---|---|
+| `/channels` | Every channel in this chat, and every expert that has none. |
+| `/channels topic/cooking` | Give that expert a channel here. |
+| `/channels all` | One for every expert that has none. |
+
+`/channels <agent-id>` does one of two things, and **the reply always says which**:
+
+> Created a new topic, Cooking, for topic/cooking. Send it anything from there.
+
+> Bound this topic to topic/cooking. Nothing was created — anything you send here from now on goes
+> to that expert.
+
+It binds when you type it **inside a topic that has no expert yet**: one you made by hand, or one
+left over from a database you had to restore. That is the only way back after you lose the daemon's
+SQLite file, because nothing can enumerate the topics already on your phone. Everywhere else it
+creates. An expert that already has a channel here gets neither:
+
+> topic/cooking already has a channel in this chat (topic 101), so I created nothing.
+
+Two channels for one expert in one chat would split that expert's history in half, and nothing on
+screen would say which half you were writing to.
+
+The bot titles the topic with the expert's own title from the knowledge base. **Rename it, move it
+or mute it.** The binding is by id, so none of that changes anything. The bot never renames, closes,
+reopens or deletes a topic. The topic is your record of what you approved there.
+
+Type in a topic you made by hand and the bot answers with the offer and the ids you can use:
+
+> This topic is not connected to an expert yet, so I have not kept this message and nothing has been
+> filed.
+>
+> Send /channels &lt;agent-id&gt; here to make this topic that expert's channel.
+
+Nothing runs in an unbound topic, and the bot stores nothing from it.
+
+### General keeps its job
+
+General is everything outside a topic. The mapping file names its expert
+([§4](#4-map-your-chat-to-an-agent)), and General keeps working as before. With `librarian` there:
+**type into a topic to talk to that expert, and type into General to have the Librarian work out
+where a note goes.** Both file into the same tree. `/agents` in any channel prints who
+answers there and lists the rest.
+
+### If you delete a topic
+
+You can delete a topic, and the bot handles it. Telegram gives the bot almost nothing to work with.
+**A message sent to a deleted topic is not an error.** Telegram accepts it, ignores the topic and
+drops it into General, and no update of any kind announces that a topic is gone. The one piece of
+evidence is the send response, which names the topic the message landed in. The bot compares that
+against the topic it sent to, on every send.
+
+The bot recovers from a mismatch in this order:
+
+1. **The bot clears the stray message's keyboard first.** An Approve button for an irreversible
+   write, sitting in General under no expert's name, is the one thing that must not stay pressable.
+2. **It posts a line under that message**, naming the expert whose topic is gone. It leaves the
+   stray message's text standing: this chat is the only record of what you were asked, and deleting
+   that record at the moment the machinery misfires tells you nothing.
+
+   > The topic for topic/cooking has been deleted, so the message above this one was delivered here
+   > instead of there — Telegram accepted it without an error. Its buttons no longer work, so
+   > nothing can be approved from it.
+   >
+   > I am re-sending it where it belongs.
+3. **It makes a new topic and re-sends the message into it, whole.** Your conversation moves with
+   it, so the reply and the approval you were in the middle of are still there.
+
+**Twice, and then it stops.** Delete the replacement a third time and the bot retires that expert:
+its messages arrive in General with its name on the first line, and the bot tells you once.
+
+> The topic for topic/cooking has been deleted more than twice, so I have stopped making new ones.
+> Everything from that expert will arrive here, with its name on the first line, until you send
+> /channels topic/cooking to give it a channel again.
+
+Two is a deliberate bound. It survives a slip and a second slip, and it does not turn a topic you
+delete on purpose into a fight. The count lives in the database, so a daemon restart does not hand
+out a fresh pair. `/health` lists retired experts in `retired_channels`, and `/channels <agent-id>`
+brings one back with a clean allowance.
+
+**Delete a topic and the knowledge base loses nothing.** The deletion is a Telegram-side act on a
+conversation. The notes that expert already filed are files on disk. To remove those, ask the expert
+to delete them and approve the delete.
+
+## 9. Change something
+
+**Restart the daemon** after you edit the mapping, add a topic to the knowledge base, rotate the
+token or flip Threaded Mode. The daemon reads all of it once, at startup. Conversations, pending
+approvals, open button prompts and the channels you created live in SQLite and survive the restart.
+On the way back up, the bot re-posts the keyboard for anything still parked, in the channel it came
+from, and it tells any channel whose message was lost mid-crash to send it again.
+
+**An upgrade from a version without topics costs you nothing.** The daemon migrates the database in
+place on the first start: the conversation you were having becomes General's, every pending approval
+and every open button prompt keeps working, and the old rows stay where they are. Nothing appears in
+your chat until you turn Threaded Mode on and ask for a channel.
+
+## 10. Troubleshooting
 
 Symptom first.
 
@@ -444,10 +602,10 @@ to a *different* write.
 
 ---
 
-**The bot answers, but in the wrong topic.**
+**The bot answers, but as the wrong expert.**
 
-`/agents` in that chat prints the expert it is bound to. If that is wrong, the chat id is on the
-wrong line of the mapping. Fix the line and restart. On the next message you see:
+`/agents` in that channel prints who answers there. If **General** answers as the wrong expert, the
+chat id is on the wrong line of the mapping. Fix the line and restart. On the next message you see:
 
 > This chat now talks to topic/woodworking, so I have started a new conversation here. The previous
 > one is still in the thread list of the expert it belonged to.
@@ -455,6 +613,40 @@ wrong line of the mapping. Fix the line and restart. On the next message you see
 That announcement is the point. Without it, the chat keeps filing into the previous expert and says
 nothing. The daemon does **not** move notes already filed into the wrong topic. There is no undo, so
 move them yourself.
+
+If a **topic** answers as the wrong expert, a `/channels` command bound that topic to that expert,
+and the mapping file has nothing to do with it. There is no rebind. Delete the topic, or make
+another one with `/channels <agent-id>`. The bot never re-points a topic you have been filing into.
+
+---
+
+**"This topic is not connected to an expert yet."**
+
+You typed in a topic that has no expert: one you created by hand, or one whose binding went with a
+database you replaced. The reply lists the experts with no channel here. Send
+`/channels <agent-id>` **in that topic** and the topic becomes theirs, with nothing created. The
+rate limit above applies: one explanation per topic per hour, so silence afterwards is expected.
+
+---
+
+**One expert's messages started arriving in General with its name on the first line.**
+
+You deleted its topic more than twice, so the bot retired the channel instead of making a fourth
+([§8](#8-a-channel-per-expert)). The expert is in `/health` under `retired_channels`, and it stays
+there across restarts on purpose. A daemon bounce is not a reason to start the fight again.
+`/channels <agent-id>` gives it a channel and a clean allowance.
+
+The same name on the first line of a **single** message means the bot sent that one message to a
+topic you had deleted a moment before. Read the line under it. Nothing was lost, because the bot
+re-sends the message whole into the replacement topic.
+
+---
+
+**`/channels` says the bot does not have topics turned on.**
+
+Threaded Mode is off, or you have not restarted the daemon since you turned it on. The bot reads the
+flag once, from `getMe`, at startup. Check `/health`: `telegram.topics_enabled`. Everything else
+keeps working meanwhile. With the toggle off, the chat has exactly one channel and it is General.
 
 ---
 
@@ -528,7 +720,7 @@ refusals, both by design:
   numeric ids separated by commas or spaces`. Usernames are not ids, and a daemon that dropped the
   entry would shrink your allow-list without telling you.
 
-## 10. Revoking a token
+## 11. Revoking a token
 
 In [@BotFather](https://t.me/BotFather):
 

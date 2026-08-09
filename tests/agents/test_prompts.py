@@ -200,6 +200,35 @@ def test_expert_prompt_separates_ingestion_from_retrieval_pr3() -> None:
     assert states(template, "asked", "writes nothing")
 
 
+def test_the_expert_prompt_names_both_provenances_and_scopes_the_fan_out_pr3_pr9() -> None:
+    """The prompt has to be true on a **direct** thread, and it was not (PR-3, PR-9, amended).
+
+    Three of the four human surfaces open a thread on an expert directly — the TUI's sidebar, HTTP's
+    ``POST /agents/{agent_id}/threads``, MCP's ``pkb_ask(agent_id=…)`` — and Telegram's per-expert
+    channels make it the ordinary case on a phone. On every one of them the shipped wording was
+    false: nothing was routed, and no second expert held the rest of the source.
+
+    The harm is behavioural rather than cosmetic. Told that *"the same item often reaches several
+    topics at once"*, a model handed a source directly under-extracts on purpose — it takes only its
+    own facets, believing a sibling has the remainder — and PR-9's decline clause then makes filing
+    nothing a *correct* outcome for material the human handed it deliberately. The source is
+    silently half-filed by a prompt describing a fan-out that never happened.
+
+    Asserted on the **wording** rather than on a run because the fix is not allowed to be a
+    conditional: ``registry.get(agent_id)`` caches one compiled graph per agent (RG-6), so a prompt
+    that varies with the thread's shape is a second graph for the same expert — and a provenance
+    conditional is the ``if origin_channel == …`` mistake RO-22 already refuses. One prompt, both
+    cases named.
+    """
+    template = read_prompt(EXPERT_TEMPLATE)
+
+    assert states(template, "routed by the librarian", "handed to you directly")
+    assert states(template, "when the librarian routed it", "several topics at once")
+    assert states(template, "handed to you directly", "no other expert is holding the rest")
+    assert states(template, "decline", "filing something to look useful")
+    assert "Ingest what is routed to you" not in template
+
+
 # --------------------------------------------------------------------------------------
 # PR-4 — no prompt restates a mechanically enforced rule
 # --------------------------------------------------------------------------------------

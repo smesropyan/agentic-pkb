@@ -1077,6 +1077,11 @@ def test_the_http_client_implements_the_protocol_exactly_tg67() -> None:
         "answer_callback",
         "edit_message",
         "clear_keyboard",
+        # §9/TG-76: the one method that creates a channel. Listed literally rather than derived, so
+        # that a *forum-mutating* method — rename, close, reopen, delete — cannot arrive on this
+        # Protocol without a test saying so. TG-78 forbids all four by name: the topic is the
+        # human's record of what they approved, on a system with no undo.
+        "create_forum_topic",
     }
     for name in sorted(methods):
         assert inspect.signature(getattr(HttpBotApi, name)) == inspect.signature(

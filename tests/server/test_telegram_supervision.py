@@ -149,11 +149,23 @@ async def test_three_generations_never_leave_two_pollers_alive_tg7() -> None:
         async def next_offset(self) -> int | None:
             return 1
 
-        async def orphans(self) -> list[tuple[int, int | None]]:
+        async def orphans(self) -> list[tuple[int, int | None, int]]:
             return []
 
-        async def unfinished(self) -> list[tuple[int, int | None, str]]:
+        async def unfinished(self) -> list[tuple[int, int | None, int, str]]:
             return []
+
+        # §9/TG-11: `run()` reads the channel directory before it creates any child task, so a fake
+        # that stops at the ledger no longer gets as far as the poll loop this file is about. Empty
+        # answers are the honest ones — this deployment has no channels and nothing retired.
+        async def retired_agents(self) -> frozenset[str]:
+            return frozenset()
+
+        async def channels(self, chat_id: int) -> dict[int, str]:
+            return {}
+
+        async def channel(self, chat_id: int, agent_id: str) -> None:
+            return None
 
     class Catalog:
         def list_agents(self) -> list[Any]:
@@ -224,11 +236,23 @@ async def test_a_transient_failure_never_increments_restarts_tg8() -> None:
         async def next_offset(self) -> int | None:
             return 1
 
-        async def orphans(self) -> list[tuple[int, int | None]]:
+        async def orphans(self) -> list[tuple[int, int | None, int]]:
             return []
 
-        async def unfinished(self) -> list[tuple[int, int | None, str]]:
+        async def unfinished(self) -> list[tuple[int, int | None, int, str]]:
             return []
+
+        # §9/TG-11: `run()` reads the channel directory before it creates any child task, so a fake
+        # that stops at the ledger no longer gets as far as the poll loop this file is about. Empty
+        # answers are the honest ones — this deployment has no channels and nothing retired.
+        async def retired_agents(self) -> frozenset[str]:
+            return frozenset()
+
+        async def channels(self, chat_id: int) -> dict[int, str]:
+            return {}
+
+        async def channel(self, chat_id: int, agent_id: str) -> None:
+            return None
 
     class Catalog:
         def list_agents(self) -> list[Any]:
