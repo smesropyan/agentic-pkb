@@ -13,10 +13,11 @@ mechanical structure enforced in code and the meaning curated in dialog with the
 | `docs/superpowers/specs/2026-08-06-pkb-agents-layer2-rules.md` | Every Layer 2 rule (`RT-*`, `RG-*`, `MW-*`, `LB-*`, `PR-*`, `SK-*`): runtime, registry, permissions, gates, middleware, the routing workflow, the shipped prompts and skills. The contract `pkb.agents` is tested against. |
 | `docs/superpowers/specs/2026-08-07-pkb-service-server-layer3-rules.md` | Every Layer 3 rule (`SV-*`, `RO-*`, `SS-*`, `AP-*`, `ST-*`, `MC-*`, `PK-*`): the service protocol, HTTP routes, SSE, approvals, packs, the MCP mount and the Telegram wiring. Built. |
 | `docs/superpowers/specs/2026-08-08-pkb-tui-clients-layer4-rules.md` | Every Layer 4 rule (`CL-*`, `DC-*`, `TU-*`): the shared approval helper, the SSE decoder, the transport and the Textual client. Built. |
-| `docs/superpowers/specs/2026-08-08-pkb-telegram-layer5-rules.md` | Every Layer 5 rule (`TG-*`): the supervised bot task, the owner allow-list, the durable update ledger and approval prompts, the Bot API port, and every length, ordering and keyboard rule an approval on a phone depends on. Built. |
-| `docs/superpowers/specs/2026-08-07-large-source-ingestion.md` | Sources that do not fit a turn: one file per source with the arguments as sections, `.inbox` staging, re-ingestion and reconciliation. Crosses all three layers. Designed, not built. |
+| `docs/superpowers/specs/2026-08-08-pkb-telegram-layer5-rules.md` | Every Layer 5 rule (`TG-*`): the supervised bot task, the owner allow-list, the durable update ledger and approval prompts, the Bot API port, and every length, ordering and keyboard rule an approval on a phone depends on. Built. **§9 is a channel per expert**: Telegram topics inside the one private chat, `TG-72`…`TG-95`, arranged around the deleted-topic hazard. Built; see §9.13. |
+| `docs/superpowers/specs/2026-08-07-large-source-ingestion.md` | Every `LS-*` rule: sources that do not fit a turn — one file per source with the arguments as sections, `.inbox` staging, re-ingestion and reconciliation. Crosses all three layers. **Built** as `pkb.sources` + `pkb.agents.ingestion` — see its "As built" section; the status header at the top is stale. |
 | `docs/reference/deepagents-0.7.5-api-recon.md` | Verified signatures of the harness Layer 2 will use. |
-| `docs/how-to/telegram.md` | Not design — the operator's guide: @BotFather to approving a write from your phone, what every `/health` telegram field means, and the symptoms of each way it goes wrong. |
+| `docs/how-to/getting-started.md` | Not design, and **the one to read first**: a fresh clone to a knowledge base with something in it. Install, the daemon, the model, a worked first conversation with real transcripts, daily use, the other doors, symptom-first troubleshooting, and what is not built. Every command in it was executed. |
+| `docs/how-to/telegram.md` | Not design — the phone deep-dive, and it assumes `getting-started.md`: @BotFather to approving a write from your phone, a topic per expert (§8), what every `/health` telegram field means, and the symptoms of each way it goes wrong. |
 
 ## Build order (architecture §11)
 
@@ -37,10 +38,22 @@ mechanical structure enforced in code and the meaning curated in dialog with the
    task, the Bot API port and the durable bindings, ledger and approval prompts. **Built.** See §8
    "As built" in the Layer 5 rules for the shipped `BotApi` surface, the two clauses of TG-48/TG-49
    that are deliberately not built, and what the conformance pass had to change.
+6. **A channel per expert** (Layer 5 §9): Telegram topics inside the one private chat, so the phone
+   reaches each expert without going through the Librarian. The TUI, HTTP and MCP could already do
+   that. **Built.** The addressing unit is the **channel** `(chat_id, topic_id)`, with
+   `topic_id == 0` for General, and a topic exists only where a human typed `/channels`. **The truth
+   about a topic is the `message_thread_id` on the send *response*.** A send into a deleted
+   private-chat topic returns `ok: true` and lands in General, no update announces a deletion, and a
+   build that does not compare keeps posting one expert's approve buttons under another's name. See
+   §9.13 "As built" for the divergences, §9.10-§9.12 for the defects three passes found, and Q32 for
+   the one thing still open.
 
 **Enable the bot** with both halves of its security in the environment — `PKB_TELEGRAM_TOKEN` and
-`PKB_TELEGRAM_OWNERS` — and the chat mapping, which names no credential, in a JSON file beside the
-SQLite database (`<db>.telegram.json`, or `--telegram-config`):
+`PKB_TELEGRAM_OWNERS` — and the mapping, which names no credential, in a JSON file beside the
+SQLite database (`<db>.telegram.json`, or `--telegram-config`). **The file maps each chat's General
+area and nothing else**: every other channel is a topic the human made with `/channels`, and the id
+Telegram minted for it lives in `pkb_telegram_channels`. No client shows a topic id and nothing
+enumerates one afterwards, so it is an address rather than a decision (TG-17 amended):
 
 ```sh
 cp .env.example .env && chmod 600 .env   # gitignored; `--env-file` points elsewhere
@@ -62,6 +75,12 @@ Both are read in `pkb.daemon` and nowhere else — neither telegram module may i
 built seam scan enforces it. No token leaves the bot off and the daemon serving. Setup from nothing
 to approving a write from your phone: `docs/how-to/telegram.md`, and `.env.example` is the template.
 
+**Topics need BotFather's "Threaded Mode"**: a per-bot toggle, **off by default**, read once from
+`getMe.has_topics_enabled` at startup and published as `/health`'s `telegram.topics_enabled`. With
+it off nothing changes: no send carries a `message_thread_id`, the bot creates no topic, and
+`/channels` answers with the BotFather instruction (TG-75). The toggle is the human's to flip and
+they may never flip it, so that unchanged path is permanent rather than a migration step.
+
 **The daemon owns runs.** A run is a plain `asyncio.Task` publishing into a per-run hub; an HTTP
 response subscribes to it. A dropped connection **detaches** — it never cancels — because D2's whole
 promise is that a turn outlives the terminal that started it, and an ingestion turn killed because a
@@ -74,10 +93,15 @@ because step 5's Telegram adapter runs *inside* the daemon and calls `PkbService
 approval helper is the one place an interrupt becomes a `Decision`, so both human channels answer
 identically; only the rendering differs.
 
-Large-source ingestion has its own spec and is not built. It changes **nothing** in `pkb.core`: one
-physical file per source with the arguments as sections inside it is the shape Layer 1 already
-implements. What it adds is in `pkb.agents` — per-kind extraction skills and a resumable, chunked
-workflow that walks a source through a windowed reader rather than a whole-file `read_file`.
+Large-source ingestion has its own spec and **is built** (2026-08-07). It changes **nothing**
+in `pkb.core`: one physical file per source with the arguments as sections inside it is the shape
+Layer 1 already implements. What it adds is `pkb.sources` (a leaf module: extraction and staging, no
+harness import) and `pkb.agents.ingestion` — a resumable, chunked loop that walks a source through a
+windowed reader rather than a whole-file `read_file`. **The loop is code, not a tool the model may
+decline to call**: the harness asks one bounded question per section and the sections that yielded
+nothing are named in the file, because the failure this shape exists to prevent is a confident
+write-up of the part that fit in one context window with nothing recording that the rest was never
+opened. Reached from any Topic Expert in plain language — `docs/how-to/getting-started.md` §6.
 
 ## Models
 

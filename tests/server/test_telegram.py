@@ -66,6 +66,7 @@ from pkb.contracts import (
 )
 from pkb.server.telegram import (
     COMMANDS,
+    Channel,
     TelegramAdapter,
     TelegramConfig,
     callback_data,
@@ -81,11 +82,21 @@ from pkb.server.telegram_api import (
     TelegramError,
 )
 from pkb.service import RunSubscription, Thread, ThreadDetail
-from pkb.service.telegram import PROMPTS_TABLE, SqliteTelegramStore
+from pkb.service.telegram import GENERAL, PROMPTS_TABLE, SqliteTelegramStore
 from tests.server.stub import AGENTS, COOKING, GRILLING, LIBRARIAN, NOW, StubService
 
 CHAT = 770001
 """The one mapped chat. Its agent is :data:`COOKING`."""
+
+HOME = Channel(CHAT, GENERAL)
+"""The General area of the one mapped chat — this whole file's channel (TG-72, TG-73).
+
+Every rule here predates topics and none of them changed: §9 re-keyed the addressing unit from
+the chat to the channel, and a chat with Threaded Mode off has exactly one channel, which is
+this. Spelling it out at each call site is TG-72's point — a call that omits the topic files a
+message under whichever binding happens to be General's, and that mis-file is invisible in a
+diff.
+"""
 
 OTHER_CHAT = 770002
 STRANGER_CHAT = 880002
@@ -501,7 +512,7 @@ async def bind(
     """Give the chat a current thread, as a second message in a live chat always has."""
     thread = thread_row(thread_id, agent_id)
     service.rows[thread_id] = thread
-    await store.bind(chat_id, thread_id, agent_id)
+    await store.bind(chat_id, GENERAL, thread_id, agent_id)
     return thread
 
 
@@ -645,7 +656,7 @@ async def test_an_unmapped_chat_runs_nothing_and_says_the_message_was_dropped_tg
     await deliver(bot, message_update(chat_id=STRANGER_CHAT, sender=OWNER, text="steak notes"))
 
     assert service.calls == []
-    assert await store.bound_thread(STRANGER_CHAT) is None
+    assert await store.bound_thread(STRANGER_CHAT, GENERAL) is None
     assert await prompt_rows(connection) == []
     assert "not kept" in api.texts[0]
 
@@ -682,7 +693,7 @@ async def test_three_updates_leave_one_run_and_two_silences_tg20(
 
     assert kinds(journal).count("start_run") == 1
     assert len(api.sent) == sent_after_owner, "the second and third updates produced no reply"
-    assert await store.bound_thread(STRANGER_CHAT) is None
+    assert await store.bound_thread(STRANGER_CHAT, GENERAL) is None
 
 
 @pytest.mark.asyncio
@@ -702,7 +713,7 @@ async def test_a_stranger_pressing_a_button_resolves_nothing_decision_x(
     await bind(service, store)
     bot = adapter(service, store, api)
     service.pending = approval()
-    await bot._post_approval(CHAT, approval())
+    await bot._post_approval(HOME, approval())
     handle = (await handles(connection))[0]
     journal.clear()
 
@@ -734,7 +745,7 @@ async def test_a_stranger_pressing_a_button_is_told_why_decision_x(
     await bind(service, store)
     bot = adapter(service, store, api)
     service.pending = approval()
-    await bot._post_approval(CHAT, approval())
+    await bot._post_approval(HOME, approval())
     handle = (await handles(connection))[0]
 
     with caplog.at_level(logging.WARNING, logger="pkb.server.telegram"):
@@ -795,7 +806,10 @@ async def test_a_photo_is_refused_with_its_caption_and_touches_no_file_tg36(
         ),
     )
 
-    assert service.calls == []
+    # TG-79, §9: routing now checks the channel's agent against the live catalog on every message,
+    # so `list_agents` — a synchronous registry read, no run and no thread — is on this path by
+    # design. What must stay empty is everything that *does* something.
+    assert [name for name, _ in service.calls if name != "list_agents"] == []
     assert "smoked brisket at 107C for 12 hours" in api.transcript
     assert tree_digest(kb_root) == before
 
@@ -830,7 +844,7 @@ async def test_five_hundred_deltas_send_one_message_and_edit_none_tg41(
     service.rows[THREAD] = thread_row()
     bot = adapter(service, store, api)
 
-    await bot._consume(CHAT, local_subscription(script, closes=[]))
+    await bot._consume(HOME, COOKING, local_subscription(script, closes=[]))
     await drain(bot)
 
     assert api.edits == []
@@ -976,7 +990,7 @@ async def test_a_stream_that_stops_is_an_unknown_outcome_not_a_success_tg51(
     bot = adapter(service, store, api)
     journal.clear()
 
-    await bot._consume(CHAT, local_subscription(reply_script()[:1], closes=closes))
+    await bot._consume(HOME, COOKING, local_subscription(reply_script()[:1], closes=closes))
     await drain(bot)
 
     assert kinds(journal).count("get_thread") == 1
@@ -1017,7 +1031,7 @@ async def test_the_subscription_is_closed_even_when_the_stream_raises_tg52(
     )
     bot = adapter(service, store, api)
 
-    await bot._consume(CHAT, subscription)
+    await bot._consume(HOME, COOKING, subscription)
     await drain(bot)
 
     assert closes == [1]
@@ -1042,7 +1056,7 @@ async def test_the_subscription_close_is_called_not_awaited_tg52(
     closes: list[int] = []
     bot = adapter(service, store, api)
 
-    await bot._consume(CHAT, local_subscription(reply_script(), closes=closes))
+    await bot._consume(HOME, COOKING, local_subscription(reply_script(), closes=closes))
     await drain(bot)
 
     assert closes == [1]
@@ -1100,7 +1114,7 @@ async def test_a_pending_approval_neither_rotates_nor_retries_tg37(
 
     assert kinds(journal).count("start_run") == 1
     assert "create_thread" not in [name for name, _ in service.calls]
-    assert await store.bound_thread(CHAT) == THREAD
+    assert await store.bound_thread(CHAT, GENERAL) == THREAD
 
 
 @pytest.mark.asyncio
@@ -1177,7 +1191,7 @@ async def test_a_nine_thousand_character_description_arrives_whole_before_the_bu
     assert len(description) > 9000
     bot = adapter(service, store, api)
 
-    await bot._post_approval(CHAT, approval(actions=(action(description=description),)))
+    await bot._post_approval(HOME, approval(actions=(action(description=description),)))
 
     assert len(api.documents) == 1
     assert api.documents[0]["content"] == description.encode("utf-8")
@@ -1201,7 +1215,7 @@ async def test_the_validation_label_leads_the_button_message_tg66(
     description = f"Proposed content:\n\n# Steak\n\n{label}\n"
     bot = adapter(service, store, api)
 
-    await bot._post_approval(CHAT, approval(actions=(action(description=description),)))
+    await bot._post_approval(HOME, approval(actions=(action(description=description),)))
 
     button_message = api.with_keyboard[0]["text"]
     assert button_message.splitlines()[0] == label
@@ -1220,7 +1234,7 @@ async def test_a_clean_description_gets_no_validation_line_tg66(
     """
     bot = adapter(service, store, api)
 
-    await bot._post_approval(CHAT, approval())
+    await bot._post_approval(HOME, approval())
 
     assert "fails validation" not in api.with_keyboard[0]["text"]
 
@@ -1250,7 +1264,7 @@ async def test_a_fresh_adapter_resolves_a_press_it_never_sent_tg58(
     await bind(service, store)
     service.pending = request
     poster = adapter(service, store, api)
-    await poster._post_approval(CHAT, request)
+    await poster._post_approval(HOME, request)
     handle = (await handles(connection))[0]
 
     restarted = adapter(service, store, FakeBotApi(journal))
@@ -1299,7 +1313,7 @@ async def test_a_fan_out_approval_resolves_against_the_experts_own_thread_tg59(
     request = approval(thread_id=child_id, interrupt_id="i-child")
     service.details[child_id] = ThreadDetail(thread=thread_row(child_id, COOKING), pending=request)
     bot = adapter(service, store, api, chats={CHAT: LIBRARIAN})
-    await bot._post_approval(CHAT, request)
+    await bot._post_approval(HOME, request)
     handle = (await handles(connection))[0]
 
     await press(bot, handle, 0, "a")
@@ -1325,11 +1339,11 @@ async def test_answering_an_experts_approval_does_not_rebind_the_chat_tg59(
     request = approval(thread_id=child_id, interrupt_id="i-child")
     service.details[child_id] = ThreadDetail(thread=thread_row(child_id, COOKING), pending=request)
     bot = adapter(service, store, api, chats={CHAT: LIBRARIAN})
-    await bot._post_approval(CHAT, request)
+    await bot._post_approval(HOME, request)
 
     await press(bot, (await handles(connection))[0], 0, "a")
 
-    assert await store.bound_thread(CHAT) == THREAD
+    assert await store.bound_thread(CHAT, GENERAL) == THREAD
 
 
 @pytest.mark.asyncio
@@ -1356,7 +1370,7 @@ async def test_one_of_two_actions_answered_submits_nothing_tg60(
     await bind(service, store)
     service.pending = request
     bot = adapter(service, store, api)
-    await bot._post_approval(CHAT, request)
+    await bot._post_approval(HOME, request)
     assert len(api.with_keyboard) == 2, "one message per action, each with its own description"
     handle = (await handles(connection))[0]
     journal.clear()
@@ -1389,7 +1403,7 @@ async def test_the_last_answer_submits_every_decision_in_action_order_tg60(
     await bind(service, store)
     service.pending = request
     bot = adapter(service, store, api)
-    await bot._post_approval(CHAT, request)
+    await bot._post_approval(HOME, request)
     handle = (await handles(connection))[0]
 
     await press(bot, handle, 1, "r")
@@ -1423,7 +1437,7 @@ async def test_the_callback_is_answered_before_the_resume_tg61(
     await bind(service, store)
     service.pending = approval()
     bot = adapter(service, store, api)
-    await bot._post_approval(CHAT, approval())
+    await bot._post_approval(HOME, approval())
     handle = (await handles(connection))[0]
     journal.clear()
 
@@ -1450,7 +1464,7 @@ async def test_the_callback_is_answered_while_the_resume_is_still_blocked_tg61(
     await bind(service, store)
     service.pending = approval()
     bot = adapter(service, store, api)
-    await bot._post_approval(CHAT, approval())
+    await bot._post_approval(HOME, approval())
     handle = (await handles(connection))[0]
     gate = asyncio.Event()
     service.resume_gate = gate
@@ -1512,7 +1526,7 @@ async def test_a_press_on_an_interrupt_another_channel_answered_resumes_nothing_
     await bind(service, store)
     service.pending = approval(interrupt_id="i-live")
     bot = adapter(service, store, api)
-    await bot._post_approval(CHAT, approval(interrupt_id="i-live"))
+    await bot._post_approval(HOME, approval(interrupt_id="i-live"))
     handle = (await handles(connection))[0]
     service.pending = None  # the TUI answered it in the meantime
     journal.clear()
@@ -1547,7 +1561,7 @@ async def test_every_message_of_an_approval_loses_its_buttons_tg63(
     await bind(service, store)
     service.pending = request
     bot = adapter(service, store, api)
-    await bot._post_approval(CHAT, request)
+    await bot._post_approval(HOME, request)
     posted = {entry["chat_id"] for entry in api.with_keyboard}
     assert posted == {CHAT}
     handle = (await handles(connection))[0]
@@ -1577,7 +1591,7 @@ async def test_a_press_replayed_after_the_answer_resumes_nothing_tg63(
     await bind(service, store)
     service.pending = approval()
     bot = adapter(service, store, api)
-    await bot._post_approval(CHAT, approval())
+    await bot._post_approval(HOME, approval())
     handle = (await handles(connection))[0]
 
     await press(bot, handle, 0, "a")
@@ -1606,7 +1620,7 @@ async def test_a_press_that_cannot_be_applied_says_so_tg58(
     await bind(service, store)
     service.pending = approval(thread_id="t-vanished")
     bot = adapter(service, store, api)
-    await bot._post_approval(CHAT, approval(thread_id="t-vanished"))
+    await bot._post_approval(HOME, approval(thread_id="t-vanished"))
     handle = (await handles(connection))[0]
     journal.clear()
 
@@ -1668,7 +1682,7 @@ async def test_an_action_nobody_can_answer_is_a_hand_off_not_an_empty_keyboard_t
     """
     bot = adapter(service, store, api)
 
-    await bot._post_approval(CHAT, approval(actions=(action(allowed=()),)))
+    await bot._post_approval(HOME, approval(actions=(action(allowed=()),)))
 
     assert api.with_keyboard == []
     assert "resume" not in kinds(journal)
@@ -1689,7 +1703,7 @@ async def test_the_hand_off_names_the_thread_it_parked_on_tg55(
     bot = adapter(service, store, api)
 
     await bot._post_approval(
-        CHAT, approval(thread_id=THREAD, agent_id=COOKING, actions=(action(allowed=()),))
+        HOME, approval(thread_id=THREAD, agent_id=COOKING, actions=(action(allowed=()),))
     )
 
     assert THREAD in api.transcript
@@ -1724,7 +1738,7 @@ async def test_no_emitted_button_carries_a_thread_or_interrupt_id_tg57(
     request = approval(thread_id=child_id, interrupt_id="i-child-0123456789abcdef")
     bot = adapter(service, store, api)
 
-    await bot._post_approval(CHAT, request)
+    await bot._post_approval(HOME, request)
 
     for entry in api.with_keyboard:
         for row in entry["kb"]:
@@ -1753,7 +1767,7 @@ async def test_a_destructive_reason_takes_a_second_tap_tg64(
     await bind(service, store)
     service.pending = request
     bot = adapter(service, store, api)
-    await bot._post_approval(CHAT, request)
+    await bot._post_approval(HOME, request)
     handle = (await handles(connection))[0]
 
     await press(bot, handle, 0, "a")
@@ -1878,7 +1892,7 @@ async def test_several_messages_share_one_thread_tg26(
     assert len(started) == 6
     assert len(set(started)) == 1
     assert [name for name, _ in service.calls].count("create_thread") == 1
-    assert await store.bound_thread(CHAT) == started[0]
+    assert await store.bound_thread(CHAT, GENERAL) == started[0]
 
 
 @pytest.mark.asyncio
@@ -1907,15 +1921,23 @@ async def test_only_new_rotates_the_thread_tg27(
 # --------------------------------------------------------------------------------------
 
 
-def test_the_command_surface_is_exactly_five_and_has_no_connect_tg39() -> None:
+def test_the_command_surface_is_exactly_six_and_has_no_connect_or_talk_tg39() -> None:
     """``/connect`` is gone, and with it "which expert am I talking to?".
 
-    A chat is bound to its agent by deployment configuration. A runtime ``/connect`` is a binding
-    the human can change from the phone and then forget, which is precisely how a mis-sent note
-    lands in the wrong topic — a write with no undo, filed under the wrong subject.
+    A channel is bound to its agent by the topic the human is typing in — visible above the keyboard
+    at the moment they hit send. A runtime ``/connect`` is a binding they can change from the phone
+    and then forget, which is precisely how a mis-sent note lands in the wrong topic: a write with
+    no undo, filed under the wrong subject. ``/channels`` (§9, TG-86/TG-87) is the sixth and it is
+    not that: it *creates* the topic whose title then does the addressing, and it changes nothing
+    about where the next message goes.
+
+    ``/talk`` is asserted absent for the same reason as ``/connect`` (decision AF). It was the
+    obvious command to add once experts had channels, and it would have restored the hidden
+    current-agent mode under a new name — the one thing a topic title cannot be is invisible.
     """
-    assert COMMANDS == ("/new", "/threads", "/agents", "/pending", "/cancel")
+    assert COMMANDS == ("/new", "/threads", "/agents", "/pending", "/cancel", "/channels")
     assert "/connect" not in COMMANDS
+    assert "/talk" not in COMMANDS
 
 
 @pytest.mark.asyncio
@@ -1932,7 +1954,10 @@ async def test_an_unknown_command_runs_nothing_and_lists_the_real_ones_tg39(
     await deliver(bot, message_update(text="/connect topic/cooking"))
 
     assert "start_run" not in kinds(journal)
-    assert service.calls == []
+    # TG-79, §9: routing now checks the channel's agent against the live catalog on every message,
+    # so `list_agents` — a synchronous registry read, no run and no thread — is on this path by
+    # design. What must stay empty is everything that *does* something.
+    assert [name for name, _ in service.calls if name != "list_agents"] == []
     for command in COMMANDS:
         assert command in api.transcript
 
@@ -2011,8 +2036,8 @@ async def test_two_chats_on_one_agent_hold_independent_threads_tg25(
     await deliver(bot, message_update(update_id=1, chat_id=CHAT, text="first"))
     await deliver(bot, message_update(update_id=2, chat_id=OTHER_CHAT, text="second"))
 
-    first = await store.bound_thread(CHAT)
-    second = await store.bound_thread(OTHER_CHAT)
+    first = await store.bound_thread(CHAT, GENERAL)
+    second = await store.bound_thread(OTHER_CHAT, GENERAL)
     assert first is not None
     assert second is not None
     assert first != second
@@ -2036,7 +2061,7 @@ async def test_the_preview_never_tells_the_human_to_open_the_tui_for_text_above_
     description = "\n".join(f"- bullet {n}: something the human wrote" for n in range(200))
     bot = adapter(service, store, api)
 
-    await bot._post_approval(CHAT, approval(actions=(action(description=description),)))
+    await bot._post_approval(HOME, approval(actions=(action(description=description),)))
 
     button_message = api.with_keyboard[0]["text"]
     assert TRUNCATION_MARKER.strip() not in button_message
@@ -2121,7 +2146,7 @@ async def test_a_warm_ledger_resumes_and_drains_nothing_tg29(
     which is the same lost note the cold-start rule is willing to accept only because there is no
     record that anything was ever expected.
     """
-    await store.claim(100, CHAT, "message")
+    await store.claim(100, CHAT, GENERAL, "message")
     await store.dispatched(100)
     bot = adapter(service, store, api)
 
@@ -2159,7 +2184,7 @@ async def test_a_second_consumer_of_the_token_stops_the_poll_and_names_both_caus
     adds a third, so the harder the supervisor tries the worse it gets. The two causes are named
     because they need opposite fixes: stop the other daemon, or restart this one cleanly.
     """
-    await store.claim(1, CHAT, "message")
+    await store.claim(1, CHAT, GENERAL, "message")
     await store.dispatched(1)
     bot = adapter(service, store, api)
     bot.conflict_interval = 0
@@ -2191,7 +2216,7 @@ async def test_polling_resumes_when_the_other_poller_goes_away_tg9(
     blips leave the bot at a permanent delay for the life of the process (the defect ``_supervise``
     already has), and because nothing about a 409 gets better by waiting longer each time.
     """
-    await store.claim(1, CHAT, "message")
+    await store.claim(1, CHAT, GENERAL, "message")
     await store.dispatched(1)
     bot = adapter(service, store, api)
     bot.conflict_interval = 0
@@ -2310,7 +2335,7 @@ async def test_a_press_on_an_answered_approval_raises_an_alert_tg62(
     await bind(service, store)
     service.pending = approval(interrupt_id="i-live")
     bot = adapter(service, store, api)
-    await bot._post_approval(CHAT, approval(interrupt_id="i-live"))
+    await bot._post_approval(HOME, approval(interrupt_id="i-live"))
     handle = (await handles(connection))[0]
     await press(bot, handle, 0, "a")  # answered here
     journal.clear()
@@ -2338,7 +2363,7 @@ async def test_reachability_is_a_poll_that_returned_not_the_supervisors_state_tg
     and the human debugging it learns nothing. ``last_poll_ok_at`` is the only field that means
     Telegram answered.
     """
-    await store.claim(1, CHAT, "message")
+    await store.claim(1, CHAT, GENERAL, "message")
     await store.dispatched(1)
     bot = adapter(service, store, api)
     bot.health = FakeHealth()
@@ -2368,7 +2393,7 @@ async def test_a_send_that_fails_is_reported_rather_than_swallowed_tg13(
     bot = adapter(service, store, api)
     bot.health = FakeHealth()
 
-    await bot._queue(CHAT, "filed under Cooking")
+    await bot._queue(HOME, "filed under Cooking")
     await drain(bot)
 
     assert bot.health.send_errors, "a dropped reply that nothing records is a silent loss"
@@ -2418,7 +2443,7 @@ async def test_a_thread_started_from_a_chat_is_stamped_telegram_tg4(
     await deliver(bot, message_update(text="where does the steak note go?"))
 
     assert ("create_thread", (COOKING, "telegram")) in service.calls
-    thread_id = await store.bound_thread(CHAT)
+    thread_id = await store.bound_thread(CHAT, GENERAL)
     assert thread_id is not None
     assert service.rows[thread_id].origin_channel == "telegram"
 
@@ -2444,7 +2469,7 @@ async def test_remapping_a_chat_starts_a_fresh_thread_on_the_new_expert_tg26(
     await deliver(bot, message_update(text="what temperature for coals?"))
 
     assert ("create_thread", (GRILLING, "telegram")) in service.calls
-    assert await store.bound_thread(CHAT) != THREAD
+    assert await store.bound_thread(CHAT, GENERAL) != THREAD
     assert GRILLING in api.transcript
 
 
@@ -2540,7 +2565,7 @@ async def test_a_verb_the_live_action_does_not_allow_is_refused_not_converted_tg
     await bind(service, store)
     service.pending = request
     bot = adapter(service, store, api)
-    await bot._post_approval(CHAT, request)
+    await bot._post_approval(HOME, request)
     handle = (await handles(connection))[0]
 
     await press(bot, handle, 0, "a")
@@ -2573,7 +2598,7 @@ async def test_a_button_the_live_request_no_longer_offers_is_refused_not_recorde
     await bind(service, store)
     service.pending = approval()
     bot = adapter(service, store, api)
-    await bot._post_approval(CHAT, approval())
+    await bot._post_approval(HOME, approval())
     handle = (await handles(connection))[0]
     journal.clear()
 
@@ -2606,7 +2631,7 @@ async def test_cancelling_a_destructive_confirm_answers_nothing_tg64(
     await bind(service, store)
     service.pending = request
     bot = adapter(service, store, api)
-    await bot._post_approval(CHAT, request)
+    await bot._post_approval(HOME, request)
     handle = (await handles(connection))[0]
 
     await press(bot, handle, 0, "a")  # first tap: the confirm step
@@ -2639,7 +2664,7 @@ async def test_the_confirm_step_loses_its_keyboard_with_every_other_message_tg63
     await bind(service, store)
     service.pending = request
     bot = adapter(service, store, api)
-    await bot._post_approval(CHAT, request)
+    await bot._post_approval(HOME, request)
     handle = (await handles(connection))[0]
 
     await press(bot, handle, 0, "a")  # the confirm step, which posts a second keyboard
@@ -2676,7 +2701,7 @@ async def test_a_resume_that_loses_the_race_still_raises_an_alert_tg62(
     await bind(service, store)
     service.pending = approval()
     bot = adapter(service, store, api)
-    await bot._post_approval(CHAT, approval())
+    await bot._post_approval(HOME, approval())
     handle = (await handles(connection))[0]
 
     async def refuse(*_args: Any, **_kwargs: Any) -> Any:
@@ -2718,7 +2743,7 @@ async def test_a_failed_upload_hands_off_instead_of_attaching_buttons_to_a_fragm
     api.send_document = refuse  # type: ignore[method-assign]
     bot = adapter(service, store, api)
 
-    await bot._post_approval(CHAT, request)
+    await bot._post_approval(HOME, request)
     await drain(bot)
 
     assert api.with_keyboard == []
@@ -2766,7 +2791,7 @@ async def test_the_validation_findings_travel_with_their_header_tg66(
     request = approval(actions=(action(description=f"{label}\n\nProposed content:\n\n# Steak\n"),))
     bot = adapter(service, store, api)
 
-    await bot._post_approval(CHAT, request)
+    await bot._post_approval(HOME, request)
     await drain(bot)
 
     button_message = api.with_keyboard[0]["text"]
@@ -2798,7 +2823,7 @@ async def test_a_one_tap_reject_carries_no_prose_tg65(
     await bind(service, store)
     service.pending = approval()
     bot = adapter(service, store, api)
-    await bot._post_approval(CHAT, approval())
+    await bot._post_approval(HOME, approval())
     handle = (await handles(connection))[0]
 
     await press(bot, handle, 0, "r")
@@ -2860,7 +2885,7 @@ async def test_a_cancel_delivered_during_a_run_is_read_while_the_run_is_still_li
         yield RunEnd(run_id=RUN, final_text="done")
 
     service.rows[THREAD] = thread_row()
-    await store.bind(CHAT, THREAD, COOKING)
+    await store.bind(CHAT, GENERAL, THREAD, COOKING)
     holding = RunSubscription(
         handle=RunHandle(run_id=RUN, agent_id=COOKING, thread_id=THREAD),
         events=held(),
@@ -2876,7 +2901,9 @@ async def test_a_cancel_delivered_during_a_run_is_read_while_the_run_is_still_li
 
     service.start_run = start_run  # type: ignore[method-assign]
     service.attach = attaching  # type: ignore[method-assign]
-    await store.claim(0, CHAT, "message")  # a warm ledger, so TG-30 does not drain the backlog
+    await store.claim(
+        0, CHAT, GENERAL, "message"
+    )  # a warm ledger, so TG-30 does not drain the backlog
     await store.dispatched(0)
     api.pending = [
         message_update(1, text="file the steak note"),
@@ -2910,7 +2937,9 @@ async def test_a_crash_before_start_run_names_the_loss_to_the_chat_that_lost_it_
     suite's own constants — mapping ``{770001: 'topic/cooking'}``, owners ``{42}`` — is **zero
     notices** for a real orphan. A silent loss is the one outcome this rule names as unacceptable.
     """
-    await store.claim(100, CHAT, "message")  # claimed, and the process died before `start_run`
+    await store.claim(
+        100, CHAT, GENERAL, "message"
+    )  # claimed, and the process died before `start_run`
     bot = adapter(service, store, api)
 
     await bot._report_orphans()
@@ -2934,11 +2963,11 @@ async def test_a_run_that_was_admitted_is_never_reported_as_lost_tg29(
     the divergent second write into a tree with no undo that decision T exists to stop. Three
     states, and the middle one is what makes the notice honest.
     """
-    await store.claim(100, CHAT, "message")
+    await store.claim(100, CHAT, GENERAL, "message")
     await store.started(100, THREAD, RUN)
 
     assert await store.orphans() == []
-    assert await store.unfinished() == [(100, CHAT, THREAD)]
+    assert await store.unfinished() == [(100, CHAT, GENERAL, THREAD)]
 
     bot = adapter(service, store, api)
     await bot._report_orphans()
@@ -2976,7 +3005,7 @@ async def test_a_restart_reposts_the_keyboard_of_a_parked_fan_out_gate_tg31(
         pending=approval(thread_id=child_id, interrupt_id="i-child"),
         children=(),
     )
-    await store.claim(100, CHAT, "message")
+    await store.claim(100, CHAT, GENERAL, "message")
     await store.started(100, THREAD, RUN)
     bot = adapter(service, store, api)
 
@@ -3004,7 +3033,7 @@ async def test_a_restart_delivers_the_reply_the_chat_never_heard_tg31(
         MessageView(role="human", text="where does the steak note go?", created_at=None),
         MessageView(role="assistant", text="Filed under Cooking.", created_at=None),
     ]
-    await store.claim(100, CHAT, "message")
+    await store.claim(100, CHAT, GENERAL, "message")
     await store.started(100, THREAD, RUN)
     bot = adapter(service, store, api)
 
@@ -3039,8 +3068,8 @@ async def test_a_reply_is_never_dropped_for_a_full_outbox_tg49(
 
     assert bot._outbox.maxsize == 0, "a bounded outbox has a drop path, and every frame here is one"
     for index in range(200):  # far past the 64-slot cap the build shipped
-        await bot._queue(CHAT, f"earlier {index}")
-    await bot._queue(CHAT, "THE REPLY THE HUMAN NEEDS")
+        await bot._queue(HOME, f"earlier {index}")
+    await bot._queue(HOME, "THE REPLY THE HUMAN NEEDS")
     await drain(bot)
 
     assert "THE REPLY THE HUMAN NEEDS" in api.texts
@@ -3066,7 +3095,7 @@ async def test_a_chat_that_blocked_the_bot_never_makes_the_daemon_degraded_tg13(
     health = HealthState(runtime_open=True)
     health.telegram.running()
     api.send_error = TelegramError("sendMessage", 403, "Forbidden: bot was blocked by the user")
-    await store.claim(100, CHAT, "message")
+    await store.claim(100, CHAT, GENERAL, "message")
     bot = adapter(service, store, api)
     bot.health = health.telegram
 
@@ -3139,7 +3168,7 @@ async def test_two_experts_gating_at_once_both_get_their_keyboard_back_tg53(
         )
     bot = adapter(service, store, api)
 
-    await bot._repost_pending(CHAT, THREAD)
+    await bot._repost_pending(HOME, THREAD)
     await drain(bot)
 
     assert len(api.with_keyboard) == 2

@@ -31,6 +31,8 @@ import pytest
 
 from pkb.service.telegram import (
     BINDINGS_TABLE,
+    CHANNELS_TABLE,
+    GENERAL,
     LEDGER_TABLE,
     PROMPTS_TABLE,
     SqliteTelegramStore,
@@ -56,7 +58,22 @@ CREATE TABLE threads (thread_id TEXT PRIMARY KEY, agent_id TEXT NOT NULL);
 CREATE INDEX store_prefix_idx ON store (prefix);
 """
 
-OWNED_TABLES = {BINDINGS_TABLE, LEDGER_TABLE, PROMPTS_TABLE}
+OWNED_TABLES = {
+    BINDINGS_TABLE,
+    LEDGER_TABLE,
+    PROMPTS_TABLE,
+    CHANNELS_TABLE,
+    f"{CHANNELS_TABLE}_topic_idx",
+}
+"""Everything ``setup()`` adds to a shared file, **including the index** (ST-7, TG-77).
+
+The index is here because ``catalog()`` reads ``sqlite_master``, where an index is a row
+like any other — and because ST-7's rule is about the *names* this layer takes in a file
+it shares with the checkpointer. An unprefixed index name collides exactly as destructively
+as an unprefixed table name and is easier to add without noticing. The directory itself
+(``CHANNELS_TABLE``) arrived with §9; the legacy bindings table is deliberately absent,
+because a fresh install is never handed it (TG-28 amended).
+"""
 
 
 # --------------------------------------------------------------------------------------
@@ -133,10 +150,10 @@ async def test_a_redelivered_update_is_claimed_only_once_tg29(db_path: Path) -> 
     whatever else happened in between.
     """
     async with opened(db_path) as store:
-        assert await store.claim(100, CHAT, "message") is True
-        assert await store.claim(100, CHAT, "message") is False
+        assert await store.claim(100, CHAT, GENERAL, "message") is True
+        assert await store.claim(100, CHAT, GENERAL, "message") is False
         await store.dispatched(100)
-        assert await store.claim(100, CHAT, "message") is False
+        assert await store.claim(100, CHAT, GENERAL, "message") is False
 
 
 @pytest.mark.asyncio
@@ -149,10 +166,10 @@ async def test_a_redelivery_after_a_restart_is_still_refused_tg29(db_path: Path)
     where the turn most likely already wrote.
     """
     async with opened(db_path) as store:
-        assert await store.claim(100, CHAT, "message") is True
+        assert await store.claim(100, CHAT, GENERAL, "message") is True
 
     async with opened(db_path) as restarted:
-        assert await restarted.claim(100, CHAT, "message") is False
+        assert await restarted.claim(100, CHAT, GENERAL, "message") is False
 
 
 @pytest.mark.asyncio
@@ -180,9 +197,9 @@ async def test_the_offset_is_the_highest_claim_plus_one_whatever_order_they_arri
     when updates are handled out of order.
     """
     async with opened(db_path) as store:
-        await store.claim(104, CHAT, "message")
-        await store.claim(100, CHAT, "callback_query")
-        await store.claim(102, OTHER_CHAT, "message")
+        await store.claim(104, CHAT, GENERAL, "message")
+        await store.claim(100, CHAT, GENERAL, "callback_query")
+        await store.claim(102, OTHER_CHAT, GENERAL, "message")
 
         assert await store.next_offset() == 105
 
@@ -197,10 +214,10 @@ async def test_the_offset_does_not_wait_for_dispatch_tg29(db_path: Path) -> None
     poll — reintroducing exactly the duplicate the ledger was added to prevent.
     """
     async with opened(db_path) as store:
-        await store.claim(7, CHAT, "message")
+        await store.claim(7, CHAT, GENERAL, "message")
 
         assert await store.next_offset() == 8
-        assert await store.orphans() == [(7, CHAT)]
+        assert await store.orphans() == [(7, CHAT, GENERAL)]
 
 
 @pytest.mark.asyncio
@@ -215,8 +232,8 @@ async def test_a_reopened_store_resumes_at_the_offset_the_ledger_implies_tg29(
     point is asserted across an actual close/reopen rather than on a live object.
     """
     async with opened(db_path) as store:
-        await store.claim(500, CHAT, "message")
-        await store.claim(501, CHAT, "callback_query")
+        await store.claim(500, CHAT, GENERAL, "message")
+        await store.claim(501, CHAT, GENERAL, "callback_query")
         await store.dispatched(500)
 
     async with opened(db_path) as restarted:
@@ -236,7 +253,7 @@ async def test_the_offset_is_derived_from_the_ledger_not_remembered_beside_it_tg
     """
     async with opened(db_path) as store, opened(db_path) as concurrent:
         assert await store.next_offset() is None
-        await concurrent.claim(900, CHAT, "message")
+        await concurrent.claim(900, CHAT, GENERAL, "message")
 
         assert await store.next_offset() == 901
 
@@ -254,13 +271,13 @@ async def test_an_update_claimed_but_never_dispatched_is_named_in_arrival_order_
     """
     async with opened(db_path) as store:
         for update_id in (12, 5, 9):
-            await store.claim(update_id, CHAT, "message")
+            await store.claim(update_id, CHAT, GENERAL, "message")
         await store.dispatched(9)
 
-        assert await store.orphans() == [(5, CHAT), (12, CHAT)]
+        assert await store.orphans() == [(5, CHAT, GENERAL), (12, CHAT, GENERAL)]
 
     async with opened(db_path) as restarted:
-        assert await restarted.orphans() == [(5, CHAT), (12, CHAT)]
+        assert await restarted.orphans() == [(5, CHAT, GENERAL), (12, CHAT, GENERAL)]
         await restarted.dispatched(5)
         await restarted.dispatched(12)
         assert await restarted.orphans() == []
@@ -276,7 +293,7 @@ async def test_a_clean_session_leaves_nothing_to_apologise_for_tg29(db_path: Pat
     """
     async with opened(db_path) as store:
         for update_id in (1, 2, 3):
-            await store.claim(update_id, CHAT, "message")
+            await store.claim(update_id, CHAT, GENERAL, "message")
             await store.dispatched(update_id)
 
     async with opened(db_path) as restarted:
@@ -295,7 +312,9 @@ async def test_twenty_concurrent_claims_of_one_update_yield_exactly_one_true_tg2
     primary key's, which is why the answer is the statement's own ``rowcount`` and not a lookup.
     """
     async with opened(db_path) as store:
-        results = await asyncio.gather(*(store.claim(77, CHAT, "message") for _ in range(20)))
+        results = await asyncio.gather(
+            *(store.claim(77, CHAT, GENERAL, "message") for _ in range(20))
+        )
 
         assert results.count(True) == 1
         assert results.count(False) == 19
@@ -313,10 +332,10 @@ async def test_two_stores_on_one_file_still_agree_on_who_claimed_it_tg29(db_path
     """
     async with opened(db_path) as first, opened(db_path) as second:
         outcomes = await asyncio.gather(
-            first.claim(31, CHAT, "message"),
-            second.claim(31, CHAT, "message"),
-            first.claim(31, CHAT, "message"),
-            second.claim(31, CHAT, "message"),
+            first.claim(31, CHAT, GENERAL, "message"),
+            second.claim(31, CHAT, GENERAL, "message"),
+            first.claim(31, CHAT, GENERAL, "message"),
+            second.claim(31, CHAT, GENERAL, "message"),
         )
 
         assert outcomes.count(True) == 1
@@ -334,12 +353,12 @@ async def test_a_hundred_interleaved_statements_never_lock_the_file_st3(db_path:
     async with opened(db_path) as first, opened(db_path) as second:
         work = []
         for n in range(50):
-            work.append(first.claim(n, CHAT, "message"))
-            work.append(second.bind(CHAT + n, f"{THREAD}-{n}", LIBRARIAN))
+            work.append(first.claim(n, CHAT, GENERAL, "message"))
+            work.append(second.bind(CHAT + n, GENERAL, f"{THREAD}-{n}", LIBRARIAN))
         await asyncio.gather(*work)
 
         assert await first.next_offset() == 50
-        assert await second.bound_thread(CHAT + 3) == f"{THREAD}-3"
+        assert await second.bound_thread(CHAT + 3, GENERAL) == f"{THREAD}-3"
 
 
 # --------------------------------------------------------------------------------------
@@ -356,7 +375,7 @@ async def test_an_unknown_chat_has_no_bound_thread_tg26(db_path: Path) -> None:
     opening line disappears into a 404 they never see.
     """
     async with opened(db_path) as store:
-        assert await store.bound_thread(CHAT) is None
+        assert await store.bound_thread(CHAT, GENERAL) is None
 
 
 @pytest.mark.asyncio
@@ -369,10 +388,10 @@ async def test_a_binding_survives_a_restart_s(db_path: Path) -> None:
     says so.
     """
     async with opened(db_path) as store:
-        await store.bind(CHAT, THREAD, LIBRARIAN)
+        await store.bind(CHAT, GENERAL, THREAD, LIBRARIAN)
 
     async with opened(db_path) as restarted:
-        assert await restarted.bound_thread(CHAT) == THREAD
+        assert await restarted.bound_thread(CHAT, GENERAL) == THREAD
 
 
 @pytest.mark.asyncio
@@ -384,13 +403,13 @@ async def test_rebinding_replaces_the_thread_rather_than_stacking_one_tg27(db_pa
     TG-1 was ruled to fix. Proven by unbinding **once**: an older row underneath would surface.
     """
     async with opened(db_path) as store:
-        await store.bind(CHAT, THREAD, LIBRARIAN)
-        await store.bind(CHAT, "second-thread", LIBRARIAN)
+        await store.bind(CHAT, GENERAL, THREAD, LIBRARIAN)
+        await store.bind(CHAT, GENERAL, "second-thread", LIBRARIAN)
 
-        assert await store.bound_thread(CHAT) == "second-thread"
+        assert await store.bound_thread(CHAT, GENERAL) == "second-thread"
 
-        await store.unbind(CHAT)
-        assert await store.bound_thread(CHAT) is None
+        await store.unbind(CHAT, GENERAL)
+        assert await store.bound_thread(CHAT, GENERAL) is None
 
 
 @pytest.mark.asyncio
@@ -403,10 +422,10 @@ async def test_rebinding_can_move_a_chat_to_another_agents_thread_tg40(db_path: 
     headline scenario unreachable from Telegram.
     """
     async with opened(db_path) as store:
-        await store.bind(CHAT, THREAD, LIBRARIAN)
-        await store.bind(CHAT, FANOUT_THREAD, COOKING)
+        await store.bind(CHAT, GENERAL, THREAD, LIBRARIAN)
+        await store.bind(CHAT, GENERAL, FANOUT_THREAD, COOKING)
 
-        assert await store.bound_thread(CHAT) == FANOUT_THREAD
+        assert await store.bound_thread(CHAT, GENERAL) == FANOUT_THREAD
 
 
 @pytest.mark.asyncio
@@ -418,13 +437,13 @@ async def test_unbinding_one_chat_leaves_every_other_chat_alone_tg27(db_path: Pa
     lands in the wrong thread.
     """
     async with opened(db_path) as store:
-        await store.bind(CHAT, THREAD, LIBRARIAN)
-        await store.bind(OTHER_CHAT, FANOUT_THREAD, COOKING)
+        await store.bind(CHAT, GENERAL, THREAD, LIBRARIAN)
+        await store.bind(OTHER_CHAT, GENERAL, FANOUT_THREAD, COOKING)
 
-        await store.unbind(CHAT)
+        await store.unbind(CHAT, GENERAL)
 
-        assert await store.bound_thread(CHAT) is None
-        assert await store.bound_thread(OTHER_CHAT) == FANOUT_THREAD
+        assert await store.bound_thread(CHAT, GENERAL) is None
+        assert await store.bound_thread(OTHER_CHAT, GENERAL) == FANOUT_THREAD
 
 
 @pytest.mark.asyncio
@@ -436,9 +455,9 @@ async def test_unbinding_a_chat_that_was_never_bound_is_not_an_error_tg27(db_pat
     with a backoff — for the most ordinary keystroke in the command surface.
     """
     async with opened(db_path) as store:
-        await store.unbind(CHAT)
+        await store.unbind(CHAT, GENERAL)
 
-        assert await store.bound_thread(CHAT) is None
+        assert await store.bound_thread(CHAT, GENERAL) is None
 
 
 # --------------------------------------------------------------------------------------
@@ -448,7 +467,7 @@ async def test_unbinding_a_chat_that_was_never_bound_is_not_an_error_tg27(db_pat
 
 async def open_two_action_prompt(store: SqliteTelegramStore) -> None:
     """One approval the human is being shown, with two actions and therefore two messages."""
-    await store.open_prompt(HANDLE, CHAT, FANOUT_THREAD, "int-7", 2)
+    await store.open_prompt(HANDLE, CHAT, GENERAL, FANOUT_THREAD, "int-7", 2)
 
 
 @pytest.mark.asyncio
@@ -550,7 +569,7 @@ async def test_the_returned_answers_are_keyed_by_action_index_not_by_a_string_tg
     before action 2 — and the human's approve lands on a different write than the one they read.
     """
     async with opened(db_path) as store:
-        await store.open_prompt(HANDLE, CHAT, FANOUT_THREAD, "int-7", 12)
+        await store.open_prompt(HANDLE, CHAT, GENERAL, FANOUT_THREAD, "int-7", 12)
         await store.record_answer(HANDLE, 2, "approve")
         answers = await store.record_answer(HANDLE, 10, "reject")
 
@@ -570,7 +589,7 @@ async def test_answering_the_same_action_twice_replaces_rather_than_appends_tg64
     the approval would sit parked forever with the human staring at a confirmed button.
     """
     async with opened(db_path) as store:
-        await store.open_prompt(HANDLE, CHAT, THREAD, "int-9", 1)
+        await store.open_prompt(HANDLE, CHAT, GENERAL, THREAD, "int-9", 1)
         await store.record_answer(HANDLE, 0, "approve")
         answers = await store.record_answer(HANDLE, 0, "reject")
 
@@ -613,8 +632,8 @@ async def test_two_approvals_in_one_chat_never_share_an_accumulator_tg60(db_path
     decision the human never made about a file they never saw.
     """
     async with opened(db_path) as store:
-        await store.open_prompt(HANDLE, CHAT, FANOUT_THREAD, "int-7", 2)
-        await store.open_prompt("b2c3d4e5", CHAT, f"{THREAD}::topic/grilling", "int-8", 1)
+        await store.open_prompt(HANDLE, CHAT, GENERAL, FANOUT_THREAD, "int-7", 2)
+        await store.open_prompt("b2c3d4e5", CHAT, GENERAL, f"{THREAD}::topic/grilling", "int-8", 1)
 
         await store.record_answer(HANDLE, 0, "approve")
         other = await store.record_answer("b2c3d4e5", 0, "reject")
@@ -739,16 +758,16 @@ async def test_a_full_bot_session_leaves_the_foreign_tables_byte_identical_st7(
     queue_rows = rows_of(db_path, "scan_queue")
 
     async with opened(db_path) as store:
-        await store.bind(CHAT, THREAD, LIBRARIAN)
-        await store.claim(1, CHAT, "message")
+        await store.bind(CHAT, GENERAL, THREAD, LIBRARIAN)
+        await store.claim(1, CHAT, GENERAL, "message")
         await store.dispatched(1)
-        await store.claim(2, CHAT, "callback_query")
+        await store.claim(2, CHAT, GENERAL, "callback_query")
         await open_two_action_prompt(store)
         await store.record_message(HANDLE, 11)
         await store.record_answer(HANDLE, 0, "approve")
         await store.record_answer(HANDLE, 1, "reject")
         await store.resolve_prompt(HANDLE)
-        await store.unbind(CHAT)
+        await store.unbind(CHAT, GENERAL)
 
     after = catalog(db_path)
 
@@ -770,15 +789,15 @@ async def test_setup_over_an_existing_file_keeps_every_row_the_bot_already_wrote
     again and every parked approval becomes a handle nobody can resolve.
     """
     async with opened(db_path) as store:
-        await store.claim(42, CHAT, "message")
-        await store.bind(CHAT, THREAD, LIBRARIAN)
+        await store.claim(42, CHAT, GENERAL, "message")
+        await store.bind(CHAT, GENERAL, THREAD, LIBRARIAN)
         await open_two_action_prompt(store)
 
     async with opened(db_path) as restarted:
         await restarted.setup()
 
         assert await restarted.next_offset() == 43
-        assert await restarted.bound_thread(CHAT) == THREAD
+        assert await restarted.bound_thread(CHAT, GENERAL) == THREAD
         assert await restarted.prompt(HANDLE) is not None
 
 
@@ -866,9 +885,9 @@ async def test_the_store_is_hammered_while_a_run_streams_and_never_locks_tg28(
             async def botting() -> None:
                 for index in range(200):
                     try:
-                        await store.claim(index, CHAT, "message")
+                        await store.claim(index, CHAT, GENERAL, "message")
                         await store.started(index, THREAD, f"run-{index}")
-                        await store.open_prompt(f"h{index}", CHAT, THREAD, f"i-{index}", 1)
+                        await store.open_prompt(f"h{index}", CHAT, GENERAL, THREAD, f"i-{index}", 1)
                         await store.record_answer(f"h{index}", 0, "a")
                     except sqlite3.OperationalError as exc:  # pragma: no cover - the failure case
                         errors.append(str(exc))
@@ -904,10 +923,10 @@ async def test_a_whole_approval_cycle_leaves_the_knowledge_base_byte_identical_t
     }
 
     async with opened(tmp_path / "pkb.sqlite") as store:
-        await store.claim(1, CHAT, "message")
-        await store.bind(CHAT, THREAD, COOKING)
+        await store.claim(1, CHAT, GENERAL, "message")
+        await store.bind(CHAT, GENERAL, THREAD, COOKING)
         await store.started(1, THREAD, "run-1")
-        await store.open_prompt(HANDLE, CHAT, THREAD, "i-1", 2)
+        await store.open_prompt(HANDLE, CHAT, GENERAL, THREAD, "i-1", 2)
         await store.record_message(HANDLE, 1001)
         await store.record_answer(HANDLE, 0, "a")
         await store.record_answer(HANDLE, 1, "r")

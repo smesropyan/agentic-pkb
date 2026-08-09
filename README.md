@@ -29,6 +29,10 @@ harness, which exposes the PKB through a dedicated TUI, Telegram channels, and o
 **Feedback Loop**: Projects use the Personal Knowledge Base to find the best ways to achieve objectives. Project
 outcomes and insights feed back into the Knowledge Base.
 
+**This document specifies the design; it is not a manual.** To go from a clone to a knowledge base with something
+in it, read [`docs/how-to/getting-started.md`](docs/how-to/getting-started.md) — and then, for the phone,
+[`docs/how-to/telegram.md`](docs/how-to/telegram.md).
+
 ---
 
 # Part 1: Knowledge Base Design
