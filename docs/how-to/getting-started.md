@@ -2,21 +2,21 @@
 
 From a fresh clone to a knowledge base with something in it. Setup first, then daily use.
 
-Every command, path, log line and file in this guide was executed. The exception is Telegram, which
-has a guide of its own and says so where it comes up. Where a transcript comes from a different
-session than the one running beside it, it says so.
+Every command, path, log line and file in this guide comes from a real run. Telegram is the
+exception. It has a guide of its own, and this guide says so where Telegram comes up. A transcript
+that comes from a different session than the one beside it also says so.
 
 **Contents**
 
 * [What this is](#what-this-is)
-* [The one thing to understand first](#the-one-thing-to-understand-first)
+* [Before you start](#before-you-start)
 * [1. Install](#1-install)
 * [2. Create a knowledge base](#2-create-a-knowledge-base)
 * [3. Start the daemon](#3-start-the-daemon)
 * [4. The model](#4-the-model)
 * [5. Your first conversation](#5-your-first-conversation)
 * [6. Daily use](#6-daily-use)
-* [7. The other doors](#7-the-other-doors)
+* [7. The other channels](#7-the-other-channels)
 * [8. When something goes wrong](#8-when-something-goes-wrong)
 * [9. Not built yet](#9-not-built-yet)
 
@@ -29,25 +29,25 @@ session than the one running beside it, it says so.
 >
 > — `README.md`
 
-Concretely: a folder of markdown files that **only agents write to**. A root agent — the
-**Librarian** — reads what you send it, decides which topics it concerns, and hands it to one
-**Topic Expert** per topic. The expert writes the file. Deterministic code enforces the mechanical
-part — frontmatter, tags, indexes, file placement — so the agents only have to get the *meaning*
-right.
+Concretely: a folder of markdown files that **only agents write to**. The root agent is the
+**Librarian**. It reads what you send it, works out which topics the material concerns, then hands
+it to one **Topic Expert** per topic. The expert writes the file. Deterministic code enforces the
+mechanical part: frontmatter, tags, indexes and file placement. The agents only have to get the
+*meaning* right.
 
-The design principle the whole thing turns on, from `README.md` §1.9:
+The design principle behind the system, from `README.md` §1.9:
 
 > *Enforce structure mechanically, curate meaning agentically.*
 
-You talk to it through a terminal client, a Telegram bot, or as an MCP server from another agent.
+You talk to it through a terminal client or a Telegram bot. Another agent reaches it over MCP.
 
 ---
 
-## The one thing to understand first
+## Before you start
 
-**You do not edit the tree. Agents do. And there is no undo.**
+**You do not edit the tree. Agents write to it, and there is no undo.**
 
-That is a deliberate decision (D6), and the architecture spec states the consequence plainly:
+That is a deliberate decision (D6). The architecture spec states the consequence:
 
 > The first draft writes plain markdown. The consequence is real and worth stating: there is **no
 > undo**. If an agent writes something wrong and the human approves it, the previous content is
@@ -55,35 +55,36 @@ That is a deliberate decision (D6), and the architecture spec states the consequ
 >
 > — `docs/superpowers/specs/2026-08-06-pkb-architecture-design.md` §10
 
-Two things follow, and both matter on day one.
+Two things follow. Both matter on day one.
 
-**First: not everything stops for you.** The same architecture paragraph goes on to say that "the
-approval gate means nothing lands unreviewed", and as built that is not quite true. Two *locations*
-are deliberately **ungated**, because capture has to stay frictionless (RT-31, `README.md` §1.1
-goal 3): a plain note under `notes/`, and the *first* extraction of a source. Verified: the whole
-source ingestion in [§6](#filing-a-source) landed with no approval at all.
+**First: not everything stops for you.** The same architecture paragraph says that "the approval
+gate means nothing lands unreviewed". As built, that is wrong for two *locations*. Both are
+**ungated** on purpose, because capture has to stay frictionless (RT-31, `README.md` §1.1 goal 3):
+a plain note under `notes/`, and the *first* extraction of a source. Verified: the whole source
+ingestion in [§6](#filing-a-source) landed with no approval.
 
-The exemption is on the **path**, though, not on the content. Every other rule still applies to what
-gets written there, and the one that fires most is `new-tag` (RT-25): an expert that mints
-`topic.coffee.bean-freshness` for its first note stops for you — on the tag, not on the note. So a
-plain note lands silently *sometimes*. Do not build a habit on it, and do not read an approval on
-your very first note as a bug. What always stops is the consequential set: creating a topic, any
-delete, a new tag, changing a note's body, editing an approved summary, resolving a conflict. Twelve
-reasons in total, tabulated in [§6](#approvals-what-stops-for-you).
+The exemption covers the **path**, not the content. Every other rule still applies to the file
+written there, and the rule that fires most is `new-tag` (RT-25). An expert that mints
+`topic.coffee.bean-freshness` for its first note stops for you, on the tag rather than on the note.
+A plain note therefore lands without an approval *sometimes*. Do not build a habit on it, and do
+not read an approval on your first note as a bug. The consequential actions stop every time:
+creating a topic, any delete, a new tag, changing a note's body, editing an approved summary,
+resolving a conflict. Twelve reasons in total, tabulated in
+[§6](#approvals-what-stops-for-you).
 
 **Second: back the directory up yourself.** There is no git integration and no version history. The
-design says nothing more specific than "back up the KB directory", so do the obvious thing — make it
-a git repository of your own:
+design says nothing more specific than "back up the KB directory". Make it a git repository of your
+own:
 
 ```bash
 git init ~/pkb/tree     # the directory §2 has you create
 ```
 
-— and commit after a session. Nothing in the system knows or cares that you did this, which is
-exactly why it keeps working.
+Then commit after a session. Nothing in the system knows about that repository, which is why it
+keeps working.
 
-Nothing you edit by hand is ever reverted — Layer 1 flags, it never repairs, and nothing moves or
-deletes your content. But nothing warns you either. See
+Nothing reverts a file you edit by hand. Layer 1 flags; it never repairs, and nothing moves or
+deletes your content. Nothing warns you either. See
 [hand-editing](#can-i-edit-a-file-by-hand) in §6.
 
 ---
@@ -92,9 +93,9 @@ deletes your content. But nothing warns you either. See
 
 **The only prerequisite is [uv](https://docs.astral.sh/uv/).** You do not need Python installed.
 `pyproject.toml` says `requires-python = ">=3.12"`, and uv downloads a conforming CPython itself if
-the machine has none — `uv sync` on this machine reports `Using CPython 3.12.13`, which uv had
-fetched rather than found. Your system `python3` is probably 3.9 and *will not work*; that is why
-every command below goes through `uv run`.
+the machine has none. `uv sync` on this machine reports `Using CPython 3.12.13`. uv fetched that
+interpreter; it did not find one on the machine. Your system `python3` is probably 3.9 and *will
+not work*. Every command below goes through `uv run` for that reason.
 
 ```bash
 git clone <this-repo> agentic-pkb
@@ -118,12 +119,12 @@ Installed 118 packages in 226ms
 real 2.07
 ```
 
-Two seconds. This is not a multi-minute pip experience.
+Two seconds in total. Do not budget minutes for it.
 
-**All of that output goes to stderr**, not stdout — `make install | tee log` looks like it printed
+**All of that output goes to stderr**, not stdout. `make install | tee log` looks like it printed
 nothing.
 
-**Verify it, optionally.** The suite needs no model, no API key and no network service:
+**You can verify the install.** The suite needs no model, no API key and no network service:
 
 ```bash
 make test
@@ -133,10 +134,10 @@ make test
 2014 passed in 113.93s (0:01:53)
 ```
 
-Budget two minutes. A silent dot-parade that long reads as a hang.
+Budget two minutes. The suite prints only dots for that long, which looks like a hang.
 
 **Run everything from the repository root.** `uv run` resolves the project from the working
-directory, and you will be running the daemon from wherever your knowledge base lives:
+directory, and your knowledge base lives somewhere else:
 
 ```
 $ cd /tmp && uv run python -c 'import pkb'
@@ -156,8 +157,8 @@ Either `cd` to the repo first, or pass `--project`.
 mkdir -p ~/pkb/tree
 ```
 
-That is the whole step. **A knowledge base is a plain directory.** No marker file, no manifest, no
-`init` command — the code the daemon reaches on startup is one `is_dir()`, in
+That is the whole step. **A knowledge base is a plain directory.** It has no marker file, no
+manifest and no `init` command. The daemon runs one `is_dir()` check on startup, in
 `pkb/core/scan.py`:
 
 ```python
@@ -168,14 +169,14 @@ def _require_directory(kb_root: Path) -> Path:
     ...
 ```
 
-(That message is what a typo'd path gets you — see [§8](#8-when-something-goes-wrong).)
+(A typo'd path produces that message. See [§8](#8-when-something-goes-wrong).)
 
-**There is no `pkb` command.** `pyproject.toml` declares no console scripts. The only two runnable
-surfaces in the whole project are `python -m pkb.daemon` and `python -m pkb.tui`. (The daemon's
-`--help` says `usage: pkb-daemon`, which looks like an installed binary. It is not one.)
+**There is no `pkb` command.** `pyproject.toml` declares no console scripts. The project has two
+runnable surfaces: `python -m pkb.daemon` and `python -m pkb.tui`. (The daemon's `--help` says
+`usage: pkb-daemon`, which looks like an installed binary. It is not one.)
 
-Why `~/pkb/tree` and not `~/kb`: the database defaults to a **sibling** of the knowledge base
-(`<kb>/../pkb.sqlite`), so a tree at `~/kb` scatters `pkb.sqlite`, `pkb.sqlite-wal` and
+Use `~/pkb/tree` rather than `~/kb`, because the database defaults to a **sibling** of the knowledge
+base (`<kb>/../pkb.sqlite`). A tree at `~/kb` scatters `pkb.sqlite`, `pkb.sqlite-wal` and
 `pkb.sqlite-shm` into your home directory. Give the tree its own parent folder, or pass `--db`.
 
 ---
@@ -198,11 +199,10 @@ INFO:     Application startup complete.
 INFO:     Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
 ```
 
-Two log formats interleave and it confuses people: uvicorn's own `INFO:     ` with no timestamp, and
-the project's `<time> <level> <logger>: <message>`. Only the second carries a logger name.
+Two log formats interleave: uvicorn's own `INFO:     ` with no timestamp, and the project's
+`<time> <level> <logger>: <message>`. Only the second carries a logger name.
 
-Silence about Telegram is the correct healthy state — the bot is optional
-([§7](#telegram-your-phone)).
+Silence about Telegram is correct. The bot is optional ([§7](#telegram-your-phone)).
 
 **The daemon binds `127.0.0.1:8765` and has no authentication** (arch §10). It is a local process.
 
@@ -215,8 +215,8 @@ $ find ~/pkb/tree
 ~/pkb/tree/tags.md
 ```
 
-The daemon ran a full regeneration on startup and wrote the two derived root files itself. You never
-create them. `index.md` is the Librarian's routing view:
+The daemon ran a full regeneration on startup and wrote the two derived root files itself. You do
+not create them. `index.md` is the Librarian's routing view:
 
 ```markdown
 ---
@@ -234,9 +234,9 @@ source_type: catalog
 _No topics yet._
 ```
 
-`_No topics yet._` is the specified empty state (GE-29). Note what is **not** in either file: no
-timestamps, no counts. Derived output is byte-idempotent, which is what stops the end-of-turn flush
-churning the tree on every message.
+`_No topics yet._` is the specified empty state (GE-29). Neither file carries a timestamp or a
+count. Derived output is byte-idempotent, which stops the end-of-turn flush from churning the tree
+on every message.
 
 ### Check it
 
@@ -268,17 +268,17 @@ Against the empty tree above, verbatim:
 }
 ```
 
-Three fields read alarmingly and are all normal on a fresh install:
+Three fields look like faults. All three are normal on a fresh install:
 
-* `scan_worker.state: "disabled"` — background conflict scanning does not run
+* `scan_worker.state: "disabled"`: background conflict scanning does not run
   ([§9](#9-not-built-yet)).
-* `telegram.state: "disabled"` — no bot configured.
-* `telegram.unmapped_agents` — listed even when Telegram is off.
+* `telegram.state: "disabled"`: no bot configured.
+* `telegram.unmapped_agents`: listed even when Telegram is off.
 
 `agent_count: 1` on an empty tree is the Librarian alone. An empty knowledge base must still produce
 a working Librarian (LB-6), and it does.
 
-`kb_root` is echoed as the **literal argument string**. Launch with `../tree` and `/health` reports
+`/health` echoes `kb_root` as the **literal argument string**. Launch with `../tree` and it reports
 `"kb_root": "../tree"`, which tells you nothing about which tree this daemon serves. Use absolute
 paths.
 
@@ -298,15 +298,15 @@ usage: pkb-daemon [-h] [--db DB] [--host HOST] [--port PORT]
 
 | | Model | |
 |---|---|---|
-| **Default** | `ollama:deepseek-v4-flash:cloud` | cheap, fast, what everything below ran on |
+| **Default** | `ollama:deepseek-v4-flash:cloud` | cheap and fast; everything below ran on it |
 | **Fallback** | `ollama:gemma4:31b` | **local**, ~20 GB, only for when the cloud is down |
 
 **You do not need Ollama to install, create a tree, start the daemon, or browse it.** Verified: with
 `OLLAMA_HOST=http://127.0.0.1:1` the daemon starts with an identical log, `/health` returns
-`status: ok`, and `GET /agents` reports `"model_id": "ollama:deepseek-v4-flash:cloud"` without ever
-contacting Ollama. Model construction is lazy. You need a model only to run a turn.
+`status: ok`, and `GET /agents` reports `"model_id": "ollama:deepseek-v4-flash:cloud"` without
+contacting Ollama. The code builds a model only when a turn needs one.
 
-When you do want one: install [Ollama](https://ollama.com), sign in for the cloud models, and check:
+To use one: install [Ollama](https://ollama.com), sign in for the cloud models, and check:
 
 ```
 $ ollama list
@@ -315,28 +315,29 @@ gemma4:31b                      6316f0629137    19 GB     36 hours ago
 deepseek-v4-flash:cloud         6ca9e29c41de    -         5 days ago
 ```
 
-A `-` in SIZE means the model is a cloud tag with nothing stored locally.
+A `-` in SIZE means the model is a cloud tag with nothing stored on the machine.
 
-### What the fallback actually costs
+### The cost of the fallback
 
-**It is a degraded backup, not a drop-in.** `CLAUDE.md` measures the same filing turn at **284
-seconds locally against about 16 seconds on the cloud default — roughly 18× slower**, because a turn
-is 8–12 model calls and each local call is about 25 seconds over a growing context. If you try the
-system on the fallback without knowing this, you will conclude it is broken. It is not; it is slow.
+**The fallback is a degraded backup, not a drop-in.** `CLAUDE.md` measures the same filing turn at
+**284 seconds locally against about 16 seconds on the cloud default, about 18× slower**. A turn is
+8–12 model calls, and each local call takes about 25 seconds over a growing context. Try the
+system on the fallback without knowing this and you will conclude it is broken. It is slow, not
+broken.
 
-`gemma4:31b` is **not pulled by default** and nothing pulls it for you. If the day comes and it is
-missing you get a `ModelNotInstalledError` naming the exact command:
+`gemma4:31b` is **not pulled by default** and nothing pulls it for you. If you need it and it is
+missing, you get a `ModelNotInstalledError` naming the exact command:
 
 ```bash
 ollama pull gemma4:31b
 ```
 
-Only quota, concurrency and availability fail over — 429, 408, 5xx, connection and timeout errors. A
-malformed request or a content error propagates untouched, because the second model would fail
-identically.
+Only quota, concurrency and availability fail over: 429, 408, 5xx, connection and timeout errors. A
+malformed request or a content error propagates untouched, because the second model would fail in
+the same way.
 
-**Every failover is logged at warning level.** This one is from this guide's own session, during a
-genuine transient cloud outage — nothing was forced to produce it:
+**The daemon logs every failover at warning level.** This line comes from this guide's own session,
+during a real cloud outage. Nobody forced it:
 
 ```
 2026-08-08 21:41:05 INFO httpx: HTTP Request: POST http://127.0.0.1:11434/api/chat "HTTP/1.1 502 Bad Gateway"
@@ -347,32 +348,32 @@ model 'ollama:gemma4:31b'. The knowledge base keeps working, but the judgement i
 fallback's, not the primary's.
 ```
 
-The next model call took 39 seconds and the turn completed. **If a turn suddenly takes minutes
-instead of seconds, look for that line before you assume a hang.**
+The next model call took 39 seconds and the turn completed. **If a turn takes minutes instead of
+seconds, look for that line before you assume a hang.**
 
 ### Changing the model
 
-There is no config file and no CLI flag for it — `python -m pkb.daemon` hardcodes its
-`RuntimeConfig`. Changing the model, per-agent overrides, `fallback_model=None`, `source_roots`,
-`fanout_limit` or `durability` means a short launcher that calls
+There is no config file and no CLI flag for it. `python -m pkb.daemon` hardcodes its
+`RuntimeConfig`. To change the model, the per-agent overrides, `fallback_model=None`,
+`source_roots`, `fanout_limit` or `durability`, write a short launcher. It calls
 `pkb.daemon.build_app(kb_root, db, config=...)` and hands the app to `uvicorn.run`.
 
-The model is a **registry** concern (RG-21): no transport, route or channel picks one, and it is
-never read from knowledge-base content.
+The model is a **registry** concern (RG-21): no transport, route or channel picks one, and nothing
+reads it from knowledge-base content.
 
 ---
 
 ## 5. Your first conversation
 
-Worked end to end below, on a knowledge base that was empty ten seconds earlier. Everything is real
-output from one continuous session.
+The walk-through below runs end to end, on a knowledge base that was empty ten seconds earlier.
+Every line is real output from one continuous session.
 
 **Read it for the shape, not as a script.** The topic name, the tags and *how many* approvals you
-answer are the model's choices and they change run to run. A second run of exactly these commands,
-on a second empty tree, named the topic `coffee-brewing` rather than `Coffee` and asked four times
-rather than twice. What is stable is the mechanism: an empty catalog forces a topic-creation
-approval, the expert files on a thread of its own, and every gate in
-[§6](#approvals-what-stops-for-you) applies.
+answer are the model's choices, and they change run to run. In a second run of these commands, on a
+second empty tree, the model named the topic `coffee-brewing` rather than `Coffee` and asked four
+times rather than twice. The mechanism is stable: an empty catalog forces a topic-creation approval,
+the expert files on a thread of its own, and every gate in [§6](#approvals-what-stops-for-you)
+applies.
 
 The tree, before:
 
@@ -381,10 +382,11 @@ tree/index.md
 tree/tags.md
 ```
 
-### What you type
+### Send the note
 
-Start a thread with the Librarian and send it a note. From the terminal client this is: select
-**Librarian** in the sidebar, press `n`, type, Enter. Over HTTP, so it can be pasted here:
+Start a thread with the Librarian and send it a note. In the terminal client: select **Librarian**
+in the sidebar, press `n`, type the note, press Enter. The same note over HTTP pastes into a
+terminal:
 
 ```bash
 TH=$(curl -s -X POST http://127.0.0.1:8765/agents/librarian/threads \
@@ -399,7 +401,7 @@ curl -sN -X POST "http://127.0.0.1:8765/threads/$TH/runs" \
 (The thread id is nested: `{"thread": {"thread_id": ...}}`. `-N` disables curl's buffering so the
 stream arrives live.)
 
-### What happens
+### The response
 
 **5.2 seconds.** The response is a server-sent event stream, and it ends parked:
 
@@ -418,10 +420,10 @@ event: run.end
 data: {"status":"interrupted"}
 ```
 
-The Librarian did not offer you a menu of topics, because there are none, and a menu of nothing is
-not a choice (LB-6). With an empty catalog every inbound item is a topic gap, so the turn ends
-parked on a question: *shall I create a topic called Coffee?* Creating a topic is one of the twelve
-gated actions, and it is the Librarian's to propose and yours to decide (LB-7).
+The Librarian did not offer you a menu of topics, because there are none. A menu of nothing is not a
+choice (LB-6). With an empty catalog, every inbound item is a topic gap, so the turn ends parked on
+a question: *shall I create a topic called Coffee?* Creating a topic is one of the twelve gated
+actions. The Librarian proposes it and you decide (LB-7).
 
 **Note the HTTP status is 200 even when a run fails.** Failures arrive as `event: run.error` inside
 the stream. `curl -f` will not catch them.
@@ -434,10 +436,10 @@ curl -sN -X POST "http://127.0.0.1:8765/threads/$TH/interrupt" \
   -d '{"interrupt_id":"f73697341b6506e72b312a31c70d1da0","decisions":[{"type":"approve"}]}'
 ```
 
-`interrupt_id` is **required** (RO-12). Omitting it is a 400, not a best-effort.
+`interrupt_id` is **required** (RO-12). Omit it and the daemon answers 400.
 
-**32 seconds.** In that time: the topic was scaffolded, the registry re-scanned itself, a Topic
-Expert was spawned on a child thread, and it filed the note. The tree afterwards:
+**32 seconds.** In that time the scaffolder created the topic, the registry re-scanned itself, and a
+Topic Expert started on a child thread and filed the note. The tree afterwards:
 
 ```
 tree/index.md                     ← regenerated
@@ -450,9 +452,9 @@ tree/Coffee/notes/resting-fresh-beans-a-week-fixes-sour-espresso.md
 tree/Coffee/references/summary.md
 ```
 
-The scaffolder created six paths — the topic directory, `topic.md`, `notes/`, `notes/summary.md`,
-`references/`, `references/summary.md` (SC-1) — the flush regenerated three derived files, and the
-expert wrote the note. `/health` went from `agent_count: 1` to `2` **with no restart**: approving a
+The scaffolder created six paths: the topic directory, `topic.md`, `notes/`, `notes/summary.md`,
+`references/` and `references/summary.md` (SC-1). The flush regenerated three derived files, and the
+expert wrote the note. `/health` went from `agent_count: 1` to `2` **with no restart**. Approving a
 topic creation invalidates the registry, which re-scans the tree.
 
 The root catalog now routes:
@@ -473,12 +475,12 @@ and the tag registry grew a namespace:
 ```
 
 The catalog line shows the **agent id** `topic/coffee` with a slash; the tag is `topic.coffee` with
-a dot. Same topic, two spellings, and they are easy to conflate.
+a dot. The two spellings name the same topic and are easy to conflate.
 
-**In this run the note itself was never approved by anyone.** It just landed — that is RT-31,
-capture staying frictionless. It is not guaranteed: in the second run the same note stopped on
-`new-tag`, because that expert minted `topic.coffee-brewing.bean-freshness` and no file in the tree
-carried it yet (RT-25).
+**In this run nobody approved the note.** It landed on its own, which is RT-31, capture staying
+frictionless. That is not guaranteed. In the second run the same note stopped on `new-tag`, because
+that expert minted `topic.coffee-brewing.bean-freshness` and no file in the tree carried it yet
+(RT-25).
 
 ```markdown
 ---
@@ -499,14 +501,14 @@ source_type: solution
 Espresso is sour when the beans are fresh off the roast. Resting them a week after the roast date fixes it.
 ```
 
-Seven frontmatter fields, `type.solution` because it solves a recurring problem, and `status.draft`
-because everything an agent authors lands as a draft awaiting your look — promoting anything to
-`status.approved` is itself a gated write (RT-27).
+Seven frontmatter fields. `type.solution` because the note solves a recurring problem, and
+`status.draft` because every file an agent authors lands as a draft awaiting your look. Any write
+that sets `status.approved` gates too (RT-27).
 
-### The next approval, and why it is a delete
+### The next approval is a delete
 
 The stream ended `interrupted` again, and `/health` reported another pending approval. It is a
-**delete**, and it is worth understanding because it is the approval most people meet first:
+**delete**, and it is the approval most people meet first:
 
 ```
 Approval required: delete
@@ -519,35 +521,35 @@ title: "Resting fresh beans a week fixes sour espresso"
 …
 ```
 
-What happened: the expert wrote the note under a short filename, Layer 1 raised an **advisory**
-finding — the write succeeded, the finding does not block it —
+The expert wrote the note under a short filename, and Layer 1 raised an **advisory** finding. The
+write succeeded; the finding does not block it.
 
 ```
 [FILENAME_TITLE_DIVERGENCE/VA-35] (title) The file name 'rest-fresh-beans-a-week.md' does not match
 its title 'Resting fresh beans a week fixes sour espresso'.
 ```
 
-— so the expert rewrote it under the suggested name and now wants to remove the first. **Every
-delete gates** (RT-30), so it stops for you. This is "findings, not exceptions" visible on the wire:
-the write landed *and* was flagged, and the agent chose to fix it.
+The expert then rewrote the note under the suggested name, and now wants to remove the first file.
+**Every delete gates** (RT-30), so it stops for you. This is "findings, not exceptions"
+on the wire: the write landed, Layer 1 flagged it, and the agent chose to fix it.
 
 > ### ⚠ Check the rewrite has landed before you approve the delete
 >
-> The expert may propose the delete **before** it writes the replacement, not after — verified: in
-> the second run the delete of `resting-fresh-beans-fixes-sour-espresso.md` was proposed while it
-> was still the only copy, approving it emptied `notes/` completely, and the replacement write then
-> gated again on `new-tag`. Reject that follow-up and the note is gone; there is no undo (D6).
+> The expert may propose the delete **before** it writes the replacement. Verified: in the second
+> run the expert proposed the delete of `resting-fresh-beans-fixes-sour-espresso.md` while that file
+> was still the only copy. Approving it emptied `notes/`, and the replacement write then gated again
+> on `new-tag`. Reject that follow-up and the note is gone. There is no undo (D6).
 >
-> The delete's description embeds the whole current file, and that is what makes this decidable —
-> so before approving, check that the file it is a duplicate *of* already exists.
-> `ls <kb>/<Topic>/notes/` answers it in one command. If the file being deleted is the only note
-> there, **reject** it: rejecting is verified to change nothing on disk while letting the run carry
-> on, so the worst case becomes two copies, which is the recoverable failure
-> ([§8](#i-have-two-copies-of-the-same-note)) rather than the unrecoverable one. **Later**
-> (`escape`) does *not* help here — it parks the interrupt and the queued write never runs.
+> The delete's description embeds the whole current file, which is what makes the decision possible.
+> Before you approve, check that the replacement file already exists.
+> `ls <kb>/<Topic>/notes/` answers that in one command. If the file being deleted is the only note
+> there, **reject** it. Rejecting changes nothing on disk and lets the run carry on. The worst case
+> is then two copies, and you can recover from two copies
+> ([§8](#i-have-two-copies-of-the-same-note)). **Later** (`escape`) does *not* help here. It parks
+> the interrupt, and the queued write never runs.
 
-Approve it (`{"type":"approve"}` again, using the new `interrupt_id`), and **2.8 seconds** later the
-duplicate is gone and the turn completes with the expert's own reply:
+Approve it again with `{"type":"approve"}` and the new `interrupt_id`. **2.8 seconds** later the
+duplicate is gone, and the turn completes with the expert's own reply:
 
 > Filed. I classified this as a **solution note** […] Tagged `topic.coffee` / `type.solution`, and
 > left `status.draft` so it reads as a proposal until you've looked at it. […] **The breadth files
@@ -566,11 +568,11 @@ tree/index.md
 tree/tags.md
 ```
 
-If that delete is never answered — including in any turn that cannot raise a live approval, which is
-every MCP call — both files stay on disk with identical content. It has reproduced in every session
-anyone ran this example in; the way out is [§8](#i-have-two-copies-of-the-same-note).
+If nobody answers that delete, both files stay on disk with identical content. Any turn that cannot
+raise a live approval leaves it unanswered, and that includes every MCP call. This reproduced in
+every session that ran the example. The way out is [§8](#i-have-two-copies-of-the-same-note).
 
-### Where the approval parked
+### The approval parked on a derived thread
 
 The delete gate did **not** appear on the thread you typed into. It parked on the expert's derived
 thread:
@@ -581,11 +583,11 @@ routed  topic/coffee   0fa7c37a-…::topic/coffee                        f55a6d5
 user    librarian      0fa7c37a-…                                      None
 ```
 
-Derived thread ids are `<parent>::<agent_id>`. They contain both `::` and `/`, they work raw in a
-URL because the route uses a path converter, and you must **not** percent-encode the slash.
+Derived thread ids are `<parent>::<agent_id>`. They contain both `::` and `/`. They work raw in a
+URL because the route uses a path converter, so do **not** percent-encode the slash.
 
-In the terminal client, the way to a parked approval is `p` (Needs you) — pending rows carry a `●`
-and sort first. Going back to "the conversation I started" will not find it.
+In the terminal client, press `p` (Needs you) to reach a parked approval. Pending rows carry a `●`
+and sort first. If you go back to "the conversation I started", you will not find it.
 
 ---
 
@@ -618,18 +620,18 @@ uv run python -m pkb.tui
 ```
 
 Sidebar: a tree of agents over a list of threads. Main pane: transcript, a one-line status strip,
-and the composer. Agents nest by splitting the id on `/` — `topic/cooking/grilling` hangs under
-`topic/cooking` — and the order is the server's, never re-sorted (TU-8).
+and the composer. Agents nest on the `/` in the id, so `topic/cooking/grilling` hangs under
+`topic/cooking`. The order is the server's, and the client never re-sorts it (TU-8).
 
 **Two traps in the first ten seconds.**
 
-1. **Nothing is selected at startup**, even when the Librarian is the only agent. Pressing `n` first
-   prints `pick an agent first`. Select an agent, *then* press `n`.
+1. **Nothing is selected at startup**, even when the Librarian is the only agent. Press `n` first
+   and it prints `pick an agent first`. Select an agent, *then* press `n`.
 2. **The tree cursor starts on the "Agents" root row, and Enter there collapses everything.**
    Verified: `root expanded=True lines=3` → press Enter → `root expanded=False lines=1
    selected=None`. Arrow keys then look dead because there is one line left. Press Enter again to
-   restore it, then arrow **down** onto a real agent before pressing Enter. (Selecting a topic that
-   has sub-topics collapses its children the same way — Textual's tree treats Enter as
+   restore it, then arrow **down** onto a real agent before pressing Enter. (Enter on a topic that
+   has sub-topics collapses its children the same way. Textual's tree treats Enter as
    select-and-toggle.)
 
 ### Every key
@@ -639,35 +641,35 @@ and the composer. Agents nest by splitting the id on `/` — `topic/cooking/gril
 | `p` | **Needs you.** Refetches all threads. Pending rows carry `●` and sort first. |
 | `n` | New thread with the **selected** agent. `pick an agent first` if none is selected. |
 | `R` | **Does not rename.** See below. |
-| `P` | Proposals — writes that needed approval and could not get it ([§9](#9-not-built-yet)). |
+| `P` | Proposals: writes that needed approval and could not get it ([§9](#9-not-built-yet)). |
 | `c` | Cancel the running turn. Silent no-op if nothing is running. |
 | `q` | Quit. The daemon keeps running; so does any turn in flight. |
 
-Inside an approval modal: `a` approve, `e` edit, `r` reject, `escape` later. Approve and reject are
-deliberately not adjacent (TU-50) — a mistyped neighbour key on a write with no undo is
-unrecoverable. **The modal has no footer, so those four keys are not shown anywhere on screen.**
+Inside an approval modal: `a` approve, `e` edit, `r` reject, `escape` later. Approve and reject sit
+apart on purpose (TU-50). A mistyped neighbour key on a write with no undo is unrecoverable. **The
+modal has no footer, so it shows those four keys nowhere on screen.**
 
-Capitalisation is load-bearing: `p` and `P` are different screens one shift key apart, and lowercase
-`r` inside the modal is *Reject*.
+Capitalisation matters: `p` and `P` are different screens one shift key apart, and lowercase `r`
+inside the modal is *Reject*.
 
-The status strip is sticky — it is overwritten, never cleared — so a message from three actions ago
-is still sitting there.
+The status strip is sticky. The client overwrites it and never clears it, so a message from three
+actions ago is still there.
 
-**`R` does not rename a thread.** It prefills the composer with `/rename <title>`. There is no
-slash-command parsing in the submit handler, so pressing Enter sends `/rename …` to the model as an
-ordinary message and burns a full turn; the title is unchanged. `PkbClient.rename` exists and is
-called from nothing but its own test. Treat `R` as not implemented ([§9](#9-not-built-yet)).
+**`R` does not rename a thread.** It prefills the composer with `/rename <title>`. The submit
+handler does not parse slash commands, so Enter sends `/rename …` to the model as an ordinary
+message and burns a full turn. The title does not change. `PkbClient.rename` exists, and nothing but
+its own test calls it. Treat `R` as not implemented ([§9](#9-not-built-yet)).
 
 ### Notes versus questions
 
-There is no mode to select, and no intent classifier. A question takes the identical path as
-material; what makes a turn read-only is simply that the expert calls no write tool.
+There is no mode to select and no intent classifier. A question takes the identical path as
+material. A turn is read-only when the expert calls no write tool.
 
-Asking the Coffee expert directly, in its own thread:
+Ask the Coffee expert directly, in its own thread:
 
 > What do my notes say about sour espresso? Just answer, do not file anything.
 
-**3.3 seconds**, status `completed`, tree file count unchanged:
+**3.3 seconds**, status `completed`, and the file count in the tree did not change:
 
 > There's one note on this: **Resting fresh beans a week fixes sour espresso.** The distilled point:
 > espresso comes out sour when the beans are fresh off the roast, and resting them a week after the
@@ -677,8 +679,9 @@ Asking the Coffee expert directly, in its own thread:
 Transcript: `ls`, `grep`, `read_file` under `/kb/Coffee`, then one message. No routing call, no
 Librarian, no derived thread.
 
-**Speed is itself the signal.** Measured on the cloud default, in two independent sessions on the
-same machine doing the same things. Read each pair as a range, not either number as a figure:
+**The duration tells you which path a turn took.** Two independent sessions ran on the cloud
+default, on the same machine, doing the same things. Read each pair as a range, not either number as
+a figure:
 
 | | first session | second session |
 |---|---|---|
@@ -689,10 +692,10 @@ same machine doing the same things. Read each pair as a range, not either number
 | Ingest a small source file | **41 s** | **29 s** |
 
 Three other sessions measured full Librarian filing turns at **244 s, 262 s and 269 s**, with
-sibling processes contending for the same Ollama account. So: **a question is seconds; a filing
-turn through the Librarian can be minutes.** Nothing measured here reproduced the "~16 s per filing
-turn" `CLAUDE.md` quotes — a filing turn is 8–12 model calls plus a fan-out, and a busy account
-stretches every one of them. Sit at a prompt expecting sixteen seconds and you will think it hung.
+sibling processes contending for the same Ollama account. **A question is seconds; a filing turn
+through the Librarian can be minutes.** Nothing measured here reproduced the "~16 s per filing
+turn" `CLAUDE.md` quotes. A filing turn is 8–12 model calls plus a fan-out, and a busy account
+stretches all of them. Sit at a prompt expecting sixteen seconds and you will think it hung.
 
 ### Talking to a specific expert
 
@@ -704,13 +707,13 @@ curl -s -X POST http://127.0.0.1:8765/agents/topic/coffee/threads \
   -H 'content-type: application/json' -d '{}'
 ```
 
-This is worth doing habitually. Going through the Librarian costs a classification step and a
-fan-out; going direct is one expert and one turn, and the difference is minutes versus seconds.
+Do this by habit. The Librarian costs a classification step and a fan-out. A direct question is one
+expert and one turn, and the difference is minutes against seconds.
 
-A fresh expert thread is created with `title: null` and renders as `Untitled thread` until the first
-reply lands a title.
+A fresh expert thread carries `title: null` and renders as `Untitled thread` until the first reply
+lands a title.
 
-### When one message reaches two experts
+### One message, two experts
 
 Send the Librarian something touching two topics and it fans out. From a probe session with Cooking
 and Gardening topics:
@@ -718,9 +721,9 @@ and Gardening topics:
 > Two things from this weekend. For gardening: I potted basil on the balcony. For cooking: I now
 > make pesto with that basil, blitzed with pine nuts and pecorino.
 
-Both experts ran concurrently; one filed and finished, one parked on an approval. The merged reply
-is **deterministic code, never a second model** (LB-18) — each expert's own answer under its own
-heading:
+Both experts ran at the same time. One filed and finished; one parked on an approval.
+**Deterministic code merges the replies, never a second model** (LB-18). Each expert's own answer
+sits under its own heading:
 
 > Asked 2 experts; 1 could not finish. Every expert's own answer is under its own heading,
 > unchanged.
@@ -733,19 +736,19 @@ heading:
 >
 > You can carry on directly with any of them: `topic/cooking` (thread …), `topic/gardening` (thread …).
 
-**One expert answering and one parking is a success, not a partial failure.** So is an expert
-declining outright — material with nothing in it for that topic should not be filed (`README.md`
-§2.2).
+**One expert that answers and one that parks is a success, not a partial failure.** An expert that
+declines outright is also a success. An expert should not file material that holds nothing for its
+topic (`README.md` §2.2).
 
-Fan-out width is capped at `fanout_limit: 3`, visible in `/health`.
+`fanout_limit: 3` caps the fan-out width, and `/health` shows it.
 
-The "continue with…" lines survive a reload — they are rebuilt from the thread's children, never
-parsed out of reply text. But **they are not clickable and no key activates them.** The offer tells
-you *which* expert; the `(routed)` row in the sidebar is how you get there.
+The "continue with…" lines survive a reload. The client rebuilds them from the thread's children
+and never parses them out of reply text. **They are not clickable and no key activates them.** The
+offer names the expert; the `(routed)` row in the sidebar is the way there.
 
 ### Approvals: what stops for you
 
-Twelve reasons, evaluated in declaration order, first match wins:
+Twelve reasons. The runtime evaluates them in declaration order, and the first match wins:
 
 | | |
 |---|---|
@@ -762,20 +765,20 @@ Twelve reasons, evaluated in declaration order, first match wins:
 | `status-approved` | Introducing `status.approved`. |
 | `human-content-edit` | Changing the body of an existing note. |
 
-Gated tools are exactly `write_file`, `edit_file`, `delete`, `create_topic`, `create_subtopic`.
-Reads, `grep` and delegation never interrupt.
+Five tools gate: `write_file`, `edit_file`, `delete`, `create_topic` and `create_subtopic`. Reads,
+`grep` and delegation never interrupt.
 
-Every write reason allows **approve / edit / reject**. `delete` allows only **approve / reject** —
-a delete cannot be usefully edited into a different delete (RT-30), and the modal says so.
+Every write reason allows **approve / edit / reject**. `delete` allows only **approve / reject**.
+You cannot edit a delete into a different delete (RT-30), and the modal says so.
 
 **The gate is mechanical, not the model's opinion.** A probe captured an expert's message saying
-"Filing it as an ordinary note, `status.draft`, no approval gate" — and the `new-tag` gate fired
-anyway. The transcript can flatly contradict the modal that is about to open.
+"Filing it as an ordinary note, `status.draft`, no approval gate". The `new-tag` gate fired anyway.
+The transcript can contradict the modal that is about to open.
 
 ### The approval modal
 
-A real screen at 100 columns. The action on it is a `Beekeeping` topic creation rather than §5's
-`Coffee`; the layout is the point:
+A real screen at 100 columns. The action on it creates a `Beekeeping` topic rather than §5's
+`Coffee`. Look at the layout:
 
 ```
 1 action(s) need your decision                    ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
@@ -795,35 +798,34 @@ title: Beekeeping
 ```
 
 One editable input per argument, seeded with the proposed value. The controls come from the server's
-`allowed_decisions`, verbatim (TU-42) — the modal never draws a button the server would reject.
-Four buttons were drawn here; at 100 columns **"Later" is off the right edge entirely.** Use
-`escape`.
+`allowed_decisions`, verbatim (TU-42), so the modal never draws a button the server would reject.
+The modal drew four buttons here. At 100 columns **"Later" is off the right edge.** Use `escape`.
 
 **Edit gives you a single-line input.** Fine for a topic name, a description or a path. For a
-`write_file` it puts the **entire markdown document on one line**, which is effectively unusable.
-Reject and re-dictate instead.
+`write_file` it puts the **entire markdown document on one line**, which is unusable. Reject and
+re-dictate instead.
 
 **The four decisions:**
 
-* **Approve** (`a`) — the write happens. Watch out: an approval showing *one* action can release
-  more than one file change. A message's interruptible calls are batched into one interrupt, and an
-  ungated sibling call in the same batch rides along. Verified: approving a delete also released a
-  queued write. And approving a topic creation touches **nine** paths, not one.
-* **Edit** (`e`) — change the values, then approve. Not offered on a delete.
-* **Reject** (`r`) — verified: **no change on disk at all**, and the run resumes and completes. No
-  reason is collected, deliberately, so both channels behave identically. The expert learns "no",
+* **Approve** (`a`): the write happens. An approval showing *one* action can release more than one
+  file change. The runtime batches a message's interruptible calls into one interrupt, and an
+  ungated sibling call in the same batch goes with them. Verified: approving a delete also released
+  a queued write, and approving a topic creation touches **nine** paths, not one.
+* **Edit** (`e`): change the values, then approve. A delete does not offer it.
+* **Reject** (`r`): verified, **no change on disk**, and the run resumes and completes. Neither
+  channel collects a reason, on purpose, so both behave the same way. The expert learns "no",
   not why.
-* **Later** (`escape`) — sends **nothing** (TU-47). The approval stays parked on its thread, which
-  stays badged and first in the list, and it is answerable from any channel later. This is the
-  correct "I'll think about it". Escape normally means cancel; here it does not.
+* **Later** (`escape`): sends **nothing** (TU-47). The approval stays parked on its thread. That
+  thread stays badged and first in the list, and you can answer it from any channel later. This is
+  the correct "I'll think about it". Escape means cancel in most programs. Here it does not.
 
 ### Filing a source
 
-**This works, and it is the most useful thing in the system.** A source is a path or a URL, and
-reading it is a loop in code rather than a tool the model may decline to call: the harness walks the
-source's own sections and asks the expert one bounded question per section, so what lands is bounded
-by the source rather than by a context window. What was executed for this guide is a short markdown
-file; the 500-page case belongs to the design spec, which verified it on one.
+**This works, and it is the most useful thing in the system.** A source is a path or a URL. Code
+reads it in a loop rather than through a tool the model may decline to call. The harness walks the
+source's own sections and asks the expert one bounded question per section, so the source bounds
+what lands rather than a context window. This guide ingested a short markdown file. The 500-page
+case belongs to the design spec, which verified it on one.
 
 Ask an expert directly. There is no special syntax:
 
@@ -838,8 +840,8 @@ Ask an expert directly. There is no special syntax:
 > ```
 > **What the topic took from it** — 5 arguments across 4 of the 5 sections […]
 
-The reference file is a **map, not a summary** — provenance, one section per argument the source
-actually makes, and an honest record of what was read:
+The reference file is a **map, not a summary**: provenance, one section per argument the source
+makes, and an honest record of what the expert read:
 
 ```markdown
 ## Provenance
@@ -872,32 +874,32 @@ That last line is the whole point of the shape. `README.md` §1.2:
 
 Three things to know:
 
-* **The source is staged in `<kb>/.inbox/` and both files are kept** — the extraction the loop reads
-  and the original the topic gets a copy of. `.inbox` is dot-prefixed so Layer 1's walk skips it
-  entirely: nothing in there is recorded, validated, indexed or tagged.
-* **A topic only gets a copy if it gained something.** Zero insights leaves no folder, no stub, no
-  copy — no trace at all, rather than an empty folder implying the source was considered and is
-  somehow relevant.
+* **`ingest_source` stages the source in `<kb>/.inbox/` and keeps both files**: the extraction the
+  loop reads, and the original the topic gets a copy of. `.inbox` is dot-prefixed, so Layer 1's walk
+  skips it. Layer 1 records, validates, indexes and tags nothing in there.
+* **A topic only gets a copy if it gained something.** Zero insights leaves no folder, no stub and
+  no copy. An empty folder would imply the source was considered and is relevant, so the ingestion
+  leaves no trace at all.
 * **The same source can go to several experts, and that is not duplication.** A management book
-  routed to Management and to Parenting yields two different extractions through two different
-  lenses (`README.md` §2.2).
+  routed to Management and to Parenting yields two different extractions, one per topic
+  (`README.md` §2.2).
 
 > ### ⚠ By default an expert may read anything under your home directory
 >
-> `RuntimeConfig.source_roots` defaults to empty, and empty means `Path.home()` — not "nothing".
-> Verified in this session: a path under `$HOME` was ingested and copied into the tree; a path under
-> `/private/tmp` was refused with *"is outside the directories this knowledge base ingests from"*.
-> `RuntimeConfig`'s own docstring records the reproduction: `~/.ssh/id_rsa` staged, ingested and
-> copied into a topic as an ordinary reference.
+> `RuntimeConfig.source_roots` defaults to empty, and empty means `Path.home()`, not "nothing".
+> Verified in this session: the expert ingested a path under `$HOME` and copied it into the tree.
+> `ingest_source` refused a path under `/private/tmp` with *"is outside the directories this
+> knowledge base ingests from"*. `RuntimeConfig`'s own docstring records the reproduction:
+> `~/.ssh/id_rsa` staged, ingested and copied into a topic as an ordinary reference.
 >
 > A prompt-injected turn can ask an expert to ingest a file from anywhere under your home directory.
-> The fix is one field — `source_roots=(Path.home() / "Documents/pkb-sources",)` — and it can only
-> be set from a launcher, not from the CLI. `allow_url_sources` also defaults to `True`.
+> One field fixes it: `source_roots=(Path.home() / "Documents/pkb-sources",)`. You can set it from a
+> launcher only, not from the CLI. `allow_url_sources` also defaults to `True`.
 
 ### Adding a topic yourself
 
 You can, but the sanctioned path is the one in [§5](#5-your-first-conversation): send a note, let
-the Librarian propose the topic, approve it. Do **not** `mkdir` a topic folder — a directory with no
+the Librarian propose the topic, approve it. Do **not** `mkdir` a topic folder. A directory with no
 `topic.md` is not a topic root (PA-3).
 
 If you want one directly, ask the Librarian for it in words, or call the scaffolder:
@@ -915,7 +917,8 @@ scaffold_topic(
 )
 ```
 
-`today` is a **required keyword-only** `date`, injected rather than read from the clock. The result:
+`today` is a **required keyword-only** `date`. The caller injects it; the code never reads the
+clock. The result:
 
 ```
 ScaffoldResult(topic_path='Cooking',
@@ -927,25 +930,26 @@ ScaffoldResult(topic_path='Cooking',
                     scan_requests=[]))
 ```
 
-(Line-wrapped here; the real repr is one line. `unchanged` is the byte-idempotence rule visible in
-the return value — the other topic's index rendered identically and was not rewritten, GE-8.)
+(Line-wrapped here; the real repr is one line. `unchanged` shows the byte-idempotence rule in the
+return value: the other topic's index rendered the same, so the flush did not rewrite it, GE-8.)
 
 **A topic you scaffold yourself needs a daemon restart before you can talk to its expert.** The
-catalog is scanned at startup and re-scanned only when an *agent* creates a topic. Verified: a topic
-created on disk under a running daemon was invisible to `/agents` until either a restart or an
+daemon scans the catalog at startup, and re-scans it only when an *agent* creates a topic. Verified:
+`/agents` did not show a topic created on disk under a running daemon until a restart or an
 unrelated `create_topic` triggered the re-scan.
 
-(Separately: a skill added mid-session is invisible to any thread that has already taken a turn,
-because the skill set is checkpointed per thread — that needs a *new thread*, not a restart, RG-18.)
+(Separately: a skill you add mid-session stays invisible to any thread that has already taken a
+turn, because the runtime checkpoints the skill set per thread. That needs a *new thread*, not a
+restart, RG-18.)
 
 ### Can I edit a file by hand?
 
-Nothing stops you, and nothing reverts you. But **there is no filesystem watcher.** Verified: after
-hand-editing a note's tags, the topic's `index.md` still showed the old value; it caught up only at
-the next turn's flush. Derived files are regenerated at the end of an agent run, never by the
-filesystem.
+Nothing stops you, and nothing reverts you. **There is no filesystem watcher.** Verified: a hand
+edit to a note's tags left the topic's `index.md` showing the old value. It caught up at the next
+turn's flush. The daemon regenerates derived files at the end of an agent run, never from a
+filesystem event.
 
-To force it, or to check a tree you have been poking at:
+To force it, or to check a tree you have edited by hand:
 
 ```bash
 uv run python -c "
@@ -984,10 +988,10 @@ errors: 1 total: 4
 ```
 
 Three notes on that recipe. `validate_tree` takes the **kb_root Path**, not a scan snapshot. `VA-35`
-is a warning, not an error, and **every ingested reference trips it permanently** — the filename
-comes from the source, the title from the source's own heading — so a healthy tree carries one
-standing VA-35 per ingested source, as above. And when the daemon *does* have something to say, it
-says only a **count**:
+is a warning, not an error, and **every ingested reference trips it for good**. The filename comes
+from the source and the title from the source's own heading, so a healthy tree carries one standing
+VA-35 per ingested source, as above. And when the daemon does report something, it reports a
+**count** only:
 
 ```
 WARNING __main__: flush reported 4 finding(s)
@@ -995,38 +999,39 @@ WARNING __main__: flush reported 4 finding(s)
 
 (`__main__`, not `pkb.daemon`: `python -m pkb.daemon` runs that module *as* `__main__`.)
 
-> **`flush.findings` on `/health` is not this number.** The two counts come from different passes
-> and it is easy to read the daemon's silence as a clean tree. The end-of-turn flush reports what
-> *maintenance* saw — the tree walk's own findings, the maintenance flags, and `updated`-stamp
-> failures. `validate_tree` runs the full validator on top of that, and `VA-35` is one of the rules
-> only it applies. Measured on the tree above, at the same moment: `validate_tree` **1**,
+> **`flush.findings` on `/health` is not this number.** The two counts come from different passes.
+> Do not read the daemon's silence as a clean tree. The end-of-turn flush reports the *maintenance*
+> pass: the tree walk's own findings, the maintenance flags, and `updated`-stamp failures.
+> `validate_tree` runs the full validator on top of that, and `VA-35` is one of the rules only it
+> applies. Measured on the tree above, at the same moment: `validate_tree` **1**,
 > `/health` `flush.findings` **0**.
 >
-> So `flush.findings: 0` means "nothing broke while regenerating", not "the tree validates". The
-> recipe above is the only thing that answers the second question — and, on both paths, the finding
-> *text* is discarded, so it is also the only way to see what a non-zero count was about.
+> `flush.findings: 0` means "nothing broke while regenerating", not "the tree validates". The
+> recipe above is the only thing that answers the second question. Both paths discard the finding
+> *text*, so the recipe is also the only way to see what a non-zero count was about.
 
 ---
 
-## 7. The other doors
+## 7. The other channels
 
 ### Telegram, your phone
 
-A chat with a bot; whatever you send is filed by one of your experts. Because the daemon owns the
-run, an approval it asks for is a pair of buttons you can press hours later, from anywhere.
+A chat with a bot. One of your experts files whatever you send. The daemon owns the run, so an
+approval it asks for is a pair of buttons you can press hours later, from anywhere.
 
-**→ [`telegram.md`](telegram.md)** — ten minutes, start to finish. Bot creation, the two secrets,
-the chat-to-agent mapping, the five commands, and its own symptom-first troubleshooting.
+**→ [`telegram.md`](telegram.md)**: ten minutes, start to finish. It covers how to create the bot,
+the two secrets, the chat-to-agent mapping, the five commands, and its own symptom-first
+troubleshooting.
 
-Two things to know before you read it: **one human with one bot gets one chat and therefore one
-agent** — map it to `librarian`, which is the only way one chat reaches the whole tree; and the
-owner allow-list is the **only** authentication boundary in the entire system.
+Two things to know before you read it. **One human with one bot gets one chat, and therefore one
+agent.** Map it to `librarian`, which is the only way one chat reaches the whole tree. The owner
+allow-list is the **only** authentication boundary in the system.
 
-Nothing about Telegram was executed for this guide.
+This guide ran nothing against Telegram.
 
 ### MCP, for other agents
 
-The daemon mounts an MCP server at `/mcp`. Registering it (executed in a probe session, against a
+The daemon mounts an MCP server at `/mcp`. Register it (executed in a probe session, against a
 daemon on another port, in a throwaway config directory):
 
 ```bash
@@ -1038,18 +1043,18 @@ claude mcp list
 pkb: http://127.0.0.1:8765/mcp (HTTP) - ✔ Connected
 ```
 
-`--transport http` is **required**. The default is stdio and this project has no stdio server, so
-`claude mcp add pkb2 http://…` registers the URL as a *command* — the CLI prints a hint suggesting
-`--transport sse` (not `http`), then adds it anyway, and the entry shows up in `claude mcp list` as
+`--transport http` is **required**. The default is stdio, and this project has no stdio server, so
+`claude mcp add pkb2 http://…` registers the URL as a *command*. The CLI prints a hint suggesting
+`--transport sse` (not `http`), then adds it anyway. The entry shows up in `claude mcp list` as
 
 ```
 pkb2: http://127.0.0.1:8765/mcp  - ✘ Failed to connect — ENOENT: … posix_spawn 'http://127.0.0.1:8765/mcp'
 ```
 
-Use `/mcp` with no trailing slash: `/mcp/` answers `307` rather than serving, so a client that does
-not follow redirects on a POST just fails. No auth, no headers — the daemon binds localhost.
+Use `/mcp` with no trailing slash. `/mcp/` answers `307` rather than serving, so a client that does
+not follow redirects on a POST fails. No auth, no headers: the daemon binds localhost.
 
-Exactly four tools, listed live from the running daemon (`*` = required):
+Four tools, listed live from the running daemon (`*` = required):
 
 | Tool | Arguments |
 |---|---|
@@ -1072,15 +1077,15 @@ truncated: False
 ```
 
 That order is the contract (PK-10): human rules first, then the index, then reference depth files,
-then notes tagged `type.solution`. **Ordinary notes are not in an implementation pack** — only
+then notes tagged `type.solution`. **An implementation pack holds no ordinary notes**, only
 `type.solution` ones. File ten `type.note` notes, ask for a pack, and you get two placeholder files
-and reasonably conclude it is broken.
+and conclude it is broken.
 
-`budget_bytes` truncates by prefix: once one entry does not fit, every later entry is omitted for
-the same reason even if it would have fitted. `budget_bytes: 0` means *no budget*, not an empty
-pack.
+`budget_bytes` truncates by prefix. Once one entry does not fit, the pack omits every later entry
+for the same reason, even one that would have fitted. `budget_bytes: 0` means *no budget*, not an
+empty pack.
 
-Failures are returned, never raised — an `isError` result with a machine code:
+The tools return failures and never raise them, as an `isError` result with a machine code:
 
 ```
 $ pkb_research_pack {"query":"sour espresso"}
@@ -1095,25 +1100,25 @@ isError: True
  — expected one of: topic/coffee"}
 ```
 
-The refusal enumerates the valid ids, because ids are never fuzzy-matched (RG-9).
+The refusal lists the valid ids, because nothing fuzzy-matches an id (RG-9).
 
-**Three things that will bite you.**
+**Three traps.**
 
-1. **`pkb_ingest` cannot ingest a file.** It takes `content` — the material verbatim — and always
-   enters at the Librarian, which holds no `ingest_source` tool. Reading a file from disk is only
-   reachable by asking a *topic expert* in prose. The naming collides badly.
+1. **`pkb_ingest` cannot ingest a file.** It takes `content`, the material verbatim, and always
+   enters at the Librarian, which holds no `ingest_source` tool. To read a file from disk, ask a
+   *topic expert* in prose. The two names collide.
 2. **`pkb_ingest` runs against a hard 300-second deadline.** A probe measured a single one-expert
-   fan-out at **269 s** on the cloud default — 31 seconds from being cancelled and returned as
-   `{"status":"timeout"}`. On the local fallback it cannot complete at all. Address an expert
-   directly whenever you can.
+   fan-out at **269 s** on the cloud default, 31 seconds short of a cancellation that returns
+   `{"status":"timeout"}`. On the local fallback it cannot complete. Address an expert directly
+   whenever you can.
 3. **Every MCP call runs in propose-only mode.** Gates cannot raise a live approval, so they become
-   proposals — and a proposal cannot be applied ([§9](#9-not-built-yet)).
+   proposals, and nothing can apply a proposal ([§9](#9-not-built-yet)).
 
-**One flagged file silently blanks every MCP answer for its topic.** If any file in a topic carries
-`status.conflict-review`, a pack for that topic returns `status: "escalation"` with **zero entries**
-and just the review note. `pkb_ask` also flips to `escalation` but still answers. It is deliberately
-not an error, so a client branching on `isError` sees a success with an empty payload. Removing the
-tag clears it on the very next call, with no restart.
+**One flagged file blanks every MCP answer for its topic, with no warning.** If any file in a topic
+carries `status.conflict-review`, a pack for that topic returns `status: "escalation"` with **zero
+entries** and the review note. `pkb_ask` also flips to `escalation` and still answers. It is not an
+error, on purpose, so a client branching on `isError` sees a success with an empty payload. Remove
+the tag and the next call clears it, with no restart.
 
 ---
 
@@ -1134,15 +1139,15 @@ directory
 ERROR:    Application startup failed. Exiting.
 ```
 
-The knowledge base path is wrong or the directory does not exist. It is **not** created for you.
+The knowledge base path is wrong or the directory does not exist. The daemon does **not** create it.
 `mkdir -p` it, or fix the typo. One message covers both "missing" and "not a directory".
 
-This is the most common first mistake and it gets the ugliest error: `main()` wraps the Telegram
-config in a clean one-line `parser.error()` and performs no check on `kb_root` at all.
+This is the most common first mistake, and it gets the ugliest error. `main()` wraps the Telegram
+config in a clean one-line `parser.error()` and performs no check on `kb_root`.
 
-**It also leaves a stray database behind.** The SQLite file is created before the check fails, at
-the default location — a *sibling* of the path you typed, so a typo'd `~/pkb/tre` leaves it in
-`~/pkb`:
+**It also leaves a stray database behind.** The daemon creates the SQLite file before the check
+fails, at the default location. That location is a *sibling* of the path you typed, so a typo'd
+`~/pkb/tre` leaves it in `~/pkb`:
 
 ```
 -rw-r--r--  1 you  wheel  49152 Aug  8 22:00 pkb.sqlite
@@ -1168,8 +1173,8 @@ lsof -nP -iTCP:8765 -sTCP:LISTEN
 ```
 
 Note the ordering: **`Application startup complete.` prints before the bind fails**, so the flush
-has already run and the second database has already been created. A mistaken second daemon does
-touch the tree before exiting.
+has already run and the daemon has already created the second database. A mistaken second daemon
+does touch the tree before it exits.
 
 ---
 
@@ -1181,8 +1186,8 @@ data: {"message":"All connection attempts failed","retryable":true,"status":"err
 ```
 
 Ollama is not reachable. Check `curl -s http://localhost:11434/api/version`. If the daemon log also
-shows the failover warning naming both models, both the cloud model *and* the local fallback were
-unreachable — which means the Ollama server itself is down, not that your quota ran out.
+shows the failover warning naming both models, then the cloud model *and* the local fallback were
+both unreachable. The Ollama server itself is down; your quota did not run out.
 
 `curl -f` will not catch this. The HTTP status is 200; the failure is inside the stream.
 
@@ -1190,36 +1195,36 @@ unreachable — which means the Ollama server itself is down, not that your quot
 
 **A turn that used to take seconds now takes minutes.**
 
-Search the daemon log for `model failover`. If it is there, you are on `gemma4:31b` — about 18×
-slower, per `CLAUDE.md`'s measurement. The knowledge base still works; the judgement in those turns
-is the fallback's. The warning fires at most once per outage.
+Search the daemon log for `model failover`. If the line is there, you are on `gemma4:31b`, about
+18× slower, per `CLAUDE.md`'s measurement. The knowledge base still works; the judgement in those
+turns is the fallback's. The warning fires at most once per outage.
 
-If there is no failover line, and this is a Librarian turn on a topic-less or many-topic tree, it is
-just the classify-plus-fan-out cost. Address the expert directly.
+If there is no failover line, and this is a Librarian turn on a topic-less or many-topic tree, the
+cost is the classify and fan-out step. Address the expert directly.
 
 ---
 
 **I quit the client in the middle of a turn.**
 
-The turn is still running. **The daemon owns runs**, not the connection: a run is a task publishing
-into a per-run hub, and an HTTP response merely subscribes to it. A dropped connection **detaches**;
-it never cancels. That is the whole point — an ingestion turn killed because a phone crossed a
-tunnel is a broken promise. Reopen the thread and the transcript is there.
+The turn is still running. **The daemon owns runs**, not the connection. A run is a task that
+publishes into a per-run hub, and an HTTP response subscribes to it. A dropped connection
+**detaches**; it never cancels. An ingestion turn killed because a phone crossed a tunnel is a
+broken promise, and that is the point. Reopen the thread and the transcript is there.
 
 Cancelling is a deliberate, separate act: `c` in the terminal client, or
 `DELETE /runs/{run_id}`.
 
-Killing the **daemon** is different — that stops everything. If you want it to outlive the terminal
-that started it, start it under `nohup`, `tmux` or a service manager. Threads, pending approvals and
-proposals are in SQLite and survive a restart either way.
+Kill the **daemon** and everything stops. To make it outlive the terminal that started it, start it
+under `nohup`, `tmux` or a service manager. Threads, pending approvals and proposals live in SQLite
+and survive a restart either way.
 
 ---
 
 **I approved something, and now I cannot find the next approval.**
 
 It parked on the expert's **routed child thread**, not the thread you typed into. Press `p` and look
-for the `●`-badged `(routed)` row — it sorts first. Posting the decision to the parent thread is a
-409 by design.
+for the `●`-badged `(routed)` row. It sorts first. Post the decision to the parent thread and you
+get a 409, by design.
 
 Over HTTP, list them:
 
@@ -1239,9 +1244,9 @@ for t in json.load(sys.stdin)["threads"]:
  "detail":"no approval is pending on this thread; interrupt 'f736…' is no longer current"}
 ```
 
-It was already answered — from another channel, or by you a moment ago. Nothing was written. Note
-that `GET /threads` can lag a few seconds behind `GET /threads/{id}`, so a `●` badge that persists
-briefly after a decision is that lag, not a stuck approval. Re-list.
+Someone already answered it, from another channel, or you did a moment ago. The daemon wrote
+nothing. `GET /threads` can lag a few seconds behind `GET /threads/{id}`, so a `●` badge that
+persists for a moment after a decision is that lag, not a stuck approval. Re-list.
 
 ---
 
@@ -1249,26 +1254,26 @@ briefly after a decision is that lag, not a stuck approval. Re-list.
 
 <a name="i-have-two-copies-of-the-same-note"></a>
 
-The expert wrote the note under a short slug, Layer 1 flagged `FILENAME_TITLE_DIVERGENCE/VA-35`, the
-expert rewrote it under the suggested name, and its request to delete the first was never approved.
-Both files stay, byte-identical, and both are listed in the topic's `index.md`.
+The expert wrote the note under a short slug. Layer 1 flagged `FILENAME_TITLE_DIVERGENCE/VA-35`, so
+the expert rewrote it under the suggested name. Nobody approved its request to delete the first
+file. Both files stay, byte-identical, and the topic's `index.md` lists both.
 
 Reproduced in five independent sessions. Two situations:
 
-* **In the terminal client or Telegram** — approve the delete when it appears, having first checked
-  the replacement is on disk (see the warning in [§5](#the-next-approval-and-why-it-is-a-delete)).
-* **From MCP or a background scan** — those run propose-only, so the delete became a proposal, and a
-  proposal cannot be applied. Delete the file yourself with `rm`, or go back to that expert in the
+* **In the terminal client or Telegram**: check the replacement is on disk, then approve the delete
+  when it appears (see the warning in [§5](#the-next-approval-is-a-delete)).
+* **From MCP or a background scan**: those run propose-only, so the delete became a proposal, and
+  nothing can apply a proposal. Delete the file yourself with `rm`, or go back to that expert in the
   terminal client and ask again so the gate raises a live approval.
 
-**And the mirror image: `notes/` is empty and the note is gone.** Same mechanism, opposite order —
-the expert proposed the delete *first*, you approved it, and then rejected or never answered the
-write that would have replaced it. There is no undo and nothing to recover from; the text is still
-in the thread transcript, so re-send it. This is the case the warning in §5 exists to prevent.
+**The opposite case: `notes/` is empty and the note is gone.** Same mechanism, opposite order. The
+expert proposed the delete *first*, you approved it, then you rejected or never answered the write
+that would have replaced it. There is no undo and nothing to recover from. The text is still in the
+thread transcript, so re-send it. The warning in §5 exists to prevent this case.
 
 ---
 
-**MCP suddenly returns nothing for one topic.**
+**MCP now returns nothing for one topic.**
 
 A pack came back `status: "escalation"` with zero entries. Some file in that topic carries
 `status.conflict-review`. Find it:
@@ -1280,16 +1285,16 @@ grep -rl --include='*.md' 'status.conflict-review' /Users/you/pkb/tree | grep -v
 (Root `tags.md` lists the whole `status.*` vocabulary, so a plain `grep -rl` always matches it. It
 is never the file you want.)
 
-Read its `review_note`, decide, then have an expert change the tag back to `status.approved` and
-remove the note — that is itself a `conflict-resolution` gate, so it will ask you. The escalation
-clears on the very next call.
+Read its `review_note` and decide. Then have an expert change the tag back to `status.approved` and
+remove the note. That is itself a `conflict-resolution` gate, so it will ask you. The escalation
+clears on the next call.
 
 ---
 
 **A topic I created on disk is not in `/agents`.**
 
-Restart the daemon. The agent catalog is scanned at startup and re-scanned only when an agent
-creates a topic.
+Restart the daemon. The daemon scans the agent catalog at startup, and re-scans it only when an
+agent creates a topic.
 
 ---
 
@@ -1300,14 +1305,14 @@ no daemon at http://127.0.0.1:8999 — start it with `python -m
 pkb.daemon <kb-root>`  (ConnectError)
 ```
 
-Usually exactly what it says: the client and the daemon are separate processes, and this one was
-pointed at a port nothing was listening on.
+Usually the message is right: the client and the daemon are separate processes, and this client
+pointed at a port with nothing listening on it.
 
 **Read the exception name in the brackets before you trust the sentence.** The client wraps its
 three startup calls in a bare `except Exception` and prints this same line for *anything* that goes
-wrong — `(ConnectError)` really is "no daemon", but `(ReadTimeout)` is a daemon that is up and
-slow, and anything else is a bug in the client rather than a missing server. Verified: a healthy
-daemon on `8765` produced this message verbatim with `(RuntimeError)`. `curl -s
+wrong. `(ConnectError)` is "no daemon", `(ReadTimeout)` is a daemon that is up and slow, and
+anything else is a bug in the client rather than a missing server. Verified: a healthy daemon on
+`8765` produced this message verbatim with `(RuntimeError)`. `curl -s
 http://127.0.0.1:8765/health` settles it in one command.
 
 ---
@@ -1322,39 +1327,38 @@ You ran `uv run` from outside the repository. `cd` to the repo root, or use
 **An import traceback mentioning `mcp` that has nothing to do with MCP.**
 
 You have a file called `mcp.py` in the directory you launched from. Python puts the script's
-directory first on `sys.path`, and the daemon imports a top-level package literally named `mcp`.
-Rename your file.
+directory first on `sys.path`, and the daemon imports a top-level package named `mcp`. Rename your
+file.
 
 ---
 
 ## 9. Not built yet
 
-One line each. None of these are things you can do today.
+One line each. You cannot do any of these today.
 
 * **Undo, version control, backups (D6).** Plain markdown, no git. Back the directory up yourself.
 * **Applying a proposal (Q3).** `pkb_proposals` records, lists and dismisses; it cannot apply. A
-  proposal is a **dead letter** — the only way to get the write to happen is to go back to that
-  expert in an interactive channel and ask again so a live approval is raised. Dismissing is
-  bookkeeping, not action.
+  proposal is a **dead letter**. To make the write happen, go back to that expert in an interactive
+  channel and ask again, so the gate raises a live approval. Dismissing is bookkeeping, not action.
 * **Dismissing a proposal from the TUI.** `P` shows them and tells you to dismiss; no key does it.
   Use `curl -X DELETE http://127.0.0.1:8765/proposals/<id>`.
 * **`R` (Rename) in the TUI.** Prefills the composer; submitting sends `/rename …` to the model.
-* **Background conflict scanning.** Implemented, and never wired into `python -m pkb.daemon` —
+* **Background conflict scanning.** Implemented, and never wired into `python -m pkb.daemon`.
   `/health` reports `scan_worker.state: "disabled"` on every stock daemon. Rows accumulate in
   `scan_queue` and nothing drains them, and `scan_worker.pending` stays `0` regardless, so it is not
-  a backlog reading. Enabling it needs a launcher. (When it does run, the *only* place a conflict
-  surfaces is the file's own frontmatter, the topic's `index.md`, and an MCP escalation — nothing in
-  the TUI or Telegram mentions `status.conflict-review` at all.)
-* **`pkb_research_pack` picking its own topics (PK-8/PK-9).** You must name them; `query` is
-  currently discarded.
-* **A CLI for creating a topic or validating a tree.** Python API only — the snippets in §6.
+  a backlog reading. To enable it you need a launcher. (When it does run, a conflict surfaces in
+  three places only: the file's own frontmatter, the topic's `index.md`, and an MCP escalation.
+  Nothing in the TUI or Telegram mentions `status.conflict-review`.)
+* **`pkb_research_pack` picking its own topics (PK-8/PK-9).** You must name them; the tool discards
+  `query`.
+* **A CLI for creating a topic or validating a tree.** Python API only: the snippets in §6.
 * **A config file or CLI flags for models, `source_roots`, `fanout_limit`, `durability`.** Launcher
   code only.
 * **Multi-user access and authentication.** Out of scope; the daemon binds localhost.
-* **An ACP adapter (Zed).** Deferred, and purely additive when it arrives.
+* **An ACP adapter (Zed).** Deferred, and additive when it arrives.
 * **Telegram:** attachments, editing a proposal from the phone, typed rejection reasons, groups,
-  webhooks, and **push for an approval raised in the TUI** — see
+  webhooks, and **push for an approval raised in the TUI**. See
   [`telegram.md`](telegram.md) §7.
 
-Everything else in this guide is built, and — Telegram excepted, as [§7](#telegram-your-phone) says
-— every command in it was run.
+Everything else in this guide is built. Telegram excepted, as [§7](#telegram-your-phone) says,
+every command in it was run.
