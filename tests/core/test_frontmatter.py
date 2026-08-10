@@ -35,7 +35,6 @@ tags:
   - topic.cooking.grilling
   - topic.cooking.heat-management
   - type.note
-  - status.approved
 created: 2024-10-15
 updated: 2024-10-16
 related_topics: [ bbq, weather ]
