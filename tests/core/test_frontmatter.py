@@ -1,9 +1,9 @@
 """Frontmatter rules FM-1 … FM-15 of the Layer 1 rules document.
 
 Every test name ends in the rule id it covers, so ``grep -rn fm11 tests/`` finds the evidence for
-a rule. The golden blocks below are copied verbatim out of ``README.md``; one test asserts they
-are still byte-for-byte substrings of it, so a README edit fails here rather than drifting away
-from the implementation.
+a rule. ``README_BLOCKS`` below is copied verbatim out of ``README.md`` and one test asserts it is
+still a byte-for-byte substring of it, so a README edit fails here rather than drifting away from
+the implementation.
 """
 
 from __future__ import annotations
@@ -22,7 +22,8 @@ from pkb.core.models import Metadata
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # --------------------------------------------------------------------------------------
-# Golden frontmatter blocks, verbatim from README.md
+# Golden frontmatter blocks. `README_BLOCKS` below is the set asserted verbatim against
+# README.md; the rest exercise fields Layer 1 still defines.
 # --------------------------------------------------------------------------------------
 
 README_1_4 = """\
@@ -42,7 +43,7 @@ source_type: note  # note, reference, solution, summary
 ---
 """
 
-README_1_7_CONFLICT = """\
+CONFLICT_TAGGED_NOTE = """\
 ---
 title: "Preheat the grill"
 description: "How long to preheat the grill before cooking"
@@ -60,7 +61,7 @@ review_note: "Reference 'Grill Basics' says preheat for 10 min. Note says 15 min
 ---
 """
 
-README_1_7_RESOLVED = """\
+REVIEWED_NOTE = """\
 ---
 title: "Preheat the grill"
 description: "How long to preheat the grill before cooking"
@@ -71,42 +72,6 @@ tags:
   - type.note
   - status.approved
 created: 2024-10-15
-updated: 2024-12-17
-related_topics: [ bbq.equipment ]
-source_type: note
-last_reviewed: 2024-12-17
----
-"""
-
-README_PART5_CONFLICT = """\
----
-title: "Preheat the grill for 15 minutes"
-description: "Always preheat the grill for 15 minutes before cooking"
-topic: "Cooking"
-tags:
-  - topic.cooking.grilling
-  - topic.cooking.heat-management
-  - type.note
-  - status.conflict-review
-created: 2024-12-15
-updated: 2024-12-16
-related_topics: [ bbq.equipment ]
-source_type: note
-review_note: "Reference 'Grill Basics' says preheat for 10 min. Note says 15 min."
----
-"""
-
-README_PART5_RESOLVED = """\
----
-title: "Preheat the grill for 15 minutes"
-description: "Always preheat the grill for 15 minutes before cooking"
-topic: "Cooking"
-tags:
-  - topic.cooking.grilling
-  - topic.cooking.heat-management
-  - type.note
-  - status.approved
-created: 2024-12-15
 updated: 2024-12-17
 related_topics: [ bbq.equipment ]
 source_type: note
@@ -116,10 +81,6 @@ last_reviewed: 2024-12-17
 
 README_BLOCKS = {
     "readme_1_4": README_1_4,
-    "readme_1_7_conflict": README_1_7_CONFLICT,
-    "readme_1_7_resolved": README_1_7_RESOLVED,
-    "readme_part5_conflict": README_PART5_CONFLICT,
-    "readme_part5_resolved": README_PART5_RESOLVED,
 }
 
 # FM-9 lets the serializer drop inline comments, so §1.4 is the one block whose canonical form
@@ -130,10 +91,6 @@ README_1_4_CANONICAL = README_1_4.replace(
 
 ROUND_TRIP_BLOCKS = {
     "readme_1_4": (README_1_4, README_1_4_CANONICAL),
-    "readme_1_7_conflict": (README_1_7_CONFLICT, README_1_7_CONFLICT),
-    "readme_1_7_resolved": (README_1_7_RESOLVED, README_1_7_RESOLVED),
-    "readme_part5_conflict": (README_PART5_CONFLICT, README_PART5_CONFLICT),
-    "readme_part5_resolved": (README_PART5_RESOLVED, README_PART5_RESOLVED),
 }
 
 MINIMAL_NOTE = """\
@@ -291,7 +248,7 @@ def test_wrong_typed_field_becomes_a_problem_not_an_exception_fm4(
 
 
 def test_well_typed_fields_produce_no_problems_fm4() -> None:
-    meta = _meta(README_1_7_CONFLICT)
+    meta = _meta(CONFLICT_TAGGED_NOTE)
     assert meta.bad_fields == ()
     assert meta.title == "Preheat the grill"
     assert meta.tags == (
@@ -398,7 +355,7 @@ def test_serialize_uses_the_canonical_key_order_fm7() -> None:
         description="How long to preheat the grill before cooking",
         title="Preheat the grill",
     )
-    assert fm.serialize(meta, "") == README_1_7_CONFLICT
+    assert fm.serialize(meta, "") == CONFLICT_TAGGED_NOTE
 
 
 def test_unknown_keys_serialize_after_the_known_ones_fm7() -> None:
@@ -424,7 +381,7 @@ def test_readme_blocks_round_trip_byte_identically_fm8(source: str, expected: st
 
 
 def test_canonical_style_is_quoted_text_block_tags_and_flow_related_topics_fm8() -> None:
-    text = _round_trip(README_1_7_CONFLICT)
+    text = _round_trip(CONFLICT_TAGGED_NOTE)
     assert 'title: "Preheat the grill"' in text
     assert "tags:\n  - topic.cooking.grilling\n" in text
     assert "related_topics: [ bbq.equipment ]\n" in text
@@ -476,7 +433,7 @@ def test_unknown_keys_are_preserved_and_listed_fm10() -> None:
 
 
 def test_a_known_key_is_never_reported_as_unknown_fm10() -> None:
-    meta = _meta(README_1_7_RESOLVED)
+    meta = _meta(REVIEWED_NOTE)
     assert meta.unknown_fields == ()
     assert meta.present_keys == (
         "title",
@@ -498,7 +455,7 @@ def test_a_known_key_is_never_reported_as_unknown_fm10() -> None:
 
 def test_readme_resolution_edit_reproduces_the_after_block_fm11() -> None:
     body = "The note text, untouched.\n\n- a bullet\n"
-    before = README_1_7_CONFLICT + body
+    before = CONFLICT_TAGGED_NOTE + body
 
     edited = fm.remove_field(before, "review_note")
     edited = fm.set_field(edited, "updated", date(2024, 12, 17))
@@ -514,7 +471,7 @@ def test_readme_resolution_edit_reproduces_the_after_block_fm11() -> None:
     )
     edited = fm.set_field(edited, "last_reviewed", date(2024, 12, 17))
 
-    assert edited == README_1_7_RESOLVED + body
+    assert edited == REVIEWED_NOTE + body
     assert fm.parse(edited).body == body
 
 
@@ -556,15 +513,15 @@ def test_set_field_inserts_a_missing_key_in_canonical_position_fm11() -> None:
 
 
 def test_remove_field_deletes_the_key_rather_than_blanking_it_fm11() -> None:
-    edited = fm.remove_field(README_1_7_CONFLICT, "review_note")
+    edited = fm.remove_field(CONFLICT_TAGGED_NOTE, "review_note")
     assert "review_note" not in edited
-    assert edited == README_1_7_CONFLICT.replace(
+    assert edited == CONFLICT_TAGGED_NOTE.replace(
         "review_note: \"Reference 'Grill Basics' says preheat for 10 min. Note says 15 min.\"\n", ""
     )
 
 
 def test_remove_field_deletes_every_line_of_a_block_value_fm11() -> None:
-    edited = fm.remove_field(README_1_7_CONFLICT, "tags")
+    edited = fm.remove_field(CONFLICT_TAGGED_NOTE, "tags")
     assert "topic.cooking.grilling" not in edited
     assert 'title: "Preheat the grill"\n' in edited
 
