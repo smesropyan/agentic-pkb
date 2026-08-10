@@ -24,10 +24,15 @@ that comes from a different session than the one beside it also says so.
 
 ## What this is
 
-> The **Personal Knowledge Base (PKB)** – a structured, hierarchical repository of knowledge. It
-> contains static sources and human experience. *(Knowledge + Experience = Wisdom)*
+> The Personal Knowledge Base (PKB) is an AI-assisted expert for the subject areas the operator
+> works in. It fuses theoretical, practical and procedural knowledge about each topic.
 >
-> — `README.md`
+> — `README.md`, System Goal
+
+Three folders hold them: `references/` for what others established, `notes/` for what you
+established by doing, and `skills/` for how you and the agent work together. Scaffolding makes the
+first two. Your first approved skill makes `skills/`. *Knowledge + Experience = Wisdom* names the
+first two pillars.
 
 Concretely: a folder of markdown files that **only agents write to**. The root agent is the
 **Librarian**. It reads what you send it, works out which topics the material concerns, then hands
@@ -870,8 +875,8 @@ Read 5 sections; structure recovered as `markdown-headings`.
 
 That last line is the whole point of the shape. `README.md` §1.2:
 
-> The word *summary* names the failure this shape exists to prevent: a confident write-up of the part
-> that fit in one context window, with nothing anywhere recording that the rest was never opened.
+> The word *summary* names the failure this shape prevents: a confident write-up of the part that fit
+> in one context window, with nothing recording that the rest was never opened.
 
 Three things to know:
 
