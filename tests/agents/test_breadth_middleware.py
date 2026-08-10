@@ -374,7 +374,7 @@ def test_the_librarian_block_is_the_root_catalog_only_lb4(kb: Path) -> None:
 
     Root `index.md` is one line per topic and bounded under 8 KB, which is what makes it affordable
     every turn. A topic's breadth files in the Librarian's context would make it answer instead of
-    route, which is the one thing README §1.1 goal 2 asks it not to do.
+    route, which is the one thing the README's System Goal and §2.2 ask it not to do.
     """
     append_line(kb / "index.md", "MARKER-ROOT-CATALOG")
     append_line(kb / "Cooking" / "notes" / "summary.md", "MARKER-TOPIC-SCOPED")

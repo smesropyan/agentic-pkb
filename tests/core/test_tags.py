@@ -527,7 +527,7 @@ def test_topic_section_matches_the_pinned_shape_ge23(tmp_path: Path) -> None:
 
 
 def test_domain_renders_as_a_nested_tree_ge23_c8(tmp_path: Path) -> None:
-    """Contradiction C8 / Q1: `domain.*` nests like `topic.*`, unlike README's flat example."""
+    """Contradiction C8 / Q1: `domain.*` nests like `topic.*`, as README §1.5 now renders it."""
     tree = build_tag_tree(_cooking_snapshot(tmp_path))
     assert render_tag_tree(tree.namespace_children(Namespace.DOMAIN)) == [
         "- `domain.legal`",

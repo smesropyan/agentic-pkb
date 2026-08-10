@@ -331,8 +331,9 @@ def test_research_pack_excludes_every_index_by_default_pk9(snapshot: KbSnapshot)
     """An index is a list of everything, which is the opposite of breadth.
 
     README says research agents do not read indexes unless asked. Leaking one in costs the agent a
-    large, low-signal file at the top of a budgeted pack — exactly the context-window problem goal 2
-    exists to solve — and it would arrive *ahead* of the material that answers the question.
+    large, low-signal file at the top of a budgeted pack — exactly the context-window problem
+    README §1.8 rule 2 and Part 4 exist to bound — and it would arrive *ahead* of the material that
+    answers the question.
     """
     pack = research_pack(snapshot, topics=[COOKING, TRADING, LEDGER])
 
@@ -509,7 +510,8 @@ def test_sub_topics_are_excluded_unless_asked_for_pk10(snapshot: KbSnapshot) -> 
     """README asks for the full index of *the selected topic*, and Q8 kept it that way.
 
     A four-sub-topic tree returns an order of magnitude more than the caller asked for, which is
-    the context-window problem goal 2 exists to solve — and under a budget the extra material does
+    the context-window problem README §1.8 rule 2 and Part 4 exist to bound — and under a budget
+    the extra material does
     not merely bloat the pack, it evicts the selected topic's own solution notes off the end.
     Turning the flag on must add the descendants *within* the existing ordering, not append a
     second pack after the first.

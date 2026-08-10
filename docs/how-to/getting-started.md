@@ -59,7 +59,7 @@ Two things follow. Both matter on day one.
 
 **First: not everything stops for you.** The same architecture paragraph says that "the approval
 gate means nothing lands unreviewed". As built, that is wrong for two *locations*. Both are
-**ungated** on purpose, because capture has to stay frictionless (RT-31, `README.md` §1.1 goal 3):
+**ungated** on purpose, because capture has to stay frictionless (RT-31, `README.md` §1.1 goal 2):
 a plain note under `notes/`, and the *first* extraction of a source. Verified: the whole source
 ingestion in [§6](#filing-a-source) landed with no approval.
 
