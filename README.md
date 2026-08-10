@@ -414,22 +414,25 @@ Section 2.7, and the expert finalizes no human-approved content on its own.
 ## 1.7 Conflict Classification and Resolution
 
 Section 2.8 holds the machinery. One mechanism reasons over what the PKB holds, on two triggers: a session closed, or
-time passed. A conflict between two files is one of the things it finds, and Section 2.8 names the five axes and who
+time passed. A conflict between two files is one of the things it finds, and Section 2.8 names the four axes and who
 schedules the work. This section says what a conflict is, how the tree records one, and how the operator clears it.
 
 ### General rule
 
-The practical and procedural pillars outrank the theoretical one (The Three Pillars, above). Human content is the
-operator's own notes, the human-approved breadth summaries, and the skill files. An operator's note that conflicts with
-a reference is correct, and the operator edits a wrong note until it wins. A skill that conflicts with a reference wins
-the same way. The PKB overwrites no human content. It brings a conflict to the operator's attention and tracks the
-resolution.
+The practical and procedural pillars outrank the theoretical one (The Three Pillars, above), and that ranking does two
+jobs. It fixes precedence when an agent acts: a context pack carries human content first, and an agent follows the
+practical and the procedural where its guidance differs. It also settles a contradiction between two claims, and that is
+the job of this section and of the scan. Human content is the operator's own notes, the human-approved breadth
+summaries, and the skill files, and the skills belong to the first job alone: a skill says how to do something and
+asserts nothing about the subject, so no note and no reference can contradict one.
+
+A conflict is therefore knowledge against knowledge. An operator's note that conflicts with a reference is correct,
+because the note is their own view of what the reference asserts, established under their own conditions, and the
+operator edits a wrong note until it wins. The PKB overwrites no human content. It brings a conflict to the operator's
+attention and tracks the resolution.
 
 A page a session found on the internet holds no standing until the operator accepts it. Accepting it feeds the
 theoretical pillar through ordinary ingestion, and it then ranks as any reference does (Section 2.7).
-
-A note and a skill stand level, so the ladder decides nothing between them. They disagree about how work is done rather
-than about what is true, so the scan raises the pair and the operator settles it (*Conflict tagging* below).
 
 One case has no human side, and the rule above leaves it undecided: a second reading of a source produces an argument
 that contradicts the one in that source's file. Both sides are extractions and the machinery is the same. Flag it,
@@ -456,10 +459,6 @@ On a conflict with human content, the expert does these three steps:
 The reference takes no tag and no edit, except where the conflict lies between two readings of the same source. There
 the same three steps apply to the source file: tag it `status.conflict-review`, add the one-line `review_note`, change
 nothing. The operator settles which reading is right, as they would between a note and a reference.
-
-A skill takes no tag either, and it cannot: a `SKILL.md` carries the DeepAgent harness's own two fields and no PKB
-frontmatter (Section 1.4), so `status.conflict-review` has nowhere to sit. The expert raises a note or a reference that
-disagrees with a skill in conversation, with both texts quoted, and nothing changes until the operator edits one.
 
 Example metadata for a note with a pending conflict:
 
@@ -971,10 +970,11 @@ than refusing, and nothing calls it yet. An analysis proposal that would shadow 
 
 Re-read a skill as the work moves on, rather than writing it once. A procedure hardens around the conditions somebody
 wrote it in, and those conditions move: the tool that failed gets fixed, the operator changes how they want to be argued
-with, the topic grows past the shape the skill assumed. Two routes answer that, and Section 2.8 holds both. The scan
-reads a topic's skills against that topic's notes, and a session proposes a revision to a skill a session wrote. Neither
-route reaches a skill the operator wrote or adopted, and the scan axis is designed and not built, so today the operator
-is the only reader of a skill that has gone stale.
+with, the topic grows past the shape the skill assumed. A skill goes stale by failing when somebody uses it, so the
+evidence sits in the session record rather than in a knowledge file, and session learning holds the one route: a session
+proposes a revision to a skill a session wrote (Section 2.8). The conflict scan reads no skill, because a skill states
+no claim and contradicts nothing (Section 1.7), so the operator is the only reader of a skill they wrote or adopted
+themselves.
 
 ## 2.5 DeepAgent Harness and Access Channels
 
@@ -1048,11 +1048,13 @@ named for the same objective. A new objective opens a new session.
 ## 2.7 Sessions
 
 A session is how anyone works with the PKB in dialog, and it is how the operator reaches a topic's knowledge for
-anything past a single question (The Three Pillars, above). It runs in one channel, held open on one agent for one
-objective, for as long as that work lasts. A Topic Expert answers a question from what its topic holds, and a session
-covers everything past that: the objective the topic cannot meet, the experiments that follow, and the lesson the
-operator and the expert settle at the end. A capture turn stays outside a session and files what the operator already
-knew. Sessions are where the operator finds things out, and where most notes come from.
+anything past a single question or a single capture (The Three Pillars, above). It runs in one channel, held open on one
+agent for one objective, for as long as that work lasts. A Topic Expert answers a question from what its topic holds,
+and a session covers everything past that: the objective the topic cannot meet, the experiments that follow, and the
+lesson the operator and the expert settle at the end. A capture turn stays outside a session and files what the operator
+already knew: they dictate a note or name a source, the write lands in that turn, un-gated, and no analysis follows,
+because that instruction is the approval (goal 2 in Section 1.1). Sessions are where the operator finds things out, and
+where most notes come from.
 
 A search is one of the things a session does, rather than a kind of session. A session may discuss, argue about a
 design, ask a question and take the answer, search the internet, or try things for weeks and report back, in any order.
@@ -1455,9 +1457,8 @@ built and the timer is not, so nothing enqueues a quiet topic today. Both write 
 the tree against itself when it reaches the entry, outside the turn that scheduled it.
 
 A topic's session summary enters like any other knowledge file once it lands, and a session in progress writes nothing
-to find (Section 2.7). The scan cannot reach two things: a `skills/` file schedules nothing, so axis five below has no
-trigger, and the root `sessions/` folder belongs to no topic. The operator can also request a scan, the route that works
-today.
+to find (Section 2.7). The root `sessions/` folder belongs to no topic, so the scan does not reach it. The operator can
+also request a scan, the route that works today.
 
 Session learning checks a candidate against the tree, and the scan checks the tree against itself. Four things fall to
 the second trigger alone, and the fourth is the strongest reason to keep it:
@@ -1473,21 +1474,19 @@ the second trigger alone, and the fourth is the strongest reason to keep it:
 
 ### What the scan compares
 
-The Topic Expert runs the scan on five axes, and three of them run today, axes 1 to 3.
+The Topic Expert runs the scan on four axes, all of them knowledge against knowledge, and axes 1 to 3 run today.
 
 1. `notes/summary.md` against `references/summary.md`.
 2. Single notes against references.
 3. Notes against notes, the same person at different times under conditions they did not write down.
-4. On a re-ingestion, the fresh extraction of a source against the source file on disk, argument by argument, because a
+4. References against references, two sources contradicting each other with no human side to decide them, and on a
+   re-ingestion the fresh extraction of a source against that source's file on disk, argument by argument, because a
    bounded reader handed two long documents answers confidently about the part it read. Designed, not built.
-5. The topic's notes against the skills that topic loads, where a skill that hardened around a transient failure meets
-   the note saying the thing works now (*A wrong skill is worse than a wrong note*, below). Designed, not built.
 
-Skill files sit outside every `index.md` and contribute no tags (Section 1.4), so the scan reaches them by path rather
-than through the registry. The scan reads for meaning with the expert's domain knowledge behind it, and it recognizes
-two statements that are both true under different conditions. Section 1.7 says what a finding does to the tree: tag the
-file, add a `review_note`, change nothing. The tag records that the question is open, and the proposal in the learning
-channel is what puts it in front of the operator, because a timer has no channel of its own.
+The scan reads for meaning with the expert's domain knowledge behind it, and it recognizes two statements that are both
+true under different conditions. Section 1.7 says what a finding does to the tree: tag the file, add a `review_note`,
+change nothing. The tag records that the question is open, and the proposal in the learning channel is what puts it in
+front of the operator, because a timer has no channel of its own.
 
 Harness code picks the pairs and the model labels them. The design takes the choice of pairs away from the model: code
 picks them by claim-to-claim overlap, the model labels each one, and every pair the code picked reaches the operator
@@ -1642,7 +1641,7 @@ Two shipped skills (Section 2.4) generalize outside the two triggers, and neithe
 finds the rule under two notes that never mention each other, so the finding goes back through the front door with its
 own approval. `voice` watches for the same edit repeated across three drafts and proposes it as a rule, which is the
 procedural pillar generalizing from experience about the operator. `summarization` and `conflict-detection` do the work
-already described above, in the five axes and in *How an entry improves an expert*.
+already described above, in the four axes and in *How an entry improves an expert*.
 
 Section 1.9's self-improvement skill runs the analysis and its two drafting skills do the writing, and all three are
 being written (Section 2.4). The checks a draft has to answer for stay in harness code, where the pair picker sits: a
@@ -1726,16 +1725,12 @@ A session in March concludes that the pit runs hot and writes a skill saying *tr
 degrees high before drafting*. The operator reads it once, agrees, and it lands. In April the operator replaces the pit.
 Every draft after that subtracts twenty degrees from a correct number, in every session on that topic, before anybody
 asks a question. The drafts carry no mark saying which skill shaped them, so the operator reads a wrong temperature and
-corrects the draft rather than the file. The note they file to correct it says the pit runs true. Catching that pair is
-the job of the scan's fifth axis, practice against procedure (*What the scan compares*, above), which this design adds
-for this case and has not built. Built, that axis is still the weakest reader in the system. A skill appears in no
-`index.md` and contributes no tags (Section 1.4), so the scan reaches it by path, `discovery`
-never finds it, and one model call has to notice that a procedure and a note disagree about a number neither states the
-same way. The reader most likely to catch it is the operator who approved it once, in March.
+corrects the draft rather than the file.
 
-That axis also has a case it cannot reach. The scan compares claims, and a skill phrased as procedure makes none. *Ask
-for the pit's own thermometer offset before drafting any smoking lesson* is the same lesson written the way this section
-prefers, and no note in the tree agrees or disagrees with it. So the approval in front of a skill is the guard.
+No scan catches that, and none is meant to. The scan compares claims, and *treat every stated temperature as twenty
+degrees high* instructs an agent rather than asserting anything about the pit, so no note in the tree agrees or
+disagrees with it (Section 1.7). A skill fails where somebody uses it, so the session that hits it is what reports it
+(Section 2.4), and the guard in front of it is the approval the operator gave in March.
 
 The worst version is a shadow. A topic skill declaring `name: conflict-detection` replaces the shipped scan for that
 topic, so a bad skill can switch off the check that would have caught the bad note. Exclusion 3 above is the same
@@ -2025,7 +2020,7 @@ The **Personal Knowledge Base** is an AI-assisted expert for the subject areas t
   in code against the page text the provider returned, and weighs what survives against the operator's notes without
   touching one. **None of the session machinery is built.**
 - One mechanism reasons over what the PKB holds, on two triggers (Section 2.8): a session closed, or time passed.
-  Session learning checks a candidate against the tree, and the scan checks the tree against itself, over five axes of
+  Session learning checks a candidate against the tree, and the scan checks the tree against itself, over four axes of
   which three run. Both draw from one queue, both run in one worker, and both end with a proposal the operator answers
   in the learning channel. The second trigger earns its place because one pass over a pair scores near chance, and
   repeating the question over different pairings is what makes a near-chance detector useful.
@@ -2038,13 +2033,13 @@ The **Personal Knowledge Base** is an AI-assisted expert for the subject areas t
   result. The bar runs inside the analysis rather than in front of the queue, so the queue holds work and the channel
   holds proposals: about one candidate in seven establishes anything, and a review list of everything goes unread.
 - A session may also teach the system how to work. A note says what is true and a skill says how to work, and the test
-  is who acts on the draft first. A wrong skill is worse than a wrong note, and it marks nothing it shaped. The scan's
-  fifth axis reads a topic's notes against its skills to catch that, and it is not built. Sections 2.7 and 2.8 record
-  what the design has left unsolved: a session summary reaches no expert yet, the daemon runs no unprompted scan,
-  nothing holds how the operator decides, nothing decays with age, the procedural pillar has no breadth file, and four
-  questions stay open: whether a project agent may ever hold an approval of its own, whether the learning channel binds
-  to the Librarian or to no agent, whether the queue needs a cap, and how long a queued analysis stays eligible before
-  it ages out.
+  is who acts on the draft first. A wrong skill is worse than a wrong note, and it marks nothing it shaped. The scan
+  reads no skill, because a skill states no claim, so a stale one surfaces through the session that hits it and through
+  the approval that let it land. Sections 2.7 and 2.8 record what the design has left unsolved: a session summary
+  reaches no expert yet, the daemon runs no unprompted scan, nothing holds how the operator decides, nothing decays
+  with age, the procedural pillar has no breadth file, and four questions stay open: whether a project agent may ever
+  hold an approval of its own, whether the learning channel binds to the Librarian or to no agent, whether the queue
+  needs a cap, and how long a queued analysis stays eligible before it ages out.
 - The DeepAgent harness hosts the agent layer and exposes it through a dedicated TUI, Telegram channels and other
   channels, and the operator connects to the Librarian or to one Topic Expert.
 - The Project Manager (separate project) reads the PKB through context packs and feeds project outcomes and lessons
