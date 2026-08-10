@@ -153,7 +153,7 @@ skipped, and when.
 | `skills/[skill-name]/SKILL.md` (optional)      | **Human + AI**               | The procedural pillar for one topic: a skill only this topic's expert loads (Section 2.4). The operator writes or approves it and the expert assists. A write here is gated, and it is the one skill path inside the expert's own subtree.                                                                            |
 | `references/summary.md`                        | **AI + Human**¹              | Breadth summary of the theoretical pillar. The expert drafts it. The operator edits and approves.                                                                                                                                                                                                                    |
 | `references/[source]/[source].md`              | **AI**, then **AI + Human**² | Depth map of one source: thesis, provenance, a section per part of the source, a bullet per argument, and what nobody read. The ingestion skill writes it.                                                                                                                                                           |
-| `notes/[note-title].md`                        | **Human + AI**               | What the operator knows from their own practice: an observation, an opinion, or something that worked (tagged `type.solution`). They write it, or they settle it at `/learn` after they try the thing and the expert drafts what they settled (Section 2.7). The operator approves the exact text.                    |
+| `notes/[note-title].md`                        | **Human + AI**               | What the operator knows from their own practice: an observation, an opinion, or something that worked (tagged `type.solution`). They write it, or they settle it in the analysis after `/close`, once they tried the thing and the expert drafted what they settled (Section 2.7). The operator approves the exact text.       |
 | `notes/summary.md`                             | **AI + Human**¹              | Breadth summary of experience: distilled rules and notable solutions. The operator edits and approves. **Highest priority for decisions.**                                                                                                                                                                           |
 | `sessions/[objective-title].md`                | **AI + Human**³              | A session's synthesis of what it **read and worked out** (Section 2.7): the objective, the questions asked, every source kept, every source rejected and why. Harness code renders it from the session record and the operator approves it before it lands.                                                           |
 | `tags.md` (PKB root)                           | **Hooks**                    | Global tag registry, derived from file frontmatter. Regenerated whenever files change.                                                                                                                                                                                                                              |
@@ -167,9 +167,9 @@ skipped, and when.
 and that instruction is the approval (goal 2 in Section 1.1). The operator approves a **re-ingestion that rewrites
 one**: the rewrite lands on top of an extraction they have already read and relied on.
 
-³ A session drafts from its own **session record**, which lives outside the tree (Section 2.7). The `/learn` cycle is
-the only thing that files anything, whether the operator runs it or harness code runs it over a record whose session
-has closed (Section 2.8). Every write under `sessions/` waits for the operator, on the exact text.
+³ A session drafts from its own **session record**, which lives outside the tree (Section 2.7). The analysis that
+`/close` queues is the only thing that files anything (Section 2.8). Every write under `sessions/` waits for the
+operator, on the exact text.
 
 **Collaboration rule**: the **practical and procedural pillars are human-generated, AI-curated**. `notes/`, the
 `skills/` folders, and `expert.md` overrides carry the operator's own experience and their own ways of working, and the
@@ -183,8 +183,8 @@ nobody curates them.
 `human-generated, AI-curated`, and `AI-generated, human-curated`. They name a rule and three file classes, and harness
 code cites them in these exact words. The person they name is the operator.
 
-An expert may draft a note or a skill itself at `/learn`, and both stay on the human-generated side of that line. The
-experience in them is the operator's: they cooked it, they ran it, they came back and said what happened. The expert
+An expert may draft a note or a skill itself in the analysis, and both stay on the human-generated side of that line.
+The experience in them is the operator's: they cooked it, they ran it, they came back and said what happened. The expert
 drafts the wording from the session record, argues about what the experience means (Section 2.7), files the text the
 operator approves word for word (Section 2.8), and never argues about whose experience it was.
 
@@ -242,7 +242,7 @@ needs (Section 2.7). The field takes one of four values:
 
 | Value        | What it means                                                                                                |
 |--------------|--------------------------------------------------------------------------------------------------------------|
-| `practised`  | The operator did the thing and this is what happened. A lesson settled at `/learn` carries it (Section 2.7). |
+| `practised`  | The operator did the thing and this is what happened. A lesson the analysis settles carries it (Section 2.7). |
 | `stated`     | The operator said it, and has not tried it yet.                                                              |
 | `researched` | A session worked it out, by reading or by argument, weighed against the operator's own notes (Section 2.7).  |
 | `ingested`   | It came in through a source: a book, an article, a paper.                                                    |
@@ -256,7 +256,7 @@ first.** `stated` outranks `researched` because the operator's own claim is thei
 their conditions that they did not tell it. The ranking sits under rule 1 of Section 1.7 rather than beside it: the
 pillars rank the folders, and `provenance` ranks two files inside one folder.
 
-A session summary carries `provenance: researched` and a lesson settled at `/learn` carries `provenance: practised`.
+A session summary carries `provenance: researched` and a lesson the analysis settles carries `provenance: practised`.
 Harness code stamps both, because it renders both files rather than typing them, and validation refuses a session
 summary that arrives without one. No such check lands on `notes/`: the notes already in the tree carry no `provenance`,
 so a presence rule there would report an error on every one of them.
@@ -395,7 +395,8 @@ approves in one read. A breadth file manages the *operator's* context window, as
 
 ### Sessions
 
-- The operator opens a session on an expert and works in it for as long as the work lasts (Section 2.7).
+- The operator opens a session on the Librarian or on one Topic Expert and works in it for as long as the work lasts
+  (Section 2.7).
 - The expert argues throughout, and it argues about the operator's own conclusions as readily as about a page it found.
   Objecting while the operator can still act on it is the job. A retrospective is too late.
 - The expert drafts what the session concluded and the operator approves the exact text that lands, a note or a skill
@@ -408,22 +409,24 @@ judgment skills (Section 1.9), and harness hooks keep the structure consistent. 
 shape the dialog itself: the expert writes drafts in the operator's `voice` and runs idea discovery under `discovery`.
 Work in a session follows Section 2.7. The expert finalizes no human-approved content on its own.
 
-## 1.7 Conflict Detection & Resolution
+## 1.7 Conflict Classification and Resolution
+
+**Section 2.8 holds the machinery.** One mechanism reasons over what the PKB holds, on two triggers: a session closed,
+or time passed. A conflict between two files is one of the things it finds, and Section 2.8 names the five axes and who
+schedules the work. This section says what a conflict is, how the tree records one, and how the operator clears it.
 
 ### General rule
 
-The practical pillar outranks the theoretical one (The Three Pillars, above).
-
-Human content is the operator's own notes and the human-approved breadth summaries. An operator's note that conflicts
-with a reference is correct, and the operator edits a wrong note until it wins.
+The practical pillar outranks the theoretical one (The Three Pillars, above). Human content is the operator's own notes
+and the human-approved breadth summaries. An operator's note that conflicts with a reference is correct, and the
+operator edits a wrong note until it wins. The PKB overwrites no human content. It brings a conflict to the operator's
+attention and tracks the resolution.
 
 A page a session found on the internet holds no standing until the operator accepts it. Accepting it feeds the
 theoretical pillar through ordinary ingestion, and it then ranks as any reference does (Section 2.7).
 
 The procedural pillar takes no place on that ladder. A skill and a note disagree about how work is done rather than
 about what is true, so the scan raises the pair and the operator settles it (*Conflict tagging* below).
-
-The PKB overwrites no human content. It brings a conflict to the operator's attention and tracks the resolution.
 
 One case has no human side, and the rule above leaves it undecided: a second reading of a source produces an argument
 that contradicts the one in that source's file. Both sides are extractions. The machinery is the same. Flag it, change
@@ -437,32 +440,7 @@ nothing, and let the operator settle it. The file flagged is a reference (*Confl
 | `nuance`        | Statements are both true but under different conditions | "High heat for searing" vs. "Low heat for smoking" |
 | `outdated`      | Static knowledge is older and no longer accurate        | 2010 book vs. 2024 operator note                   |
 
-### Detection process
-
-1. **Trigger**: a harness hook schedules a conflict scan whenever a turn creates **or modifies** a file under `notes/`,
-   `references/`, a topic's `sessions/`, or a topic extension folder, because an edited note can contradict a reference
-   that was correct yesterday. A topic's session summary enters the scan like any other knowledge file once it lands,
-   and a session in progress writes nothing for the scan to find (Section 2.7). **The scan cannot reach two things**: a
-   `skills/` file schedules nothing, so axis five below has no trigger, and the root `sessions/` folder belongs to no
-   topic. The operator can also request a scan, the route that works today. The daemon starts no scan worker, so
-   requests pile up in the queue on every filing turn and nothing drains them (Section 1.9).
-2. **Method**: the Topic Expert runs the scan on five axes.
-
-    1. `notes/summary.md` against `references/summary.md`.
-    2. Single notes against references.
-    3. Notes against notes, the same person at different times under conditions they did not write down.
-    4. On a re-ingestion, the fresh extraction of a source against the source file on disk, argument by argument,
-       because a bounded reader handed two long documents answers confidently about the part it managed to read.
-    5. The topic's notes against the skills that topic loads, where a skill that hardened around a transient failure
-       meets the note saying the thing works now (Section 2.8).
-
-   Skill files sit outside every `index.md` and contribute no tags (Section 1.4), so the scan reaches them by path
-   rather than through the registry. The scan reads for meaning with the expert's domain knowledge behind it, and it
-   recognizes two statements that are both true under different conditions.
-
-   **Three of the five run today**, axes 1 to 3. The re-ingestion axis and the practice-against-procedure axis are
-   designed and not built.
-3. **Classification**: the expert proposes a conflict type and a confidence score.
+The expert proposes a conflict type from this table and a confidence score with each finding.
 
 ### Conflict tagging
 
@@ -530,45 +508,34 @@ last_reviewed: 2024-12-17
 
 ### Handling conflicting operator notes
 
-On a conflict between two of the operator's notes, the Topic Expert does these steps:
-
-1. Detect the conflict.
-2. Add the tag `status.conflict-review` and a `review_note` to each note.
-3. Show both notes to the operator.
-4. The operator edits one note or both into the winning version.
-5. The operator changes each tag back to `status.approved` and removes each `review_note`.
+Both sides are human content here, so the expert applies the three steps above to **each note** and shows the operator
+both. The operator edits one note or both into the winning version, then clears each tag and each `review_note` the way
+*Operator review* describes.
 
 ### Conflicts found during a session
 
 A session that searches compares what it found on the internet against the topic's notes (Section 2.7). A page that
 contradicts a note **raises the pair and changes nothing**: the expert shows the operator both quotes side by side and
 leaves the note byte for byte as it was. No tag, no `review_note`, no reordering. The three steps above start once the
-operator accepts the source and it lands as a reference, and the ordinary scan then runs on it like any other.
-
-The same machinery runs against a lesson the operator dictates at `/learn`. Told to file a conclusion the topic's own
-notes disagree with, the expert raises the pair, quotes both sides, and changes nothing until the operator says which
-one stands (Section 2.7).
+operator accepts the source and it lands as a reference, and the ordinary scan then runs on it like any other. The same
+holds for a lesson the operator dictated during the session: the analysis raises the pair, quotes both sides, and
+changes nothing until the operator says which one stands (Section 2.8, step 4).
 
 Two properties of models make this the only safe handling.
 
 - **A model handed retrieved text abandons its own correct answer for it.** Measured across six domains and six models,
   the rate runs from 0.16 to 0.31. A page with no standing therefore never marks the operator's own note as under
   review. Marking it would hand that bias write access to a tree with no undo.
-- **A model given two passages that contradict each other misses the contradiction.** Handed both sides of a
-  contradiction human annotators had already marked, models score under 11%. The design therefore takes the choice of
-  pairs away from the model: harness code will pick the pairs by claim-to-claim overlap, the model will label each one,
-  and every pair the code picked gets shown whatever the label says. **That code does not exist.** Today the expert
-  compares whole files under the `conflict-detection` skill, so the 11% figure is the risk the design carries until a
-  developer builds the pair picker (Section 2.8).
+- **A model given two passages that contradict each other misses the contradiction**, scoring under 11% on pairs human
+  annotators had already marked. Section 2.8 carries that measurement and what the design does about it.
 
 ### What the PKB does not do
 
 - It builds no separate conflict registry, so nothing pollutes a context window after the resolution.
-- It records no detail of a past conflict once the operator resolves it.
+- It records no detail of a past conflict once the operator resolves it, and keeps no marker that one ever happened. A
+  resolved note is `status.approved` with a fresh `last_reviewed` date.
 - It marks no note as a loser.
 - It stores no resolution text outside the note, so the note content is the true state of knowledge.
-- It keeps no marker that a conflict ever happened. A resolved note is `status.approved` with a fresh `last_reviewed`
-  date.
 
 ## 1.8 Critical Rules
 
@@ -615,10 +582,10 @@ Two properties of models make this the only safe handling.
    Nothing enforces that yet. Nothing tracks what a turn reached, so this half is designed and not built.
 
    A session **may** file under `notes/` the thing the operator went and tried: they cooked it, they ran it, they came
-   back and said what happened. They settle that lesson at `/learn`, the expert drafts it from the session record of
-   the experiments, and the operator approves it word for word. It lands tagged `type.solution` and stamped
-   `provenance: practised` (Section 2.7). The line this rule draws runs between read and done, and `provenance` is
-   where the tree records which side a file falls on.
+   back and said what happened. They settle that lesson in the analysis after `/close`, the expert drafts it from the
+   session record of the experiments, and the operator approves it word for word. It lands tagged `type.solution` and
+   stamped `provenance: practised` (Section 2.7). The line this rule draws runs between read and done, and `provenance`
+   is where the tree records which side a file falls on.
 
 ## 1.9 Topic Maintenance Model
 
@@ -659,7 +626,7 @@ Scaffolding the standard structure (Section 1.2) for a new topic or sub-topic is
 runs on the operator's approval rather than on either clock.
 
 > **Implementation note**: "schedule a conflict scan" means Tier 1 *queues* the work and the Topic Expert (Tier 2) runs
-> the scan. The queue exists and no worker drains it yet (Section 1.7).
+> the scan. It is the same queue a closed session enters, and no worker drains it yet (Section 2.8).
 
 ### Tier 2: Common judgment skills (overloadable)
 
@@ -668,7 +635,8 @@ Work that needs an understanding of content is defined once, as common skills ev
 - **Summarization** – draft all three breadth files, `topic.md`, `references/summary.md`, and `notes/summary.md`,
   following the dialog rules in Section 1.6. The root catalog is built from `topic.md`'s `description`, so the
   Librarian routes on that field.
-- **Conflict detection and classification** – run the scans Tier 1 scheduled and classify the findings per Section 1.7.
+- **Conflict detection and classification** – run the scans Tier 1 scheduled on the axes of Section 2.8, and classify
+  each finding by the conflict types of Section 1.7.
 - **Tag proposal** – propose a new hierarchical tag for the operator's approval before filing content that uses it.
   The registry picks it up once a file uses it.
 - **Ingestion classification** – classify inbound content as a reference or a note (an observation, an opinion, or a
@@ -684,15 +652,17 @@ Work that needs an understanding of content is defined once, as common skills ev
   search sub-agent per question, weigh what returns against the topic's notes and references, and draft the session
   summary and its synthesis. The questions carry the objective and none of the operator's beliefs (Section 2.7). The
   name of this skill is an identifier (Section 2.4).
-- **Lesson proposal** – at `/learn`, read the session record of what the operator tried, and draft what they learned
-  and what is worth filing (Sections 1.7 and 2.7). The drafting is the skill's work. Harness code picks the pairs that
-  lesson has to answer for, per Section 1.7, whether the expert wrote the lesson or the operator dictated it: a skill
-  is a file the operator may adopt and then edit, and a guarantee that lives in an adopted copy leaves the day they
-  edit it.
-- **Skill proposal** – at `/learn`, draft the `SKILL.md` for a way of working the session established, and say whether
-  it belongs to one topic or to all of them (Section 2.8). It is a second skill rather than a second mode of lesson
-  proposal, because the two answer to different tests and land under different approvals: a lesson says what is true
-  and a skill says how to work.
+- **Self-improvement** – after `/close`, read the session record from the beginning, decide whether the session
+  established anything, and put what it found to the operator (Section 2.8). It calls the two drafting skills below for
+  the text of each candidate. Most sessions end here with nothing.
+- **Lesson proposal** – draft what the operator learned and what is worth filing, from the session record of what they
+  tried (Sections 1.7 and 2.7). The drafting is the skill's work. Harness code picks the pairs that lesson has to
+  answer for, per Section 2.8, whether the expert wrote the lesson or the operator dictated it: a skill is a file the
+  operator may adopt and then edit, and a guarantee that lives in an adopted copy leaves the day they edit it.
+- **Skill proposal** – draft the `SKILL.md` for a way of working the session established, and say whether it belongs to
+  one topic or to all of them (Section 2.8). It is a second skill rather than a second mode of lesson proposal, because
+  the two answer to different tests and land under different approvals: a lesson says what is true and a skill says how
+  to work.
 - **Sub-topic proposals** – propose a split for a topic that has grown too large.
 
 A Topic Expert may **overload** any of these with a topic version, so the Cooking expert's summarization skill may
@@ -700,13 +670,13 @@ require temperature and doneness tables in a recipe summary. An overload extends
 general standard, because Tier 1 validates the output whichever skill version produced it. The same mechanism extends
 to the collaboration skills of Section 2.4.
 
-The three skills a session calls, research planning and synthesis, lesson proposal and skill proposal, sit under that
-promise too, and they reach it by a different route. `/learn` reads the session record rather than the conversation
-(Section 2.8), so it cannot run as an ordinary expert turn, which is handed the conversation. **The DeepAgent harness
-resolves the drafting skill by name instead**, the topic's own copy ahead of the root's and the shipped one underneath,
-the order an expert's graph resolves in, and hands the body to the distillation. A Cooking session then distils
-differently from a Trading one. The same property lets harness code distil a session that has closed: a pass that
-needed the conversation would have nothing left to read.
+The four skills a session calls, research planning and synthesis, self-improvement, lesson proposal and skill proposal,
+sit under that promise too, and they reach it by a different route. The analysis reads the session record rather than
+the conversation (Section 2.8), so it cannot run as an ordinary expert turn, which is handed the conversation. **The
+DeepAgent harness resolves the drafting skill by name instead**, the topic's own copy ahead of the root's and the
+shipped one underneath, the order an expert's graph resolves in, and hands the body to the distillation. A Cooking
+session then distils differently from a Trading one, and a pass that needed the conversation would have nothing to read
+once the channel shut.
 
 ### Tier 3: Topic Expert dialog
 
@@ -740,11 +710,32 @@ the operator decides, and the agent applies the change on their behalf.
 
 ## 2.2 The Librarian (Root PKB Agent)
 
-The **Librarian** is the root agent of the PKB and the default entry point for everything inbound. The operator states
-an objective to it, and it researches breadth-first across all topics. **The fan-out is that research.** The Librarian
-puts the inbound item to every applicable Topic Expert and merges what they return. Its breadth is the set of experts
-it reaches, and the depth is theirs. It holds no topic knowledge of its own, it holds no topic's search tools, and it
-writes nothing into the tree. It goes wide, and the Topic Experts go deep.
+The **Librarian** is the root agent of the PKB and a researcher. It researches breadth-first across all topics. Its
+breadth is the set of experts it reaches, and the depth is theirs. It holds no topic knowledge of its own, it holds no
+topic's search tools, and it writes nothing into the tree.
+
+### Cross-topic research is a competence of its own
+
+Three parts of the research belong to the Librarian:
+
+- **Frame the objective** so that it decomposes into questions single topics can answer.
+- **Name the topics that bear on it**, from the root catalog, including the second topic the operator did not think of.
+- **Recognize when two topics' answers interact**, and say so, rather than leaving the operator to notice.
+
+A Topic Expert holds the other competence. It goes deep in one subject, with that subject's sources, its notes and its
+own way of working. Depth in one topic and reach across many are different skills, and the PKB keeps them in different
+agents. The fan-out below is how the Librarian reaches depth: one step of the research rather than the whole of it.
+
+**The merge is not where the third part happens.** Step 3 below composes the reply in code, under one heading per
+expert, because a model asked to write that merge claimed an expert had run when none had. So an interaction the
+Librarian notices lands in the question it frames next rather than in the merged reply, and that is session work
+(Section 2.7), which is not built.
+
+**The Librarian's research skills live at the PKB root**, because a cross-topic research skill is about no subject and
+no topic can hold it. The root is where every process skill already lives (Section 2.4), and a cross-topic research
+skill is the first one that belongs to a named agent rather than to all of them. **It has no file yet.** The shipped
+`research` skill is the closest thing today and it covers one part of the work: the breadth-first pass over the tree.
+It says nothing about framing an objective or about two topics' answers interacting.
 
 ### Routing is a workflow rather than a decision
 
@@ -797,12 +788,11 @@ Responsibilities:
   menu.
 - **Cross-topic coordination** – read the cross-topic mappings in the root `tags.md`, aggregated from the
   `related_topics` declarations, to notice the second topic worth involving.
-- **Work that crosses topics** – the Librarian takes the objective unless the operator names the owning topic, so work
-  that crosses topics is already where it belongs. Personal finance and investment cross portfolio management and
-  trading, and neither expert holds the whole of it. An objective fans out like any other inbound item, and `/learn`
-  fans out the same way with the session itself as the source, each expert filing inside its own topic or filing
-  nothing. The crossing itself lands in the root `sessions/` folder, written by a gated tool so the Librarian still
-  writes nothing (Section 2.7).
+- **Work that crosses topics** – the operator attaches a session to the Librarian when the objective crosses topics
+  (Section 2.7). Personal finance and investment cross portfolio management and trading, and neither expert holds the
+  whole of it. An objective fans out like any other inbound item, and the analysis after `/close` fans out the same way
+  with the session itself as the source, each expert filing inside its own topic or filing nothing. The crossing itself
+  lands in the root `sessions/` folder, written by a gated tool so the Librarian still writes nothing (Section 2.7).
 
 ## 2.3 Topic Experts
 
@@ -831,8 +821,8 @@ Responsibilities:
   this topic cares about.
 - Work a session with the operator for as long as the work lasts (Section 2.7): search for what the topic cannot
   answer, brief read-only search sub-agents, weigh what they bring back against the topic's notes, object while the
-  operator can still act on it, take their results back as the experiments come in, and propose at `/learn` what they
-  learned.
+  operator can still act on it, take their results back as the experiments come in, and propose after `/close` what
+  they learned.
 - Carry out the judgment side of topic maintenance (Section 1.9). Harness hooks enforce the mechanical side.
 - Manage the topic's extension folders, with the operator's approval.
 - Escalate to the operator as Part 1 requires: summary approval, new tags, and conflict resolution.
@@ -863,10 +853,12 @@ dialog, and filing end to end.
   session stays open, because the operator has cooked nothing yet (Section 2.7).
 - **Work one objective over weeks**: the operator opens a session called `Cooking · Brisket Rub` and cooks three times,
   reporting back after each. The expert holds the experiments in the session record, contradicts the operator when
-  their week-three conclusion disagrees with their own week-one report, and at `/learn` proposes one note. Their other
-  session, `Cooking · Sourdough Starter`, stays untouched.
-- **Leave nothing behind**: the operator asks for a weeknight pasta, gets one, cooks it, and closes the session without
-  filing. No note, no summary, no folder. This is the ordinary outcome, and the closed channel still holds the recipe.
+  their week-three conclusion disagrees with their own week-one report, and proposes one note in the learning channel
+  once the session closes.
+  Their other session, `Cooking · Sourdough Starter`, stays untouched.
+- **Leave nothing behind**: the operator asks for a weeknight pasta, gets one, cooks it, and closes the session. The
+  analysis reads the record, finds a request and an answer and no experience, and files nothing. No note, no summary,
+  no folder. This is the ordinary outcome, and the closed channel still holds the recipe.
 
 ## 2.4 Common Skills and Skill Overloading
 
@@ -875,8 +867,8 @@ dialog, and filing end to end.
 Every Topic Expert loads the common skills. They ship with the implementation and mount ahead of the PKB root's own
 `skills/` folder, which starts empty (Part 3). The mount is read-only because it lives inside the installed package: a
 write there edits the implementation for every PKB on the machine, so the permission layer denies it to every agent.
-The tree's own `skills/` folders take writes, and a skill the operator adopts, writes, or approves at `/learn` lands in
-one of them (Section 2.8).
+The tree's own `skills/` folders take writes, and a skill the operator adopts, writes, or approves after a session
+lands in one of them (Section 2.8).
 
 **The two homes differ in reach, and today they differ in what can reach them.** A topic's `skills/` folder sits inside
 that expert's own subtree, so the expert already writes there and the gate stops the write for the operator. The root's
@@ -924,7 +916,8 @@ Librarian's breadth-first work across topics, and **search** for reaching the in
 
 - **`research`** explores breadth-first across the PKB and returns three to five options, each with its trade-off and
   the files behind it. Reaching a note tagged `status.conflict-review` that bears on the question, it stops and
-  escalates rather than picking the reading that suits the answer.
+  escalates rather than picking the reading that suits the answer. It is the breadth-first pass over the tree and no
+  more, so it is not the Librarian's cross-topic research skill, which has no file yet (Section 2.2).
 - **`discovery`** runs a brainstorming session against PKB content. It names the tension between two notes and the gap
   a breadth summary keeps implying, pushes back, and files nothing. Anything worth keeping goes back through the front
   door as ordinary ingestion.
@@ -933,13 +926,14 @@ Librarian's breadth-first work across topics, and **search** for reaching the in
   for them like any other. It is the one shipped skill that knows something about the operator rather than about
   cooking, and Section 2.8 opens the rest of the pillar to a session's own proposals.
 
-**Five of the skills Part 1 describes have no file yet, and three of the five sit on the session side.** Section 1.9
-names four kinds of source extraction and two of them ship. `ingestion-classification` files an article, post or clip
-and a manual or reference work until their own skills exist. The other three, **research planning and synthesis**,
-**lesson proposal** and **skill proposal**, are being written alongside the session work that calls them. The shipped
-`research` skill stands in for none of them: it covers the breadth-first pass over the PKB and says nothing about
-reaching the internet. All three mount and overload like the ten above, resolved by name for the distillation call
-rather than by an expert's graph (Section 1.9).
+**Six of the skills Part 1 describes have no file yet, and four of the six sit on the session side.** Section 1.9 names
+four kinds of source extraction and two of them ship. `ingestion-classification` files an article, post or clip and a
+manual or reference work until their own skills exist. The other four, **research planning and synthesis**,
+**self-improvement**, **lesson proposal** and **skill proposal**, are being written alongside the session work that
+calls them. The shipped `research` skill stands in for none of them: it covers the breadth-first pass over the PKB and
+says nothing about reaching the internet. All four mount and overload like the ten above, resolved by name for the
+distillation call rather than by an expert's graph (Section 1.9). Part 2 owes a seventh that Part 1 never names, the
+Librarian's **cross-topic research** skill (Section 2.2), and it mounts at the root like the rest.
 
 Skills sit on the same side of the collaboration rule as notes, **human-generated, AI-curated** (Section 1.3): the
 operator writes or approves every one of them, whoever typed the draft. A `SKILL.md` is no knowledge file (Section
@@ -953,7 +947,8 @@ every other section cites it.**
 - **A skill about one subject** lives in that topic's `skills/` folder, visible to that topic's expert and to nobody
   else.
 - **A skill about how to work** is a process skill and lives in the PKB root's `skills/` folder, where every expert
-  loads it.
+  loads it, and the Librarian with them. The Librarian's cross-topic research skills live here for that reason: they
+  are about no subject, so no topic can hold them (Section 2.2).
 
 Changing a shipped skill uses the same two homes. **Adopting** it copies it to the root, where every expert loads the
 copy from then on. **Overloading** it copies it into one topic, where that topic's expert loads the copy and the other
@@ -970,14 +965,14 @@ frontmatter.** The DeepAgent harness reads the three skill locations in order an
 given name, so `skills/my-research/SKILL.md` declaring `name: research` shadows the shipped `research` from the moment
 it lands (Part 3), while `skills/research/SKILL.md` declaring `name: my-research` shadows nothing. Both spellings look
 right in a directory listing and the harness only logs a warning, so a Layer 2 diagnostic reports the mismatch. It
-warns rather than refusing, and nothing calls it yet. A `/learn` proposal that would shadow a shipped skill says so in
+warns rather than refusing, and nothing calls it yet. An analysis proposal that would shadow a shipped skill says so in
 its approval (Section 2.8).
 
 **Re-read a skill as the work moves on, rather than writing it once.** A procedure hardens around the conditions
 somebody wrote it in, and those conditions move: the tool that failed gets fixed, the operator changes how they want to
-be argued with, the topic grows past the shape the skill assumed. Two routes answer that. The conflict scan reads a
-topic's skills against that topic's notes (Section 1.7), and a session proposes a revision to a skill a session wrote
-(Section 2.8). Neither route reaches a skill the operator wrote or adopted, and the scan axis is designed and not
+be argued with, the topic grows past the shape the skill assumed. Two routes answer that, and Section 2.8 holds both.
+The scan reads a topic's skills against that topic's notes, and a session proposes a revision to a skill a session
+wrote. Neither route reaches a skill the operator wrote or adopted, and the scan axis is designed and not
 built, so today the operator is the only reader of a skill that has gone stale.
 
 ## 2.5 DeepAgent Harness and Access Channels
@@ -989,23 +984,26 @@ through several channels:
 - **Telegram channels**
 - Other channels as needed: chat apps, APIs, and the rest
 
-The operator states an objective to the **Librarian**, the default entry point that routes to the right experts. They
-may address **one Topic Expert** instead, when they know the owning topic. Step 4 of the Librarian's workflow joins the
-two (Section 2.2): every expert the Librarian consults is addressable in its own right, so a reply saying *"the Cooking
-expert says…"* is also an offer to carry on with that expert.
+The operator states an objective to the **Librarian** or to **one Topic Expert**. Neither is a default, and Section 2.7
+says how they choose. Step 4 of the Librarian's workflow joins the two (Section 2.2): every expert the Librarian
+consults is addressable in its own right, so a reply saying *"the Cooking expert says…"* is also an offer to carry on
+with that expert.
 
 **A session runs in one channel** (Section 2.7). The session is the unit of work and the channel is the surface it runs
-on. One expert holds several sessions at once, each named for the objective it works on, and `/close` locks the channel
-and marks the session closed.
+on. One agent holds several sessions at once, each named for the objective it works on. `/close` locks the channel and
+puts the session in the learning queue, and what the analysis proposes appears in the learning channel below, because
+the channel it came from is shut (Section 2.8).
 
 **One channel carries no session.** The **learning channel** (Section 2.8) binds to no topic, no objective and no
-expert, and it holds the approvals whose own sessions have closed. It carries no conversation and files nothing itself,
-and `/pending` lists what waits there the way it lists everything else.
+expert, and it holds every approval that has no channel of its own: what an analysis found in a closed session, and
+what a scan found in the tree. It carries no conversation and files nothing itself, and `/pending` lists what waits
+there the way it lists everything else.
 
-The command set settles at seven commands: `/channels`, `/threads`, `/agents`, `/pending`, `/cancel`, `/learn` and
-`/close`. `/threads` lists the open sessions. The session design adds `/learn` and `/close`, and neither ships yet.
-**`/new` goes**: it rotates the conversation inside a channel, and one channel carries one session, so rotating splits
-one line of work in half and leaves both halves named for the same objective. A new objective opens a new session.
+The command set settles at six commands: `/channels`, `/threads`, `/agents`, `/pending`, `/cancel` and `/close`.
+`/threads` lists the open sessions. The session design adds `/close` alone, and it does not ship yet: the Telegram
+adapter ships the other five plus `/new` (`docs/how-to/telegram.md`). **`/new` goes**: it rotates the conversation
+inside a channel, and one channel carries one session, so rotating splits one line of work in half and leaves both
+halves named for the same objective. A new objective opens a new session.
 
 ## 2.6 Agent Hierarchy
 
@@ -1015,7 +1013,7 @@ one line of work in half and leaves both halves named for the same objective. A 
 │                     (Project Manager agents)                         │
 └──────────────────────────────────────────────────────────────────────┘
                      │                                    │
-                     ▼ default entry                      ▼ direct
+                     ▼ crosses topics                     ▼ one topic owns it
 ┌──────────────────────────────────────────────────────────────────────┐
 │                         DEEPAGENT HARNESS                            │
 │               (dedicated TUI, Telegram channels, ...)                │
@@ -1059,7 +1057,7 @@ and where most notes come from.
 design, ask a question and take the answer, search the internet, or try things for weeks and report back, in any order.
 The PKB holds one shape for all of them, and a session that searches nothing is an ordinary session.
 
-**None of this section is built.** The implementation holds no `/learn`, no `/close`, no search sub-agent, no session
+**None of this section is built.** The implementation holds no `/close`, no analysis, no search sub-agent, no session
 record and no session summary, and the schema holds no `provenance` (Section 1.4). Everything below states the design,
 in the present tense the rest of the document uses. Section 2.8 marks what the design has left unsolved.
 
@@ -1088,20 +1086,23 @@ of Part 4 do not carry, it wants a question searched, or it implements something
 Everything in this section holds unchanged, and the dialog is the whole of the difference from Part 4's batch route.
 
 One thing does differ, and it is now **settled**. Every approval in this document is the operator reading exact bytes,
-and an agent counterpart puts none in front of them, so **an unsupervised session never issues `/learn`**: it runs its
-course and ends at `/close` like any other. Hermes suppresses its self-improvement review on a cron run, because a
-session with nobody in the loop gains nothing from a review, and a tree with no undo sharpens that argument. The
-silence loses nothing: harness code picks the closed record up afterwards and generalizes it into a proposal the
-operator drains with `/pending` (Section 2.8). One question stays open: whether a project agent may ever hold an
-approval, and over which writes.
+and an agent counterpart puts none in front of them. So **an unsupervised session leaves its proposals for a person**:
+on the route every session takes: `/close`, the learning queue, the learning channel, `/pending` (Section 2.8). It
+needs no route of its own. One question stays open: whether a project agent may ever hold an approval, and over which
+writes.
 
-### The Librarian takes the objective unless the operator names the topic
+### A session attaches to the Librarian or to a Topic Expert
 
-The operator states an objective to the Librarian, which fans every turn out to the applicable experts and merges what
-they return by attribution (Section 2.2). They may open the session on one Topic Expert instead, when they know the
-owning topic: Cooking is one expert and one subtree, and nothing else needs to happen. Personal finance and investment
-cross portfolio management and trading, and neither expert holds the whole of it, so that work stays with the
-Librarian, which is where it already opened.
+A session pursues an objective the operator set, from grilling dinner to a new trading strategy. It attaches to the
+Librarian or to one Topic Expert. **Neither is a default**, and the operator chooses at the start.
+
+**Attach to a Topic Expert when one topic owns the objective.** Grilling dinner is Cooking: one expert, one subtree,
+and nothing else needs to happen.
+
+**Attach to the Librarian when the objective crosses topics.** A new trading strategy crosses portfolio management and
+trading, and neither expert holds the whole of it. The Librarian frames the objective, fans every turn out to the
+applicable experts, and merges what they return by attribution (Section 2.2). Framing the objective and naming the
+topics that bear on it is a competence of its own, and it is the Librarian's.
 
 The Librarian still writes nothing, and each expert still writes inside its own topic alone. A session reaches outside
 the topic's three pillars through search sub-agents, and a page a search returns ranks below everything the topic
@@ -1109,32 +1110,37 @@ already holds until the operator accepts it (Section 1.7).
 
 A session that opened on one expert and turns out to cross topics re-opens on the Librarian. Nothing copies a session
 record from one session to another, so the operator names the objective again and the new session starts a record of
-its own. Opening on the Librarian by default is what keeps this case rare.
+its own.
 
 ### The expert argues with the operator, and about the operator's own conclusions
 
 The operator works with the expert the way they would work with a human expert. A good expert objects during the work
 rather than in a retrospective. The operator says the rub needs more sugar, and if their own note from March says sugar
-burned at that temperature, the expert says so while there is time to change the rub. The same holds at `/learn`, where
-**the operator can be wrong**. Told to file *sugar burns above 250*, an expert that reads experiment two running at 260
-without burning says so before it drafts a word. It then files what the operator decides, because meaning is theirs
-(Sections 1.6 and 1.7).
+burned at that temperature, the expert says so while there is time to change the rub. The same holds when the analysis
+runs, where **the operator can be wrong**. Told during the session to file *sugar burns above 250*, an expert that
+reads experiment two at 260 without burning says so beside the candidate it drafts. It then files what the operator
+decides, because meaning is theirs (Sections 1.6 and 1.7).
 
-### Two commands
+### One command
 
-**`/learn`, at any time, as often as it is worth asking.** It is the **only door into the tree**. A search reports back
-into the conversation and files nothing. Experiments file nothing. A note, a skill and a session summary all wait here.
-Mid-work use is the point: something learned in week two is gone by the time the verdict lands if nobody asked. Section
-2.8 runs the mechanism and bounds what it may conclude. Harness code puts a session that closes without ever running it
-through the same cycle, so the door has a second way of being knocked on and no second way of being opened.
+**`/close`, when the work is done.** It is the session's only command, and it opens the **only door into the tree**. A
+search reports back into the conversation and files nothing. Experiments file nothing. A note, a skill and a session
+summary all wait for `/close`. It does three things:
 
-**`/close`, when the work is done.** It locks the channel and **keeps** the session record, closed, because a source
-this session turned down should not appear again in the next session on the same objective (*The session record is the
-durable file*, below). With experiments landed since the last `/learn`, the expert offers once before closing rather
-than letting the operator walk out. The operator says no and the channel closes with nothing filed, and the closed
-record becomes eligible for the deferred pass (Section 2.8), so saying no ends the conversation rather than the
-question. Nothing else brings the operator back to an open channel. Returning is theirs to do, and the open channel on
-the phone is their only reminder.
+1. It marks the session record closed and **keeps** it, because a source this session turned down should not appear
+   again in the next session on the same objective (*The session record is the durable file*, below).
+2. It locks the channel. Nothing more is said in it.
+3. It puts the session in the **learning queue**. The analysis is never synchronous with the command. The worker reads
+   the record from the beginning when it reaches the entry, and what the session established parks in the learning
+   channel (Section 2.5). The channel this session ran in stays shut, and the conversation about what was learned
+   happens in the learning channel. Section 2.8 runs that cycle and bounds what it may conclude.
+
+**Waiting for the close costs nothing.** The record holds every experiment as it happened, so week two is still there
+in week twelve and the analysis reads the record whole (Section 2.8). An operator who has learned the thing they came
+for has met their objective, and a met objective is a session to close.
+
+Nothing brings the operator back to a session they left open. Returning is theirs to do, and the open channel on the
+phone is their only reminder.
 
 ### The loop is: try it, report back, distil
 
@@ -1169,14 +1175,14 @@ checking.
 6. **Weigh.** The expert compares what survived verification against the topic's notes and references, claim by claim,
    and classifies each disagreement by the three conflict types in Section 1.7.
 7. **Report back.** The expert brings what survived, with the evidence behind it, and the conversation carries on. The
-   operator may name a source worth ingesting on the spot. Everything else waits for `/learn`, because the search found
+   operator may name a source worth ingesting on the spot. Everything else waits for `/close`, because the search found
    things and the operator has tried none of them yet.
 
 ```
 OPERATOR or PROJECT AGENT ── opens ──▶ SESSION, in one channel
-                        │              one objective, named for it,
-                        │              on the Librarian by default, or on
-                        ▼              one expert when the topic is known
+                        │              one objective, named for it, attached
+                        │              to the Librarian when it crosses topics,
+                        ▼              or to one expert when one topic owns it
   ┌──── a search: steps 1-7 above ───────────────────────────────┐
   │  the expert judges at 1, 2, 3, 6 and 7                       │
   │  harness code runs 4 (one read-only sub-agent per question)  │
@@ -1187,15 +1193,13 @@ OPERATOR or PROJECT AGENT ── opens ──▶ SESSION, in one channel
       happened. Searches and experiments repeat for as long as
       the work lasts: an afternoon, or four months.
                               │
-          ┌───────────────────┴───────────────────┐
-          ▼                                       ▼
-   /learn  the only door into          /close  locks the channel,
-   the tree; any time, repeatable;             marks the record closed;
-   an ordinary message the operator            offers /learn once if
-   argues with; then they approve              experiments went unfiled
-   the exact text that lands
-          │
-          ▼
+                              ▼
+   /close  marks the record closed, locks the channel, and puts the
+           session in the learning queue. The analysis reads the record
+           from the beginning and parks each candidate as an approval
+           that quotes the record; then the operator approves the bytes
+                              │
+                              ▼
    notes/ · sessions/ · skills/ · references/ · nothing at all, the common outcome
    (What a session may file, below, gives the gate on each)
 ```
@@ -1222,25 +1226,20 @@ it survives a restart of the daemon. `/close` marks it closed and keeps it, so t
 reads what this one declined. *The session summary* below is the separate thing the operator approves into the tree.
 The operator reads the record by asking the expert for it.
 
-The reason is measured, and Section 2.8 spends it: a session that runs for months compacts its own early experiments
-out of the conversation, so the expert reads the file rather than the transcript. The large-source ingestion loop
-settled this shape already: *"There is deliberately no second store of progress: a second source of truth about what
-was read is a second thing that can be wrong, and the one a human can check is the file."*
+The reason is measured, and Section 2.8 spends it. The large-source ingestion loop settled this shape already:
+*"There is deliberately no second store of progress: a second source of truth about what was read is a second thing
+that can be wrong, and the one a human can check is the file."*
 
-### Every session that ends is analyzed; most leave nothing behind
+### Every session that ends enters the learning queue; most leave nothing behind
 
-The session ends in success or in failure. In both cases an agent and the operator analyze the record together and
-distil a repeatable skill or a piece of practical knowledge. `/learn` runs that analysis while the session is open, and
-the deferred pass runs it over every record that closes without one (Section 2.8).
+`/close` puts the session in the learning queue whether it succeeded or failed, an agent analyzes the record, and the
+operator settles what it learned in the learning channel (Section 2.8).
 
 **Distilling nothing is a result of the analysis rather than a session nobody analyzed.** Ask for a recipe, get one,
-`/close`: the deferred pass reads that record, finds a request and an answer and no experience, and files nothing. No
-note, no summary, no folder, no trace. Rule 4 in Section 1.8 rules the same way for ingestion, and Section 2.8 carries
-the measurements behind the silence.
-
-The asymmetry is deliberate. The closed record keeps the objective, the experiments and the declines, and the closed
-Telegram conversation keeps the talk around them, so discarded work stays readable outside the tree and claims nothing
-inside it.
+`/close`: the analysis reads that record, finds a request and an answer and no experience, and files nothing. No note,
+no summary, no folder, no trace. The closed record keeps the objective, the experiments and the declines, and the
+closed Telegram conversation keeps the talk around them, so discarded work stays readable outside the tree and claims
+nothing inside it. Rule 4 in Section 1.8 rules the same way for ingestion.
 
 ### The search sub-agents read; the expert writes
 
@@ -1370,12 +1369,12 @@ permanent folders in a tree with no undo, in a staging area no channel can list.
 
 | Outcome                                         | Where it lands                                                                                                                                                    | What gates it                                                                                                                                                                       |
 |-------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Something the operator tried, and what happened | `notes/`, stamped `provenance: practised`, tagged `type.solution` when it worked and `type.note` when it did not                                                   | Settled at `/learn` in conversation; the operator then approves the rendered text                                                                                                   |
-| The session's synthesis of what it worked out   | `sessions/[objective-title].md` in the topic, or the **root** `sessions/` when the session crossed topics; tagged `type.summary`, stamped `provenance: researched` | The operator approves the rendered text at `/learn`, before it lands                                                                                                                |
+| Something the operator tried, and what happened | `notes/`, stamped `provenance: practised`, tagged `type.solution` when it worked and `type.note` when it did not                                                   | Settled in the analysis after `/close`; the operator then approves the rendered text                                                                                                |
+| The session's synthesis of what it worked out   | `sessions/[objective-title].md` in the topic, or the **root** `sessions/` when the session crossed topics; tagged `type.summary`, stamped `provenance: researched` | The operator approves the rendered text in the analysis, before it lands                                                                                                            |
 | A way of working the session established        | `skills/[skill-name]/SKILL.md`, in the topic's folder or in the root's (Section 2.8)                                                                               | The operator approves the rendered text, on an approval that names the scope and any shipped skill it would shadow                                                                  |
 | An article the operator accepts                 | `references/[source-name]/`, through the ordinary ingestion procedure (Section 2.3), with the topic's own copy of the original                                     | The operator names the candidate; harness code will only ingest a page it printed for them and fetched itself. The first extraction is then un-gated                                |
 | A candidate the operator rejects                | The rejection list inside the session summary; the session record holds it either way, open or closed                                                              | Nothing, and no other file changes                                                                                                                                                  |
-| Nothing at all                                  | Nowhere: no note, no summary, no folder                                                                                                                            | The analysis found nothing to distil, and this is the common outcome. The deferred pass files nothing either, which is the filing bar working rather than failing (Section 2.8)      |
+| Nothing at all                                  | Nowhere: no note, no summary, no folder                                                                                                                            | The analysis found nothing to distil, and this is the common outcome. Filing nothing is the bar working rather than failing (Section 2.8)                                            |
 
 Rule 8 in Section 1.8 is the line this table draws. A session files everything it **read** as a reference or as a
 synthesis, and everything the operator **did** as a note, in their own words, after they did it. `provenance` records
@@ -1386,24 +1385,25 @@ which of the two a file is. The skill row carries none, because Section 1.4 exem
 The operator steers a running session by talking to the expert: drop that question, chase this one instead, that source
 is no good, that lesson is half right. An approval halts the conversation until somebody answers it, so spending one on
 "those three look right, keep going, but drop the second" would stop the session to ask what it could have heard in
-passing. An approval also accepts the answers it offered and no others, and that sentence is not one. So `/learn`
-proposes in an ordinary message.
+passing. An approval also accepts the answers it offered and no others, and that sentence is not one. So nothing inside
+a running session is an approval.
 
-One approval remains, and it sits on the bytes (Section 2.8, step 5). **The operator approves what enters the PKB**, in
-the exact rendered text. A skill asks on its own terms, because the operator agrees to something different there.
-Accepting a source for ingestion is an instruction rather than an approval, and harness code ingests a page it printed
-for the operator and fetched itself, and no other.
+The analysis is the other case. It runs after the close, with no conversation left to steer, so it proposes as an
+approval on the exact rendered bytes (Section 2.8). **The operator approves what enters the PKB.** A skill asks on its
+own terms, because the operator agrees to something different there. Accepting a source for ingestion is an
+instruction rather than an approval, and harness code ingests a page it printed for the operator and fetched itself,
+and no other.
 
-### `/learn` on a Librarian session fans out
+### The analysis of a Librarian session fans out
 
-On a Librarian session, `/learn` treats the session itself as a source and fans it out. It asks each applicable expert
-what its own topic takes from it, with the grammar the ingestion loop already uses section by section: something new,
-something better, something that contradicts what I hold, or nothing. An expert that takes nothing leaves no folder and
-no stub. Each note lands inside its own topic, so the Librarian still writes nothing.
+On a Librarian session, the analysis treats the session itself as a source and fans it out. It asks each applicable
+expert what its own topic takes from it, with the grammar the ingestion loop already uses section by section: something
+new, something better, something that contradicts what I hold, or nothing. An expert that takes nothing leaves no folder
+and no stub. Each note lands inside its own topic, so the Librarian still writes nothing.
 
-A Librarian `/learn` therefore proposes a **set** of notes. The operator takes some and drops others, naming them by
-the label printed beside each one. Each kept note then asks for its own approval on its own text, so a rejection on one
-changes nothing about the rest. Four kept notes means four texts to read.
+A Librarian session's analysis therefore proposes a **set** of notes. Each one asks for its own approval on its own
+text, so the operator takes some and drops others and a rejection on one changes nothing about the rest. Four kept
+notes means four texts to read.
 
 A session that yields a portfolio lesson and a trading lesson yielded two lessons, the shape one book reaching two
 topics takes. An insight that spans the topics rather than decomposing across them lands in one topic with
@@ -1416,10 +1416,12 @@ ran the session drafts the text, the operator approves the exact bytes, and a ga
 Librarian still writes nothing (Section 2.8).
 
 Layer 1 grows with it. The root walk learns one more folder beside `index.md`, `tags.md` and the root `skills/`, and
-the files inside it are ordinary knowledge files, validated as such and tagged into the root registry. **The conflict
-scan does not reach them**: every axis in Section 1.7 compares a topic's own files against each other, and this file
-belongs to no topic. It reaches no context pack for the same reason, and Section 2.8 marks that as a gap under *How an
-entry improves an expert*. A root process skill is the one other thing a Librarian `/learn` may propose.
+the files inside it are ordinary knowledge files, validated as such and tagged into the root registry. **The scan does not
+reach them**: every axis in Section 2.8 compares a topic's own files against each other, and this file belongs to no
+topic. It reaches no context pack for the same reason, and Section 2.8 marks that as a gap under *How an
+entry improves an expert*. A root process skill is the one other thing that analysis may propose, and a cross-topic
+research skill is the kind it proposes most naturally: the Librarian's own competence has no topic to live in
+(Sections 2.2 and 2.4).
 
 The Librarian holds no topic's search tools, which would let it answer a subject question out of its own head (Section
 2.2). It reaches a topic's tools through the expert that owns them.
@@ -1434,39 +1436,100 @@ turns or for its search sub-agents, and one declared for the sub-agents never re
 off the internet cannot enter a note by another route. The servers reach no other topic and no Librarian. A narrow
 objective then stays with one expert and never becomes a routing problem.
 
-## 2.8 The Self-Learning Loop: How a Session Learns and What It May Conclude
+## 2.8 The Self-Learning Loop: How the System Reasons Over What It Holds
 
-`/learn` is the moment a session turns a conversation into a claim, and it is the only door into the tree (Section
-2.7). What it distils is a **lesson**: a piece of practical knowledge, which a note carries, or a repeatable skill,
-which a `SKILL.md` carries. A session summary is a different object. It records what the session worked out, and the
-analysis distils a lesson out of it. This section runs the cycle first and bounds what it may conclude after.
+One mechanism reasons over what the PKB holds, and **two triggers start it: a session closed, or time passed.** Both
+run in one worker, both draw from one queue, and both end the same way, with a proposal the operator answers in the
+learning channel. The mechanism distils a **lesson**: practical knowledge, which a note carries, or a repeatable
+skill, which a `SKILL.md` carries. A session summary is different: it records what the session worked out, and the
+analysis distils a lesson from it. The **self-improvement** skill holds that competence (Section 1.9), not a command.
 
-### The `/learn` cycle
+### The two triggers
 
-1. **Read the record from the beginning.** `/learn` reads the whole session record every time and never the previous
-   extraction. One-shot consolidation beats streaming, and chained abstractions compound: a distillation of a
-   distillation carries an error nobody can trace back to the experiment that started it. A record too long for one
-   turn walks through the bounded reader of Section 2.3 and comes back as one consolidated account, read beside the
-   record.
-2. **Draft the candidates.** The expert drafts each kind with Section 1.9's drafting skill for it, resolved topic-copy
-   first so the topic's overloads apply. It proposes what the session learned and what is worth filing, and the
-   operator may dictate the lesson themselves instead.
-3. **Show them in a message.** The proposal arrives as an ordinary message in the channel, never as an approval, for
-   the reason *Direction is conversation* gives (Section 2.7). Each candidate names what it rests on: which
-   experiments, which sources, which turn of the conversation.
-4. **Argue.** The operator drops one, rewrites another, and adds the thing the expert missed. The expert argues back
-   before it drafts a word, and Section 1.7 governs a candidate that contradicts a note the topic already holds: quote
-   both sides, change nothing, let the operator settle it.
+**A session closed.** `/close` closes the session and puts it in the learning queue. The analysis reads the session
+record from the beginning and checks each candidate against the tree (Section 2.7, and *The analysis cycle* below).
+
+**Time passed.** The second trigger belongs to no session, and **two things enqueue for it**. A harness hook schedules
+a scan whenever a turn creates **or modifies** a file under `notes/`, `references/`, a topic's `sessions/`, or a topic
+extension folder, because an edited note can contradict a reference that was correct yesterday (Section 1.9). A
+**timer** enqueues a topic that is due whether or not anything wrote to it, and the timer is what makes the trigger
+time rather than the write. The hook is built and the timer is not, so nothing enqueues a quiet topic today. Both write
+to the same queue, and the worker reads the tree against itself when it reaches the entry, outside the turn that
+scheduled it.
+
+A topic's session summary enters like any other knowledge file once it lands, and a session in progress writes nothing
+to find (Section 2.7). **The scan cannot reach two things**: a `skills/` file schedules nothing, so axis five below has
+no trigger, and the root `sessions/` folder belongs to no topic. The operator can also request a scan, the route that
+works today.
+
+**Session learning checks a candidate against the tree. The scan checks the tree against itself.** Four things fall to
+the second trigger alone, and the fourth is the strongest reason to keep it:
+
+- Two notes filed months apart by different sessions, where neither session saw the other.
+- The operator's own direct edits, because the notes are theirs to write.
+- Truth that changes with no write at all, where a reference is superseded and nothing moved. Only the timer reaches
+  this one, which is why the timer is part of the design rather than an optimization.
+- **A single check at write time is the weakest design available.** Asking a model whether two passages contradict each
+  other scores near chance: 6.3% for GPT-4 with both passages supplied, and under 11% across models. Running the
+  question again over different pairings is how a near-chance detector becomes useful. One pass at write time is what
+  the measurement says will fail.
+
+### What the scan compares
+
+The Topic Expert runs the scan on five axes, and **three of them run today**, axes 1 to 3.
+
+1. `notes/summary.md` against `references/summary.md`.
+2. Single notes against references.
+3. Notes against notes, the same person at different times under conditions they did not write down.
+4. On a re-ingestion, the fresh extraction of a source against the source file on disk, argument by argument, because a
+   bounded reader handed two long documents answers confidently about the part it read. Designed, not built.
+5. The topic's notes against the skills that topic loads, where a skill that hardened around a transient failure meets
+   the note saying the thing works now (*A wrong skill is worse than a wrong note*, below). Designed, not built.
+
+Skill files sit outside every `index.md` and contribute no tags (Section 1.4), so the scan reaches them by path rather
+than through the registry. The scan reads for meaning with the expert's domain knowledge behind it, and it recognizes
+two statements that are both true under different conditions. Section 1.7 says what a finding does to the tree: tag the
+file, add a `review_note`, change nothing. The tag records that the question is open, and the proposal in the learning
+channel is what puts it in front of the operator, because a timer has no channel of its own.
+
+**Harness code picks the pairs and the model labels them.** The design takes the choice of pairs away from the model:
+code picks them by claim-to-claim overlap, the model labels each one, and every pair the code picked reaches the
+operator whatever the label says. **That code does not exist.** Today the expert compares whole files under the
+`conflict-detection` skill, and Section 1.7's measurement is the risk the design carries until somebody builds it.
+
+### The analysis cycle
+
+The session trigger walks all six steps. The scan trigger reads the tree in place of step 1, skips step 2 because it
+drafts no candidate, and walks steps 3 to 6 as written.
+
+1. **Read the record from the beginning.** The analysis reads the whole session record, first turn to last, and never a
+   previous extraction. This is why it runs once and at the close: one-shot consolidation beats streaming, and chained
+   abstractions compound. A distillation of a distillation carries an error nobody can trace back to the experiment
+   that started it. A record too long for one turn walks through the bounded reader of Section 2.3 and comes back as
+   one consolidated account, read beside the record.
+2. **Draft the candidates.** The self-improvement skill drafts each kind with Section 1.9's drafting skill for it,
+   resolved topic-copy first so the topic's overloads apply. It proposes what the session learned and what is worth
+   filing. Where the operator dictated a lesson during the session, the record holds their words and the draft carries
+   them.
+3. **Park each candidate as an approval.** The session is closed and its channel with it, so a candidate arrives as an
+   approval rather than as a message (Section 2.7). It quotes the record: the objective, the close date, how long ago
+   that was, and the log entries the candidate rests on, sliced out of the record by code rather than summarized. An
+   operator reviewing a session they no longer remember needs the evidence in front of them.
+4. **Pair it against what the topic holds.** Harness code selects the notes a candidate has to answer for, and Section
+   1.7 governs one that contradicts a note the topic already holds: quote both sides, change nothing, let the operator
+   settle it. The expert's objection arrives with the candidate rather than after it, because no conversation is left
+   to raise it in.
 5. **Approve the bytes.** Harness code renders each file that would land and the operator reads the exact text. Three
-   candidates ask three times, and the operator may take one and drop two.
+   candidates ask three times, and the operator may take one and drop two. An approval accepts the answers it offered
+   and no others, so a candidate that is half right is rejected whole, and the route back is a new session on the same
+   objective, which reads the closed record.
 6. **Write, then record what landed.** The files land, the hooks regenerate the indexes and the registry (Section 1.9),
    and the session record notes each lesson beside the path it landed at.
 
-**The cycle repeats for the life of the session, and the record is what lets it.** A session that runs for months
-compacts its own early experiments out of the conversation, so by week twelve the record holds the evidence and the
-transcript does not. A repeat `/learn` files nothing twice: a second pass over the same experiments shows that lesson
-as already filed, with its path. Two near-identical solution notes in one topic both reach every implementation pack
-and then drift apart, the harm rule 4 in Section 1.8 exists to prevent.
+**One pass per session is enough, and the record is why.** A session that runs for months compacts its early
+experiments out of the conversation, so by week twelve the record holds the evidence and the transcript does not. A
+second pass over the same experiments would file the lesson twice, and two near-identical solution notes in one topic
+both reach every implementation pack and then drift apart, the harm rule 4 in Section 1.8 exists to prevent.
 
 ### The default is silence
 
@@ -1478,13 +1541,12 @@ nothing is a missed learning opportunity, not a neutral outcome."*
 That prior is right for Hermes and wrong here, and the substrate is the reason. Hermes writes into a skill library with
 an archive and a rollback, so somebody reverts a bad write. This design writes into a tree with **no undo**, where a
 bad note reaches every implementation pack on its topic and stays until the operator rewrites it by hand. So the prior
-inverts. **The analysis runs on every session that ends. The filing does not.** Filing nothing is the default, and a
-session that files nothing has missed nothing.
+inverts. **The analysis runs on every session that ends. The filing does not**, and a session that files nothing has
+missed nothing.
 
-Hermes runs no session-end pass either: its review fires on accumulated tool iterations, and its own
+Hermes runs no session-end pass at all: its review fires on accumulated tool iterations, and its own
 `turn_finalizer.py` notes that `on_session_end()` never runs there. Its cadence is no argument for this one. No clock
-runs `/learn` inside a live session, whoever holds the channel types the command, and a closed record gets one pass
-rather than a recurring one (*A closed session is generalized*, below).
+reads a session record here. `/close` queues that reading once, and the clock drives the other trigger instead.
 
 ### Five things a session produces that look like knowledge
 
@@ -1522,85 +1584,56 @@ an experiment, and it argues about what the experience means and never about who
 
 Each entry improves the expert agents, and each kind reaches an expert by its own route:
 
-- **A note** reaches `notes/summary.md` through the `summarization` skill, and every context pack carries that file. An
-  implementation pack loads it first (Part 4). The expert reads the distilled rule on every turn that touches the topic.
+- **A note** reaches `notes/summary.md` through the `summarization` skill, and **a reference** reaches
+  `references/summary.md` through the same skill. Every context pack carries both, an implementation pack loads
+  `notes/summary.md` first, and a reference's depth file reaches that pack too (Part 4). The expert reads the distilled
+  rule on every turn that touches the topic.
 - **A skill** loads into the expert's prompt at the start of the turn, so it shapes the next draft before anybody asks
   a question (*A session may also teach the system how to work*, below).
-- **A reference** reaches `references/summary.md` through the same skill, and its depth file reaches an implementation
-  pack (Part 4).
 
 **A session summary reaches no expert yet, and that is a gap.** The pack builder has no session role, so the ordering
-Part 4 describes for it is designed and not built. A cross-topic session summary is worse off: the conflict scan
-reaches it on no axis, because every axis compares one topic's own files (Section 1.7). The three gaps below are the
-others.
+Part 4 describes for it is designed and not built. A cross-topic session summary is worse off, for the reason
+Section 2.7 gives. The three gaps below are the others.
 
-### A closed session is generalized even if nobody ran `/learn`
+### The learning queue holds work; the learning channel holds proposals
 
-`/learn` distils while the operator's judgment is fresh, which is when it works best. Most sessions never run it, and
-*The default is silence* above is why that is the right outcome. The loss is the other case: a session that closed with
-something in it and nobody to ask. Two of those are routine, the operator who meant to distil and did not, and the
-session that had no operator in it at all.
+**Every closed session enters the learning queue, and so does every scheduled scan.** The queue is how a session ends
+rather than a place a session lands when something else failed. `/close` queues the session whoever was in the channel,
+so one the operator ran and one an agent ran alone take the same path and the same approval. The worker drains the
+queue when it reaches the entry, and the proposal reaches the operator when the operator is available.
 
-**An unsupervised session never issues `/learn`** (Section 2.7). The command proposes to whoever holds the channel, and
-on a project agent's channel that is nobody.
+**The bar runs inside the analysis rather than in front of the queue.** The queue holds work; the learning channel
+holds what cleared the bar. A session that establishes nothing is analyzed like any other and leaves the channel as it
+found it. Nothing about the bar moves with the channel the session ran in: the same five exclusions, the same three
+conditions on a note, the same rendered bytes, and **everything the analysis derives waits for the operator**.
 
-**Harness code reads every closed session record.** A record with no experiment since the last `/learn` ends the
-analysis at once: it holds a request and an answer, and no experience to distil. A record with experiments in it runs
-the full cycle above, and harness code shows what it finds for approval. This is the predicate `/close` already offers
-on (Section 2.7), and it decides how long the analysis takes rather than whether it happens. Nothing about the bar
-moves: the same five exclusions, the same three conditions on a note, the same rendered bytes. **Everything derived
-from a `/learn` extraction waits for the operator, a note and a skill alike.**
+The split between the two is measured. Roughly one in seven self-evolution candidates establishes anything, and a
+filing rate above about one in five is evidence that the bar is broken rather than generous. Put every closed session
+in front of the operator instead and the review list is mostly nothing: the operator stops reading it, and the one that
+mattered goes unread with the rest. The literature on lessons-learned databases reports that failure and agrees about
+the cause. **A record with no experiment in it ends the analysis at once**, because it holds a request and an answer
+and no experience to distil. That predicate decides how long the analysis takes rather than whether it happens.
 
-So the door stays where it is. `/learn` is still the only thing that files, and the deferred pass is that same cycle
-run by harness code over a record whose channel has shut. Only the knock changes, and the route that runs while the
-operator still remembers the week is the better one.
-
-### The queue holds proposals rather than sessions
-
-**Harness code runs the filing bar before it queues anything.** Only a session that clears the bar produces a proposal,
-and a session that clears nothing leaves the queue as it found it.
-
-The reason is measured. Roughly one in seven self-evolution candidates establishes anything, and a filing rate above
-about one in five is evidence that the bar is broken rather than generous. Queue every closed session instead and the
-queue is mostly nothing: the operator stops reading it, and the one that mattered goes unread with the rest. The
-literature on lessons-learned databases reports that failure and agrees about the cause.
-
-*Every session that ends is analyzed; most leave nothing behind* (Section 2.7) therefore survives unchanged. Harness
-code picks up the recipe the operator asked for on Tuesday, reads it, and finds no lesson in it. Silence is the correct
-result of that analysis.
-
-### Staleness is the cost to design against
-
-A session closed in March and generalized in June arrives after the operator's memory of it has gone. The record
-survives, so the material is still there, and their judgment about it was sharpest the day it happened.
-
-Two mitigations, both cheap. **The proposal quotes the record** rather than asserting a conclusion, because an operator
-reviewing a session they do not remember needs the evidence in front of them. And **harness code picks a closed session
-up promptly** rather than on a slow sweep, which costs nothing and is the whole difference between June and Tuesday.
-
-The eligibility window is **not settled**. A record kept forever means a session from last year can still produce a
-proposal, and everything above is the argument against it.
-
-### The learning channel
-
-**A learning proposal lands in a learning channel rather than in a topic.** The operator's first thought was a special
-topic `kb-learning`, and they ruled against it. A topic is an expert, a `topic.md`, three pillar folders, an agent id,
-an entry in the catalog the Librarian routes on (Section 2.2), and a write confinement drawn around its own subtree. A
-queue of pending proposals is none of those. Making it a topic produces an expert nobody wants to talk to, a routing
+**A proposal lands in a learning channel rather than in a topic.** The operator's first thought was a special topic
+`kb-learning`, and they ruled against it. A topic is an expert, a `topic.md`, three pillar folders, an agent id, an
+entry in the catalog the Librarian routes on (Section 2.2), and a write confinement drawn around its own subtree. A
+list of pending proposals is none of those. Making it a topic produces an expert nobody wants to talk to, a routing
 target nobody should route to, and folders that hold nothing.
 
-**The queue itself needs nothing new.** A proposal is an approval, and an approval already parks durably, survives a
+**The channel itself needs nothing new.** A proposal is an approval, and an approval already parks durably, survives a
 restart of the daemon, answers hours later from a different channel than the one that raised it, and appears under
-`/pending` (Section 2.5).
+`/pending` (Section 2.5). The missing piece is **a home for an approval with no live session behind it**. An approval
+appears today in the channel whose run raised it, and neither trigger has one: an analysis runs after `/close` shut the
+channel, and a scan runs on a timer with nobody watching. The learning channel is that home, a surface bound to no
+topic and no objective. The TUI gets it for free, because it already carries an unfiltered *needs you* view.
 
-The missing piece is **a home for an approval whose session has closed**. An approval appears today in the channel
-whose run raised it, and a generalization has no live channel to appear in. The learning channel is that home: a queue
-bound to no topic and no objective, holding the approvals that have no channel of their own. The TUI gets it for free,
-because the TUI already carries an unfiltered *needs you* view.
+**One worker serves both triggers, and the slot has never been filled** (*Three gaps* below). Merging the two
+mechanisms means one wiring job serves both.
 
-**It runs in the worker slot that has never been filled.** The daemon builds its application without a scan worker, so
-the conflict scan has reported itself disabled since the day somebody wrote it (Section 1.7, and *Three gaps* below).
-This is that slot's second tenant, and two tenants make the wiring unavoidable.
+**The schedule takes most of the staleness out.** `/close` queues the session the moment the work ends, rather than
+leaving a closed record for a later sweep to find. What can still lag is the queue, so two things guard the far end.
+The proposal quotes the record rather than asserting a conclusion (step 3 above). And an entry that has waited too long
+is **discarded rather than run**, with the skip written into the record. How long is too long is not settled.
 
 Two things about the channel are **not settled**. Whether it binds to the Librarian or to no agent at all: a proposal
 already names the topic it would write to, so the channel may need no agent behind it. And whether the queue needs a
@@ -1608,31 +1641,26 @@ cap, because an agent working overnight can pile up proposals nobody has seen.
 
 ### The skills that already generalize
 
-Four of the shipped skills (Section 2.4) do the generalizing work, and `/learn` is one call site among several:
+Two shipped skills (Section 2.4) generalize outside the two triggers, and neither files anything itself. **`discovery`**
+finds the rule under two notes that never mention each other, so the finding goes back through the front door with its
+own approval. **`voice`** watches for the same edit repeated across three drafts and proposes it as a rule, which is
+the procedural pillar generalizing from experience about the operator. `summarization` and `conflict-detection` do the
+work already described above, in the five axes and in *How an entry improves an expert*.
 
-- **`summarization`** turns single notes into the distilled rules of `notes/summary.md`, the file every implementation
-  pack loads first. A lesson filed at `/learn` reaches decisions through this skill.
-- **`conflict-detection`** catches the operator contradicting their own earlier self, the case one session cannot see:
-  the week-one note and the week-twelve note were written in different conversations.
-- **`discovery`** finds the rule under two notes that never mention each other, and it files nothing, so the finding
-  goes back through the front door with its own approval.
-- **`voice`** watches for the same edit repeated across three drafts and proposes it as a rule. That is the procedural
-  pillar generalizing from experience about the operator (Section 2.4).
-
-Section 1.9's three drafting skills do the writing at `/learn`, and all three are being written (Section 2.4). The
-checks a draft has to answer for stay in harness code, per Section 1.7: a skill is a file the operator may adopt and
-then edit, and a guarantee living in an adopted copy leaves the day they edit it. That holds hardest for the skill
-draft, whose subject is what a skill should say.
+Section 1.9's self-improvement skill runs the analysis and its two drafting skills do the writing, and all three are
+being written (Section 2.4). The checks a draft has to answer for stay in harness code, where the pair picker sits: a
+skill is a file the operator may adopt and then edit, and a guarantee living in an adopted copy leaves the day they
+edit it. That holds hardest for the skill draft, whose subject is what a skill should say.
 
 ### Two guards Hermes puts in code, and both belong here
 
 **Nothing rewrites a file whose current text it has not read this turn**, and `RS-141` is the rule that carries it.
 Hermes refuses a patch to a file the reviewer has not loaded verbatim in that same turn, because *"the autonomous
 review fork is allowed to evolve skills, but it must not patch or rewrite content it has only inferred from the
-transcript."* A `/learn` proposing to revise a note the operator filed in March works from an impression of that note,
+transcript."* An analysis proposing to revise a note the operator filed in March works from an impression of that note,
 the impression came out of a conversation that has since compacted, and the operator may have edited the note
-meanwhile. Read the file, or leave it alone. The rule lives in harness code for the reason Section 1.7 gives about
-every other guarantee here: a guard written into a skill leaves the day somebody edits their copy of that skill.
+meanwhile. Read the file, or leave it alone. The rule lives in harness code for the reason every other guarantee here
+does: a guard written into a skill leaves the day somebody edits their copy of that skill.
 
 **Authorship decides what may be curated**, and `RS-142` is the rule that carries it. Hermes tags every skill write
 with its origin, so autonomous curation touches the skills the autonomous process itself created and no others:
@@ -1646,11 +1674,11 @@ where an origin block would read as one more line of procedure. A folder with no
 ### A session may also teach the system how to work
 
 **A session feeds the procedural pillar as well as the practical one.** A session that established *brisket holds at
-250* fed `notes/`. A session that established *a better way to run a session* has something for `skills/`, and `/learn`
-may propose it. `voice` is the seed of that half: it holds a profile of the operator, corrected from their own edits
-through the same propose-and-approve loop as everything else (Section 2.4).
+250* fed `notes/`. A session that established *a better way to run a session* has something for `skills/`, and the
+analysis may propose it. `voice` is the seed of that half: it holds a profile of the operator, corrected from their
+own edits through the same propose-and-approve loop as everything else (Section 2.4).
 
-**A note says what is true. A skill says how to work.** That line decides every `/learn` proposal, and the test that
+**A note says what is true. A skill says how to work.** That line decides every proposal, and the test that
 separates the two is **who acts on the draft first**. A skill shapes how the expert works before anybody asks a
 question, because the DeepAgent harness loads it into the prompt at the start of the turn. A note answers a question
 about the subject once somebody asks one, and harness code fetches it when it is relevant.
@@ -1662,16 +1690,16 @@ thermometer offset before drafting any smoking lesson* changes the expert's next
 
 **A procedure the operator proved by doing is a solution note**, tagged `type.solution` (Section 1.5). It becomes a
 skill once it directs the expert's own drafting rather than the operator's own doing. Section 2.4 decides where the
-file lands, so a `/learn` filing decides one thing, the scope.
+file lands, so the filing decides one thing, the scope.
 
 ### The four decisions a written skill needs
 
 **A skill write asks for approval, and it asks in its own words.** Every write under a `skills/` folder already stops
 for the operator, so the question is which sentence they read while stopped. *A lesson is ready to file* is the wrong
 sentence in front of a file that changes how the expert works on every later turn. The skill filing carries its own
-approval naming the scope and any shipped skill it would shadow, with the exact `SKILL.md` text underneath. Agreeing at
-`/learn` that the session learned something is agreement about the lesson. The procedure the expert then wrote from it
-is a second object the operator has not read yet.
+approval naming the scope and any shipped skill it would shadow, with the exact `SKILL.md` text underneath. Agreeing in
+the analysis that the session learned something is agreement about the lesson. The procedure the expert then wrote
+from it is a second object the operator has not read yet.
 
 **A session revises a skill a session wrote, and never one the operator wrote.** The two guards above reach skills
 unamended. Read-before-write means a proposal to revise `skills/session-loop/SKILL.md` loads that file's current bytes
@@ -1681,17 +1709,16 @@ changed proposes the change in conversation and leaves the edit to the operator.
 
 **The expert that ran the session asks for a root process skill, and harness code writes it.** The expert drafts the
 text and calls a gated tool, and the tool performs the write once the operator approves. The root session summary of a
-cross-topic `/learn` takes the same route (Section 2.7). The Librarian's write capability stays at zero, as it does for
+cross-topic session takes the same route (Section 2.7). The Librarian's write capability stays at zero, as it does for
 topic creation. Widening an expert's permission to write outside its own topic is refused, because that loosens the
 subtree confinement on every turn to serve one filing that already has an approval in front of it. **No such tool
 exists today**, and both root folders are denied to every agent until one does (Section 2.4).
 
 **A skill that shadows a shipped one by name says so three times.** Section 2.4 gives the mechanism, and nothing in the
 tree records the swap: no index lists the file and no tag points at it. So the proposal says it, the approval says it
-again with the exact bytes, and the file opens with the line naming what it shadows, the same line adoption writes
-(Part 3). The third one matters most, because whoever ran `/learn` is not the person who opens that file six months
-later. The collision is never refused: improving a shipped skill for one topic is the most useful thing an operator
-does.
+again with the exact bytes, and the file opens with the line naming what it shadows (Part 3). The third one matters
+most, because whoever approved the skill is not the person who opens that file six months later. The collision is never
+refused: improving a shipped skill for one topic is the most useful thing an operator does.
 
 ### A wrong skill is worse than a wrong note
 
@@ -1703,11 +1730,11 @@ degrees high before drafting*. The operator reads it once, agrees, and it lands.
 pit. Every draft after that subtracts twenty degrees from a correct number, in every session on that topic, before
 anybody asks a question. The drafts carry no mark saying which skill shaped them, so the operator reads a wrong
 temperature and corrects the draft rather than the file. The note they file to correct it says the pit runs true.
-Catching that pair is the job of the scan's fifth axis, practice against procedure (Section 1.7), which this design
-adds for this case and has not built. Built, that axis is still the weakest reader in the system. A skill appears in no
-`index.md` and contributes no tags (Section 1.4), so the scan reaches it by path, `discovery` never finds it, and one
-model call has to notice that a procedure and a note disagree about a number neither states the same way. The reader
-most likely to catch it is the operator who approved it once, in March.
+Catching that pair is the job of the scan's fifth axis, practice against procedure (*What the scan compares*, above),
+which this design adds for this case and has not built. Built, that axis is still the weakest reader in the system. A
+skill appears in no `index.md` and contributes no tags (Section 1.4), so the scan reaches it by path, `discovery`
+never finds it, and one model call has to notice that a procedure and a note disagree about a number neither states
+the same way. The reader most likely to catch it is the operator who approved it once, in March.
 
 That axis also has a case it cannot reach. The scan compares claims, and a skill phrased as procedure makes none. *Ask
 for the pit's own thermometer offset before drafting any smoking lesson* is the same lesson written the way this
@@ -1721,7 +1748,7 @@ without being asked. An approach that never worked, written up as a procedure, b
 ### Where a lesson about the operator goes, settled
 
 `voice` keeps the operator's register and nothing else. A procedure about running a session goes to a root process
-skill, and a preference about wording goes to `voice`. Splitting them costs one judgment at `/learn`. Merging them
+skill, and a preference about wording goes to `voice`. Splitting them costs one judgment in the analysis. Merging them
 would put *ask for the pit's thermometer offset before drafting* into the file every draft is style-checked against.
 
 ### The procedural pillar has no breadth file, and adding one is a decision
@@ -1748,16 +1775,15 @@ operator picks, and Section 1.2 grows a folder comment when they do.
 The PKB is meant to improve itself from what it learns in the work. Three things stand between the design as written
 and that claim, and each one belongs to a pillar. **No route exists for any of them yet.**
 
-**The PKB notices nothing on its own.** The conflict scan is the only machinery that reasons over PKB content
-unprompted, and it runs across all three pillars, so it is the natural home for this. It does not run: the daemon
-builds its application without a scan worker, so requests pile up in the queue on every filing turn, `/health` reports
-the scanner disabled, and the only scan that happens today is one the operator asks for (Section 1.7). An agent that
-reasons when spoken to and never otherwise is a filing system with a good vocabulary. The deferred `/learn` pass above
-is the second tenant of that unfilled slot, and it closes none of this gap: it reasons over closed session records
-outside the tree and never over PKB content itself.
+**The PKB notices nothing on its own.** One mechanism reasons over what the PKB holds, across all three pillars, and
+neither of its two triggers fires. The daemon builds its application without a worker, so scheduled scans pile up in
+the queue on every filing turn, `/health` reports the scanner disabled, and the only scan that happens today is one the
+operator asks for (*The two triggers*, above). `/close` does not ship either, and neither does the timer. An agent that
+reasons when spoken to and never otherwise is a filing system with a good vocabulary. **One wiring job starts the
+worker for both triggers**, and the timer is the one piece that job does not supply.
 
 **The PKB does not know the operator.** `voice` holds how they write, and nothing holds how they decide: what they have
-turned down at `/learn` and why, which arguments have moved them, which kinds of evidence they ask for before they will
+turned down and why, which arguments have moved them, which kinds of evidence they ask for before they will
 try something. A record of that would make every proposal better, and it would be the most sensitive file in the tree,
 which is the reason to design it rather than accumulate it.
 
@@ -1824,7 +1850,7 @@ The PKB starts empty. The path to the steady state:
    overwriting their work and never shipping an improvement.
 
    Three routes fill the tree's own `skills/` folders. The operator dictates a skill to the expert; the operator adopts
-   a shipped one; or a session proposes one at `/learn` and the operator approves its exact text (Section 2.8). The
+   a shipped one; or a session's analysis proposes one and the operator approves its exact text (Section 2.8). The
    permanent-fork warning attaches to the **name** rather than to the route, and *Where a skill lives* in Section 2.4
    states that rule once for all three.
 2. **`voice` ships with an opinionated starter profile, corrected from the operator's own writing.** Every draft has a
@@ -1868,8 +1894,8 @@ procedural pillar: a skill instructs the agents that work this PKB, and a consum
 
 A session summary will enter a Research Pack once the operator has approved it (Section 2.7), ranked after the topic's
 breadth summaries and before the conflict-review notes. The pack builder has no session role yet, so that ordering is
-designed and not built (Section 2.8, *How an entry improves an expert*). A lesson a session filed at `/learn` is an
-ordinary note carrying `provenance: practised`, and it enters a pack as one.
+designed and not built (Section 2.8, *How an entry improves an expert*). A lesson a session filed is an ordinary note
+carrying `provenance: practised`, and it enters a pack as one.
 
 ## Conflict escalation
 
@@ -1899,10 +1925,11 @@ like a capture. **Every write a session makes waits too**, the session summary a
 approves the rendered text rather than a request to write it (Section 2.7). Once a change lands, harness maintenance
 regenerates the indexes and the tag registry.
 
-The five exclusions in Section 2.8 bind a project retrospective as hard as they bind `/learn`, and a retrospective is
-where they break most easily. A project that tried four approaches and shipped none of them produces a **breadth
-summary update** proposing the fourth as the recommended one, and the rule it writes reads the same as a rule somebody
-earned. A project agent proposing an update names what the project shipped, and says so when the work never worked.
+The five exclusions in Section 2.8 bind a project retrospective as hard as they bind a session's analysis, and a
+retrospective is where they break most easily. A project that tried four approaches and shipped none of them produces a
+**breadth summary update** proposing the fourth as the recommended one, and the rule it writes reads the same as a rule
+somebody earned. A project agent proposing an update names what the project shipped, and says so when the work never
+worked.
 
 ---
 
@@ -1972,40 +1999,50 @@ The **Personal Knowledge Base** is an AI-assisted expert for the subject areas t
   AI-generated and human-curated, and hooks generate the mechanical files.
 - **Breadth vs. depth**: `topic.md` and `summary.md` serve a breadth-first reader; `index.md` serves a depth-first
   reader, and the split is what bounds a context pack.
-- Agents mediate every interaction. The **Librarian** classifies each inbound item, and harness code fans it out to
-  every applicable **Topic Expert** and merges their answers by attribution. That fan-out is the Librarian's
-  breadth-first research. Classifying is a model's judgment. Fanning out and merging are code.
+- Agents mediate every interaction. The **Librarian** researches across topics: it frames an objective so single topics
+  can answer it, classifies each inbound item, and recognizes when two topics' answers interact. Harness code fans the
+  item out to every applicable **Topic Expert** and merges their answers by attribution. Classifying is a model's
+  judgment. Fanning out and merging are code. Cross-topic research is a competence of its own, distinct from depth in
+  one subject, and its skills live at the PKB root because they belong to no topic. The Librarian holds no topic
+  knowledge and writes nothing into the tree.
 - **Topic Experts** run the topics, one PKB template by default, overridden per topic through `expert.md`. Hooks
   enforce the mechanical standards. The experts carry the judgment work through common, overloadable skills.
 - **Ten skills ship with the implementation** (Section 2.4), sorted by pillar. They mount from the package ahead of the
   tree's own `skills/` folders, read-only. The tree's folders take writes, and a file declaring a shipped skill's
-  **name** shadows it permanently. Five more the design describes have no file yet.
-- **A session** is how anyone works with the PKB in dialog: one objective, in one channel, on the Librarian by default
-  or on one Topic Expert when the operator knows the topic (Section 2.7). The counterpart is the operator, or a project
-  agent that needs the knowledge. An objective that needs a new tool or a process to follow makes the session write
-  **instruction sets**, which state why the work is necessary and what it must achieve and never an implementation.
-  `/learn` is the only door into the tree, repeatable at any time. `/close` locks the channel and keeps the session
-  record, closed, so the next session on that objective reads what this one declined. **An unsupervised session never
-  issues `/learn`**, and harness code afterwards generalizes any closed record nobody distilled, putting the proposal
-  in the **learning channel** (Section 2.8).
+  **name** shadows it permanently. Seven more the design describes have no file yet, one of them the Librarian's own
+  cross-topic research skill (Section 2.2).
+- **A session** is how anyone works with the PKB in dialog: one objective, in one channel, attached to the Librarian
+  when the objective crosses topics or to one Topic Expert when one topic owns it (Section 2.7). Neither is a default,
+  and the operator chooses at the start. The counterpart is the operator, or a project agent that needs the knowledge.
+  An objective that needs a new tool or a process to follow makes the session write **instruction sets**, which state
+  why the work is necessary and what it must achieve and never an implementation. **`/close` is the only session
+  command.** It marks the session record closed and keeps it, so the next session on that objective reads what this one
+  declined, it locks the channel, and it puts the session in the **learning queue**. The channel stays shut, so what
+  the analysis found parks in the **learning channel** and the operator settles it there (Section 2.8).
 - A session that searches asks with the objective and none of the operator's beliefs, verifies every URL and quotation
   in code against the page text the provider returned, and weighs what survives against the operator's notes without
   touching one. **None of the session machinery is built.**
-- **`/learn` reads the session record from the beginning every time** (Section 2.8), never its own last extraction,
-  because chained abstractions compound. It drafts candidates, argues, and lands the bytes the operator approved and no
-  others. **What it may conclude is bounded.** Five kinds of session output look like knowledge and are not: an
-  approach that never worked, a failure the machine caused that week, a verdict that a tool cannot do something, an
-  error a retry cleared, and the story of one afternoon. Every session that ends is analyzed, and filing nothing is the
-  default result. The same bar gates the deferred pass, so the queue holds proposals rather than sessions: about one
-  candidate in seven establishes anything, and a queue of everything is a queue nobody reads.
+- **One mechanism reasons over what the PKB holds, on two triggers** (Section 2.8): a session closed, or time passed.
+  Session learning checks a candidate against the tree; the scan checks the tree against itself, over five axes of
+  which three run. Both draw from one queue, both run in one worker, and both end with a proposal the operator answers
+  in the learning channel. The second trigger earns its place because one pass over a pair scores near chance, and
+  repeating the question over different pairings is what makes a near-chance detector useful.
+- **The analysis reads the session record from the beginning**, because chained abstractions compound and one-shot
+  consolidation beats streaming. The **self-improvement** skill carries that competence: it drafts candidates, quotes
+  the record each one rests on, and lands the bytes the operator approved and no others. **What it may conclude is
+  bounded.** Five kinds of session output look like knowledge and are not: an approach that never worked, a failure the
+  machine caused that week, a verdict that a tool cannot do something, an error a retry cleared, and the story of one
+  afternoon. **Every closed session enters the queue**, whoever was in the channel, and filing nothing is the default
+  result. The bar runs inside the analysis rather than in front of the queue, so the queue holds work and the channel
+  holds proposals: about one candidate in seven establishes anything, and a review list of everything goes unread.
 - **A session may also teach the system how to work.** A note says what is true and a skill says how to work, and the
   test is who acts on the draft first. A wrong skill is worse than a wrong note, and it marks nothing it shaped. The
   scan's fifth axis reads a topic's notes against its skills to catch that, and it is not built. Sections 2.7 and 2.8
   record what the design has left unsolved: a session summary reaches no expert yet, the daemon runs no unprompted
   scan, nothing holds how the operator decides, nothing decays with age, the procedural pillar has no breadth file, and
-  four questions stay open. Whether a project agent may ever hold an approval of its own, how long a closed session
-  stays eligible for generalization, whether the learning channel binds to the Librarian or to no agent, and whether
-  the queue needs a cap.
+  four questions stay open. Whether a project agent may ever hold an approval of its own, whether the learning channel
+  binds to the Librarian or to no agent, whether the queue needs a cap, and how long a queued analysis stays eligible
+  before it ages out.
 - The **DeepAgent harness** hosts the agent layer and exposes it through a dedicated TUI, Telegram channels, and other
   channels. The operator connects to the Librarian, or to one Topic Expert.
 - The **Project Manager** (separate project) reads the PKB through context packs and feeds project outcomes and lessons
