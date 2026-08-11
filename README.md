@@ -1066,8 +1066,10 @@ knows least about the work, and a four-month session still carrying the question
 nobody can find. The path is the name a reader checks, so the rename moves `sessions/[objective-title].md` and the file
 keeps everything it holds. Every session file also carries a `title` in its frontmatter (Section 1.4), and harness code
 rewrites that field with the path in the same move, because a field left behind is a second name for one session and the
-two can then disagree. The channel's own title follows, since a channel holds one session at a time and names it
-(Section 2.7). Harness code refuses a name a sealed file already holds and refuses the rename once `/end` has sealed
+two can then disagree. **Every channel attached to the session is retitled in the same move**, on whichever surface it
+sits, for the same reason: a channel still showing the old name is one more place the session answers to something it
+is no longer called, and the operator working from the phone would never see the rename they made on the TUI. Harness
+code refuses a name a sealed file already holds and refuses the rename once `/end` has sealed
 this one, because a sealed file is never reopened (Section 2.7).
 
 ## 2.6 Agent Hierarchy
@@ -1237,7 +1239,8 @@ what the operator decides, because meaning is theirs (Sections 1.6 and 1.7).
 ### Three commands act on the session itself
 
 `/name`, at any point while the session still takes turns. It renames as well as names, harness code moves
-`sessions/[objective-title].md`, and the file keeps everything it holds (Section 2.5). A session is named at the start,
+`sessions/[objective-title].md`, the file keeps everything it holds, and every channel attached to the session is
+retitled in the same move, said on one surface and seen on all of them (Section 2.5). A session is named at the start,
 where the operator knows least about the work, so a four-month session carrying the question they abandoned in week one
 is the ordinary case rather than the exception, and a name nobody can search for is a file nobody finds. `/close` ends
 the turns and closes the window in practice, and `/end`'s seal is the hard refusal, because a sealed file is never
@@ -1789,12 +1792,13 @@ channel holds one session at a time (Section 2.7). Each one names the closed ses
 owns it, because the channel says neither.
 
 Queuing at the close takes most of the staleness out. `/close` queues the session the moment the work ends. The queue
-can still lag, so two things guard the far end. The analysis quotes the file rather than asserting a conclusion (step 3
-above), and an entry that has waited too long is skipped rather than analysed, and the session in the learning channel
-says so, so the skip lands in the file and the operator seals it with `/end`. Nobody has settled how long is too long.
+can still lag, and one thing guards the far end: the analysis quotes the file rather than asserting a conclusion (step 3
+above). That guard carries the whole load because the file holds the whole arc, so an operator settling a session they
+last touched in March reads what happened rather than recalling it.
 
-One thing about the channel is not settled: whether the queue needs a cap, because an agent working overnight can pile
-up sessions nobody has opened.
+The queue holds every closed session, with no cap and no expiry. An entry waits as long as it waits and is analysed
+whenever the operator gets to it, because a session worth closing was worth doing, and a queue that drops the oldest
+entry drops the one the operator has had least chance to see.
 
 ### The skills that already generalize
 
@@ -2193,9 +2197,8 @@ The **Personal Knowledge Base** is an AI-assisted expert for the subject areas t
   check reads no skill, because a skill states no claim, so a stale one surfaces through the session that hits it and
   through the exact text the operator read before it landed. Sections 2.7 and 2.8 record what the design has left
   unsolved: a session file reaches no expert, the PKB notices nothing while nobody is in a channel, nothing holds how
-  the operator decides, nothing decays with age, the procedural pillar has no breadth file, and three questions stay
-  open: whether anyone but the operator may ever instruct a write, whether the queue needs a cap, and how long a queued
-  analysis stays eligible before it ages out.
+  the operator decides, nothing decays with age, the procedural pillar has no breadth file, and one question stays
+  open: whether anyone but the operator may ever instruct a write.
 - The DeepAgent harness hosts the agent layer and exposes it through a dedicated TUI, Telegram channels and other
   channels, and the operator connects to the Librarian or to one Topic Expert. The command set settles at seven:
   `/channels`, `/threads`, `/agents`, `/cancel`, `/name`, `/close` and `/end` (Section 2.5).
