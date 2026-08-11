@@ -1183,8 +1183,14 @@ One thing does differ, and it is now settled. Every approval in this document is
 an agent counterpart puts none in front of them. Nothing but the session's own running record is written until the
 operator instructed it inside a session, and the record claims nothing about the topic, so an unsupervised session takes
 the route every session takes: `/close`, the learning queue, and the analysis session the learning channel holds
-(Section 2.8). It needs no route of its own. One question stays open: whether anyone but the operator may ever instruct
-a write, and over which files.
+(Section 2.8). It needs no route of its own.
+
+The line runs between adding and changing. An agent counterpart may instruct a write that only adds: a note it files, a
+reference it ingests, a section appended to a file that keeps every line already there. Only the operator changes what a
+file already says, and only the operator settles a conflict. An unsupervised session that raises one carries it to the
+analysis session, where the operator answers it the way they answer everything else the analysis found (Section 2.8).
+The design already draws this line for a re-ingestion, where a pass that only appends lands inside the turn and a pass
+that would reword an argument stops for the operator, so nothing new decides it here.
 
 ### A session opens on the Librarian or on a Topic Expert
 
@@ -2183,8 +2189,8 @@ The **Personal Knowledge Base** is an AI-assisted expert for the subject areas t
   check reads no skill, because a skill states no claim, so a stale one surfaces through the session that hits it and
   through the exact text the operator read before it landed. Sections 2.7 and 2.8 record what the design has left
   unsolved: a session file reaches no expert, the PKB notices nothing while nobody is in a channel, nothing holds how
-  the operator decides, nothing decays with age, the procedural pillar has no breadth file, and one question stays
-  open: whether anyone but the operator may ever instruct a write.
+  the operator decides, nothing decays with age, and the procedural pillar has no breadth file. An agent counterpart
+  may instruct a write that only adds; only the operator changes what a file already says or settles a conflict.
 - The DeepAgent harness hosts the agent layer and exposes it through a dedicated TUI, Telegram channels and other
   channels, and the operator connects to the Librarian or to one Topic Expert. The command set settles at seven:
   `/channels`, `/threads`, `/agents`, `/cancel`, `/name`, `/close` and `/end` (Section 2.5).
