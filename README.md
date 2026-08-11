@@ -674,22 +674,22 @@ its own way of working. Depth in one topic and reach across many are different s
 different agents. The fan-out below is how the Librarian reaches depth, one step of the research rather than all of it.
 
 Each part lands in a different place, and the merge is none of them. Naming the topics is the classify step every turn
-runs. Framing the objective is the brief the loop writes for each expert, and it had nowhere to happen until the loop
-existed. Recognizing an interaction is the round boundary, where the Librarian reads what the experts returned and
-frames the question the next round asks. The merge composes what came back and judges none of it.
+runs. Framing the objective is the brief each expert receives. Recognizing an interaction is what the reply says the
+Librarian noticed, put to the operator as the question the next round would ask. The merge composes what came back and
+judges none of it.
 
 The Librarian's cross-topic research skill lives at the PKB root, because it is about no subject and no topic can hold
 it. The root is where every process skill already lives (Section 2.4), and a cross-topic research skill is the first one
-that belongs to a named agent rather than to all of them. It carries both model-side shapes the loop below needs, the
-brief's and the round-boundary assessment's, so the second model call needs no skill of its own. The shipped `research`
-skill is a different thing: it covers one part of the work, the breadth-first pass over the tree, and it says nothing
-about framing an objective or about two topics' answers interacting.
+that belongs to a named agent rather than to all of them. It carries the two shapes the model supplies below, the
+brief's questions and the observation the reply carries. The shipped `research` skill is a different thing: it covers
+one part of the work, the breadth-first pass over the tree, and it says nothing about framing an objective or about two
+topics' answers interacting.
 
 ### One turn routes, and routing is a workflow rather than a decision
 
 Two shapes live in this section and they work at different scales. A turn routes one inbound thing to the experts that
-bear on it, and it is the router. A session pursues an objective over many turns, and the loop below is the
-orchestrator. The turn comes first because the loop runs it.
+bear on it, and it is the router. A session pursues an objective across many turns with the operator in it, and it is
+the orchestrator. The turn comes first because a session runs it.
 
 A Librarian turn is four steps. The first is a judgment call and the other three are harness code that always runs.
 
@@ -711,11 +711,15 @@ A Librarian free to decide whether to delegate sometimes read the topic folders 
 it lost the topic's skills, its `expert.md` persona and its voice. Everything that makes a Topic Expert an expert lives
 one layer down, so harness code closes that.
 
-### A session runs that turn in rounds
+### A session runs that turn, and the operator is the round boundary
 
-A **round** is one fan-out and what comes back from it, and a session may run more than one where a turn runs one. The
-Librarian runs the seven steps of a search (Section 2.7) over Topic Experts, which is the loop a Topic Expert already
-runs over its search sub-agents, and five of the seven are the same step at a wider scale:
+A **round** is one fan-out, what comes back from it, and the reply that carries it to the operator. The turn ends there,
+the operator answers, and their answer is the next round, so a session runs as many rounds as the work needs and the
+Librarian ends none of them by itself. Nothing caps the rounds, because a cap stops a loop nobody is watching and the
+operator is sitting in this session.
+
+The Librarian runs the seven steps of a search (Section 2.7) over Topic Experts, which is the loop a Topic Expert
+already runs over its search sub-agents, and five of the seven are the same step at a wider scale:
 
 1. **Take the objective**, from the session file, the same step from the same place.
 2. **Survey the topic** becomes survey the catalog, which is the classify step above. The early exit does not come with
@@ -724,22 +728,36 @@ runs over its search sub-agents, and five of the seven are the same step at a wi
 4. **Search** is the fan-out, code already and unchanged.
 5. **Verify** comes across smaller, because the Librarian holds no fetched page to compare a quotation against. Code
    checks that every KB-relative path an expert cites exists, and it holds back a citation to a file that does not.
-6. **Weigh** becomes the round boundary, below, rather than a judgment about who is right.
-7. **Report back** stays the merge by attribution and the offer, composed over every round the turn ran.
+6. **Weigh** becomes say what you noticed, rather than a judgment about who is right.
+7. **Report back** stays the merge by attribution and the offer.
 
-The Librarian cannot do step 6's work. The expert weighing there has the topic's knowledge behind it and the Librarian
-has none, so it cannot tell a genuine contradiction from two claims both true under conditions neither side states. It
-can see that two answers bear on each other, because it holds both and neither expert holds the other, and that
-observation is a question to ask rather than a verdict to publish.
+The Librarian cannot weigh the way an expert does at step 6. The expert has the topic's knowledge behind it and the
+Librarian has none, so it cannot tell a genuine contradiction from two claims both true under conditions neither side
+states. It can see that two answers bear on each other, because it holds both and neither expert holds the other, and
+that observation is a question to put to the operator rather than a verdict to publish.
 
-The second round is where the third competence becomes real, because two topics' answers can be seen to interact only
-once those answers exist. Round two is narrow by construction: it reaches the experts the interaction names, plus a
-topic in the catalog the first round missed, and each brief carries the earlier claim as a quotation attributed to the
-expert that made it, asking what this topic holds about it rather than whether it is true. No reply goes back to the
-first expert, and the experts still never see each other.
+A session turn's reply carries three things: the merged answer, what the Librarian noticed across the sections, and the
+question it would ask next. Those last two are the only prose the Librarian writes, and they authorize nothing. The
+operator reads them and asks for the next round, or ignores them and asks for something else, so an interaction the
+Librarian imagined costs a sentence rather than a round. The fan-out is still code and the merge is still attribution,
+so nothing the Librarian writes in a reply changes what ran.
+
+A part of the objective no expert answered goes in the reply under its own heading, beside the experts' answers, named
+as a gap, and the whole reply lands in the session's running record so the operator can chase the gap with a narrower
+question while the session is open and the analysis reads it after the close (Section 2.7). The large-source ingestion
+loop names the sections that yielded nothing for the same reason.
+
+The counterpart may be a project agent rather than the operator (Section 2.7). The turn still ends with its named gap
+and waits, and a project agent answers the next question the way the operator would, so a counterpart that answers
+nothing leaves an honest record of what is open rather than a loop that ran on without it.
+
+A later round is narrow by construction, because two topics' answers can be seen to interact only once those answers
+exist. It reaches the experts the operator's answer names, plus a topic in the catalog the first round missed, and each
+brief carries the earlier claim as a quotation attributed to the expert that made it, asking what this topic holds about
+it rather than whether it is true. No reply goes back to the first expert, and the experts still never see each other.
 
 Rounds belong to sessions. A turn that routes an inbound item for filing has no objective to frame and no gap to close,
-so it runs one round exactly as the four steps describe.
+so it runs the four steps above and ends there, with no brief to write and no question to put back.
 
 ### A brief carries the objective and withholds the rest
 
@@ -751,48 +769,13 @@ Harness code assembles every brief and the model supplies two of its parts. A br
 - The shape its answer must take.
 - Its boundary against the other briefs in this round, naming the other topic and never that topic's answer, so two
   experts are not asked one question and neither is asked nothing.
-- In round two only, the attributed quotation of the claim that earned the round, fenced as data the way a page off the
-  internet is.
+- In a later round only, the attributed quotation of the claim the operator's answer picked up, fenced as data the way a
+  page off the internet is.
 
 The brief is the expert's whole starting context, and what it withholds is as deliberate as what it carries: the
 operator's raw turn, their beliefs, the root catalog, and every other expert's full answer. An expert returns its
 findings rather than its working, so a round costs the Librarian a bounded amount of context, and an expert whose topic
 holds nothing says so rather than returning silence.
-
-### The round boundary is one model call
-
-At the end of a round the Librarian reads what the experts returned and answers with a routing call, never prose. It
-names the interaction it sees, the part of the objective no expert answered, and the experts to ask again with the
-question for each. Nothing and nothing is how it says stop.
-
-The assessment asks for a round and runs none, which keeps the measurement above intact. The first fan-out is code and
-happens whatever the model would have preferred, a second happens only where the counter allows, and the reply is still
-assembled from what came back rather than written.
-
-That answer lands in the session's running record as its own entry, so the operator can instruct against it while the
-session is open and the analysis reads it after the close (Section 2.7).
-
-### Four things end the loop, and three of them are code
-
-- The assessment names no interaction and no gap. This is the ordinary end, and it should be most turns.
-- The round counter reaches the deployment's cap, one by default. The deployment sets it and nothing in the tree does,
-  on the rule that already sets a search's width (Section 2.7), and code ends the turn whatever the assessment asked
-  for.
-- The assessment answers in prose rather than with a routing call, after one stricter retry. The turn ends and degrades
-  to the four steps above, which is the same posture uncertain classification takes below.
-- A round would ask an expert a question it was already asked in this turn. Harness code refuses it by name rather than
-  dropping it in silence.
-
-A spent budget produces a named gap and never a confident answer. The merged reply carries the part of the objective the
-loop did not close under its own heading, beside the experts' answers, and the running record carries the same line, so
-the operator can say chase it again with a narrower question while the session is still open. The large-source ingestion
-loop names the sections that yielded nothing for the same reason.
-
-Three decisions here are the operator's and the design leaves them open: the cap's default of one, and whether the local
-fallback model sets it to zero rather than running a second round nobody waits for; whether the round-boundary entry in
-the running record needs approval, or stands as a record of what happened like the rest of that record; and whether the
-analysis of a closed Librarian session gets a round boundary of its own or stays the single fan-out Section 2.7 gives
-it.
 
 ### Uncertain classification asks with a menu
 
@@ -816,8 +799,8 @@ Responsibilities:
 
 - **Routing** – classify each inbound request or piece of information, fan it out to every applicable Topic Expert, and
   merge what they return into one attributed answer.
-- **Orchestration** – run a session's objective in rounds: write one brief per expert, read what came back, and ask a
-  second round only where an interaction or an unanswered part earns it, inside the cap the deployment sets.
+- **Orchestration** – run a session's objective one round at a time: write one brief per expert, read what came back,
+  and end the turn with the merge, what it noticed and the question it would ask next.
 - **Topic catalog** – classify from the root `index.md`, a hook-generated catalog of every topic and its description,
   aggregated from `topic.md` frontmatter. The catalog marks a topic that owns an `expert.md` with *(custom expert)*, so
   the Librarian sees it in the one file it already reads and walks the tree for nothing.
@@ -828,9 +811,10 @@ Responsibilities:
   `related_topics` declarations, to notice the second topic worth involving.
 - **Work that crosses topics** – the operator opens a session on the Librarian when the objective crosses topics
   (Section 2.7). Personal finance and investment cross portfolio management and trading, and neither expert holds the
-  whole of it. An objective fans out in rounds rather than once, and after `/close` the Learning agent fans the session
-  itself out as a source, each expert filing inside its own topic or filing nothing. The synthesis lands in the
-  session's own file in the root `sessions/` folder, written by a root tool so the Librarian still writes nothing.
+  whole of it. An objective fans out over as many rounds as the operator asks for, and after `/close` the Learning agent
+  fans the session itself out as a source, each expert filing inside its own topic or filing nothing. The synthesis
+  lands in the session's own file in the root `sessions/` folder, written by a root tool so the Librarian still writes
+  nothing.
 
 ## 2.3 Topic Experts
 
@@ -1091,9 +1075,10 @@ this one, because a sealed file is never reopened (Section 2.7).
 │   │   1 CLASSIFY  ▶  2 FAN OUT  ▶  3 MERGE  ▶  4 OFFER ────────┼─────┼──┐
 │   │   model call     one brief     harness code, both          │     │  │
 │   │        ▲         per expert                                │     │  │
-│   │        │  A SESSION RUNS THAT TURN IN ROUNDS:              │     │  │
-│   │        └── ROUND BOUNDARY: one model call names the        │     │  │
-│   │            interaction and the gap; code counts and caps   │     │  │
+│   │        │  A SESSION RUNS ONE ROUND PER TURN:               │     │  │
+│   │        └── the reply carries the merge, what the Librarian │     │  │
+│   │            noticed, and the question it would ask next;    │     │  │
+│   │            the operator's answer opens the next round      │     │  │
 │   └────────────────────────────────────────────────────────────┘     │  │
 │                                                                      │  │
 │   ┌────────────────────────────────────────────────────────────┐     │  │
@@ -1214,10 +1199,10 @@ trading, and neither expert holds the whole of it. The Librarian frames the obje
 every turn out to the applicable experts, and merges what they return by attribution (Section 2.2). Framing the
 objective and naming the topics that bear on it is a competence of its own, and it is the Librarian's.
 
-A turn inside a Librarian session runs in rounds, because the Librarian runs the seven steps below over Topic Experts
-the way an expert runs them over its search sub-agents, and Section 2.2 states that loop. What the session owns is where
-the rounds are allowed: a turn that files an inbound item has no objective to frame and no gap to close, so it runs one
-round, and only a turn pursuing the session's objective may run a second.
+A turn inside a Librarian session is one round, because the Librarian runs the seven steps below over Topic Experts the
+way an expert runs them over its search sub-agents. The session is where the rounds live and the operator is the
+boundary between them (Section 2.2): the turn ends with the merge, what the Librarian noticed and the question it would
+ask next, and the operator's answer opens the next round.
 
 The Librarian still writes nothing, and each expert still writes inside its own topic, reaching the root `sessions/`
 folder for its own session file through the root tool a Librarian session uses for the same file (Section 2.3). A
@@ -1327,7 +1312,7 @@ OPERATOR or PROJECT AGENT ── opens or attaches a channel to ──▶ SESSIO
   │  harness code runs 4 (one read-only sub-agent per question)  │
   │  and 5 (every quotation found in the held bytes)             │
   │  on a Librarian session the same steps run over experts,     │
-  │  in rounds, and 6 becomes the round boundary (2.2)           │
+  │  one round per turn, 6 becomes say what you noticed (2.2)    │
   └───────────────────────────┬──────────────────────────────────┘
                               │
       the operator goes and tries it, then comes back with what
@@ -1381,7 +1366,7 @@ Its life runs in order:
    is how the operator finds it.
 2. **The work happens**, and the session writes into the file as it goes: each experiment and what it produced, the
    sources kept, the ones turned down and why, the claims verification held back, the conflicts the work raised against
-   the topic's notes, and on a Librarian session what each round boundary decided (Section 2.2).
+   the topic's notes, and on a Librarian session the whole of each round's reply (Section 2.2).
 3. **`/close`**, said when the operator has nothing more they want to craft in this context, marks the file closed and
    puts the session in the learning queue.
 4. **The Learning agent reads the file from the beginning**, drafts the synthesis of what the session worked out, and
@@ -1569,7 +1554,8 @@ each applicable expert what its own topic takes from it, with the grammar the in
 section: something new, something better, something that contradicts what I hold, or nothing. An expert that takes
 nothing leaves no folder and no stub. Each note lands inside its own topic, so the Librarian still writes nothing and
 the Learning agent, which has no subtree of its own, writes nothing either. This fan-out is one pass rather than the
-rounds a live Librarian session runs, and Section 2.2 leaves a round boundary here open.
+rounds a live Librarian session runs, because a round opens when the operator answers and a closed session takes no more
+turns from them.
 
 A Librarian session's analysis therefore proposes a set of notes. The operator approves each one's text on its own, so
 they take some and drop others and a rejection on one changes nothing about the rest. Four kept notes means four texts
@@ -2025,7 +2011,8 @@ The Project Manager (separate project) orchestrates projects that consume and en
 agent-mediated like every other PKB interaction (Part 2): a project agent sends its request to the Librarian, which
 routes it to the right Topic Experts, or it connects to a known Topic Expert. A batch request is one turn and runs one
 round of that fan-out, because it carries an item to route rather than an objective to pursue. A project agent that
-wants an objective pursued opens a session, where the Librarian runs the fan-out in rounds (Sections 2.2 and 2.7).
+wants an objective pursued opens a session, where the Librarian fans out once per turn and the project agent's answer
+opens the next round (Sections 2.2 and 2.7).
 
 ## Context packs
 
@@ -2135,14 +2122,13 @@ The **Personal Knowledge Base** is an AI-assisted expert for the subject areas t
   answer it, classifies each inbound item, and recognizes when two topics' answers interact. Harness code fans the item
   out to every applicable Topic Expert and merges their answers by attribution, so classifying is a model's judgment and
   fanning out and merging are code. Each of the three competences lands in a different place: classifying is the turn's
-  one model call, framing is the brief code hands each expert, and an interaction is the round boundary. A session runs
-  that turn in rounds, one fan-out each, with the Librarian orchestrating and the experts as its sub-agents: the
-  boundary between rounds is one model call naming the interaction it sees and the part of the objective no expert
-  answered, and code counts the rounds and stops at the cap the deployment sets, one by default (Section 2.2). Section
-  2.2 leaves three decisions to the operator: that default, whether the round-boundary entry needs approval, and whether
-  a closed Librarian session's analysis gets a round of its own. Cross-topic research is a competence of its own,
-  distinct from depth in one subject, and its skill lives at the PKB root because it belongs to no topic. The Librarian
-  holds no topic knowledge and writes nothing into the tree.
+  one model call, framing is the brief code hands each expert, and an interaction is what the reply says the Librarian
+  noticed. A session runs that turn one round at a time, with the Librarian orchestrating and the experts as its
+  sub-agents: a round is one fan-out and the reply carrying the merge, that interaction and the part of the objective no
+  expert answered, and the operator's answer is the next round. Nothing caps the rounds, because the operator is sitting
+  in the session (Section 2.2). Cross-topic research is a competence of its own, distinct from depth in one subject, and
+  its skill lives at the PKB root because it belongs to no topic. The Librarian holds no topic knowledge and writes
+  nothing into the tree.
 - Topic Experts run the topics, one PKB template by default, overridden per topic through `expert.md`. Hooks enforce the
   mechanical standards, and the experts carry the judgment work through common, overloadable skills.
 - A third agent reads sessions. The Learning agent runs the analysis session the learning channel holds after `/close`
