@@ -58,9 +58,58 @@ operator already knows which area owns the work.
 
 Both subject pillars carry a summary that the operator approves: `references/summary.md` and `notes/summary.md`. A
 summary helps an agent find an analogous problem or solution in another area of expertise. It bounds what an agent reads
-during the exploration stage, and the notes and references themselves supply the detail an agent needs during the
-exploitation stage, when the task is defined.
+in exploration mode, and the notes and references themselves supply the detail an agent needs in exploitation mode, when
+the task is defined.
 
+
+---
+
+## Sessions and the Self-Learning Loop
+
+The operator can ingest theoretical knowledge from outside, because someone else already wrote it down. Practical and
+procedural knowledge exist nowhere to ingest: nobody has run the operator's experiment under the operator's conditions,
+and nobody has written down how the operator and an agent reach an objective together. That knowledge comes from
+working, and a session is the working.
+
+A session opens on an objective, and the work happens inside it. The operator brings a question, the agent answers out
+of what the topic already holds, and the two of them decide what to try next. The operator goes away and tries it, then
+comes back with what happened, days or weeks later, and the session picks up where it left off.
+
+Everything is dialog: the operator asks, the agent drafts, the two of them work the text until it says what the operator
+means, and the operator instructs the write. No form asks the operator to classify anything, and they manage no file.
+Their instruction is the whole of what makes a write happen.
+
+`/close` says the operator has nothing more they want to craft in this context. It judges nothing, because a session
+that failed teaches as much as one that succeeded. Every closed session is then analyzed, and the analysis brings back
+what it found in dialog rather than as a report: what the session established, what is worth keeping, and where it
+disagrees with what the topic already holds. The operator settles them one at a time, and `/end` finishes the session.
+
+Most sessions leave nothing behind, and that is the correct outcome. A loop that files something every time files noise,
+and the operator is the one who has to read it later. The rest becomes knowledge the expert agents hold, so the next
+session on the same ground starts where this one finished rather than where it began. That is the sense in which the
+system learns: the operator taught it, one objective at a time.
+
+---
+
+## The Librarian and the Topic Experts
+
+No agent is good at both reach and depth, because the same thing that makes an expert an expert is what blinds it
+outside its own subject. A Topic Expert carries one subject: its sources, its notes, its own way of working, and the
+judgment that subject rewards. That load is what makes its answers precise, and it is also what keeps the expert from
+noticing that the answer lies somewhere else entirely. Reach and depth pull against each other, so the PKB declines to
+choose between them and holds each in its own kind of agent.
+
+The Librarian works across topics and holds none of them. It runs in exploration mode: the ground an objective sits on,
+the topics that bear on it, and the second topic the operator did not think of. Breadth is what lets an analogy from one
+subject reach a problem in another, and that is where novel insight comes from. A Topic Expert works inside one topic
+and runs in exploitation mode: it goes to that subject's sources and its notes, and returns an answer precise enough to
+act on. Neither agent is a lesser form of the other, and neither is the other's manager. One finds the ground and the
+other stands on it.
+
+Research uses both, in that order. Wide first, because an objective as the operator first states it is rarely aimed at
+the right ground. Deep second, because breadth returns a map and never an answer the operator can act on. Exploration
+without exploitation is a list of promising directions, and exploitation without exploration answers only the question
+the operator already knew to ask.
 
 ---
 
@@ -1058,7 +1107,7 @@ checking.
 1. **Take the objective.** The operator says what they want to know, and the expert takes it from the objective the
    session file already carries (below). A session holds one objective, so a later search joins the file this session
    already opened, and a new objective opens a new session.
-2. **Survey the topic.** This is the exploration stage. The expert reads `topic.md`, both breadth summaries, and the
+2. **Survey the topic.** This is exploration mode. The expert reads `topic.md`, both breadth summaries, and the
    notes and references that touch the objective. An objective the topic already meets ends the search here, with the
    answer and the files it came from, because searching the internet for something already filed spends the budget and
    invites a page that contradicts the operator's note.
@@ -1641,7 +1690,7 @@ would put *ask for the pit's thermometer offset before drafting* into the file e
 ### The procedural pillar has no breadth file, and adding one is a decision
 
 Each subject pillar carries a human-approved `summary.md` (Section 1.6), and the operator has asked for a third one. The
-procedural pillar outranks the theoretical one (Section 1.8, rule 1) and has no file that bounds the exploration stage.
+procedural pillar outranks the theoretical one (Section 1.8, rule 1) and has no file that bounds exploration mode.
 The design places none, because the obvious placement contradicts Part 1: everything under a `skills/` folder is a skill
 file (class 3 in Section 1.4), so a `summary.md` sitting inside one is either a knowledge file living in a folder the
 rules exempt, or a fourth file class this document never defines. `Cooking/skills/summary.md` passes content validation
@@ -1759,10 +1808,10 @@ routes it to the right Topic Experts, or it connects to a known Topic Expert.
 A Topic Expert assembles a context pack on request, matched to the requesting agent's role. Research agent and
 implementation agent are the Project Manager's own names for those roles.
 
-- **Research agents (breadth-first)** receive a Research Pack, which serves the exploration stage. It holds `topic.md`,
+- **Research agents (breadth-first)** receive a Research Pack, which serves exploration mode. It holds `topic.md`,
   the relevant subtrees of the root `tags.md`, and the `summary.md` files of the relevant topics. A research agent reads
   no `index.md` unless it asks for one.
-- **Implementation agents (depth-first)** receive an Implementation Pack, which serves the exploitation stage, when the
+- **Implementation agents (depth-first)** receive an Implementation Pack, which serves exploitation mode, when the
   task is defined. It holds `notes/summary.md`, the full `index.md` of the selected topic, the
   `references/[source-name]/[source-name].md` files, and the relevant solution notes. `notes/summary.md` loads first,
   because the operator's rules hold the highest priority in a pack.
