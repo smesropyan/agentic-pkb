@@ -166,8 +166,7 @@ def implementation_pack(
 
     ``include_subtopics`` defaults **False**: README says the full index of *the selected topic*, and
     a ``topic/cooking`` request over a four-sub-topic tree would otherwise return an order of
-    magnitude more than was asked for — the context-window problem README §1.8 rule 2 and Part 4
-    exist to bound (Q8).
+    magnitude more than was asked for — the context-window problem goal 2 exists to solve (Q8).
     """
     record = _topic_record(snapshot, topic)
     scope = [record, *_descendants(snapshot, record)] if include_subtopics else [record]

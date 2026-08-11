@@ -206,8 +206,7 @@ def test_the_root_catalog_is_in_context_every_turn_lb4(kb: Path) -> None:
 def test_the_librarian_carries_nothing_topic_scoped_lb5(kb: Path) -> None:
     """LB-5/RT-16: it goes wide — no topic breadth, no topic skills, and no write capability.
 
-    Loading a topic's breadth files here would defeat the README's System Goal and §2.2 — the
-    Librarian goes wide and the experts go deep — and a note the Librarian
+    Loading a topic's breadth files here would defeat README §1.1 goal 2, and a note the Librarian
     filed itself would be a note written without the topic's skills, voice overload and `expert.md`
     behaviour — the whole reason the expert exists, and the whole reason routing had to stop being
     optional.
