@@ -1,9 +1,9 @@
 # Personal Knowledge Base: Technical Design
 
 This document is the technical design of the Personal Knowledge Base: the tree it writes into, the frontmatter every
-file carries, the tag system the Librarian routes on, the agents that read and write, the sessions they run and the
-artifacts a session leaves behind. The project description it serves lives in `README.md`, and that description
-settles any disagreement between the two.
+file carries, the tag system, the agents that read and write, the sessions they run and the artifacts a session leaves
+behind. The project description it serves lives in `README.md`, and that description settles any disagreement between
+the two.
 
 ---
 
@@ -76,43 +76,34 @@ next year costs the topic nothing.
 
 ## 1.3 File Types and Creation Rules
 
-The Approval column says whether the operator reads the exact text before the file lands, and it says nothing else. It
-names no author, because the PKB cannot tell an agent from a person on the other side of a session and does not try
-(Section 2.7). Three modes cover the tree:
+**AI + Human** and **Human + AI** both mean an agent drafts and the operator approves or edits the exact text before the
+file lands (Section 1.6). The labels differ in whose substance it is: **Human + AI** carries the operator's own
+experience, and **AI + Human** carries the expert's own reading and reasoning. **AI** alone means the expert writes the
+file inside the turn, on the operator's instruction, with nothing waiting on their approval before it lands. One file
+class carries that label and one alone: naming a source is the approval on the reading of it, because the operator chose
+the source and the extraction claims nothing the source does not (Section 1.6). Every later pass over that file goes
+back through the operator. **Hooks** means harness code writes the file and nobody curates it.
 
-- **Derived** – harness code writes the file, no agent may write it, and nobody approves it.
-- **Approved** – an agent drafts, and the operator reads the exact bytes before the file lands.
-- **On instruction** – the file lands inside the turn on the operator's ask, and that ask is the approval.
-
-Two rows carry two modes, because one file moves between them over its life. Naming a source is the approval on the
-first map of it, since the operator chose the source and the map claims nothing the source does not, and a later pass
-appends what it covered inside the turn, while a pass that would reword an argument already filed stops for the operator
-(Section 1.6). A session's running record lands as the session runs, because it says what happened rather than claiming
-anything is true, and the synthesis the session ends with waits on the operator word for word.
-
-| File                                        | Approval                              | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-|---------------------------------------------|---------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `topic.md`                                  | **Approved**                          | Breadth map for a breadth-first reader: the topic's distilled ideas and the approaches worth reaching for, each naming the file and section that holds its details, plus the skills section that is the procedural pillar's breadth file (Section 2.8). The expert drafts and maintains the overview. The operator adds insight and approves. Its `description` is the summary the root registry shows for this topic (Section 1.5).                                                                                                                                  |
-| `index.md` (topic root)                     | **Derived**                           | Depth index for precise retrieval, with the topic's tag subtree, its cross-topic mappings, and a catalog of this topic's own skills. Harness hooks regenerate it on change, and no agent writes it.                                                                                                                                                                                                                                                                                                                                                                   |
-| `expert.md` (optional)                      | **Approved**                          | Topic override of the PKB Topic Expert template (Section 2.3). The operator settles what it says and the expert drafts it.                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `skills/[skill-name]/SKILL.md` (optional)   | **Approved**                          | The procedural pillar for one topic: a skill this topic's expert and its sub-topics' experts load, and nobody else (Section 2.4). The operator settles what it says and the expert drafts it. It is the one skill path inside the expert's own subtree.                                                                                                                                                                                                                                                                                                               |
-| `references/summary.md`                     | **Approved**                          | Breadth summary of the theoretical pillar: what the sources established and the approaches they offer, each naming the file and section that holds its details. The expert drafts it. The operator edits and approves.                                                                                                                                                                                                                                                                                                                                                |
-| `references/[source-name]/[source-name].md` | **On instruction**, then **Approved** | Depth map of one source, in the shape Section 1.2 fixes. The ingestion skill writes the first pass, and the two modes above carry every later pass over the same file.                                                                                                                                                                                                                                                                                                                                                                                                |
-| `notes/[note-title].md`                     | **Approved**                          | What the operator knows from their own practice: an observation, an opinion, or something that worked (tagged `type.solution`). They settle what it says in the turn, where the expert drafts it, or in the analysis after `/close` once they tried the thing, where the Learning agent drafts it and the topic's own expert files it (Sections 2.6 and 2.7). The operator approves the exact text.                                                                                                                                                                   |
-| `notes/summary.md`                          | **Approved**                          | Breadth summary of experience: distilled rules, notable solutions and the approaches worth reaching for again, each naming the file and section that holds its details. The operator edits and approves. **Highest priority among the knowledge files.**                                                                                                                                                                                                                                                                                                              |
-| `tags.md` (PKB root)                        | **Derived**                           | Global tag registry and the Librarian's one routing read (Section 1.5): the tag tree, a one-line summary on every node a topic folder backs, the *(custom expert)* markers, the cross-topic mappings and the catalog of the shipped skills and the root's own. Every field is lifted from a file that already carries it, and harness code regenerates it once per agent run (Section 1.9).                                                                                                                                                                           |
-| `sessions/[objective-title].md` (PKB root)  | **On instruction**, then **Approved** | One file per session, for its whole life (Section 2.7): the objective and the experts, the running record the session writes as it goes, the synthesis of what it worked out, holding as sections of itself the instruction sets the operator kept, one per experiment or tool, and the distillation the analysis appends. Harness code renders it, and the write needs the root tool of the row below, because no expert writes outside its own subtree. The record says what happened and needs no approval, and the operator approves the synthesis word for word. |
-| `skills/[skill-name]/SKILL.md` (PKB root)   | **Approved**                          | The procedural pillar across topics: a skill every expert loads, and the Librarian and the Learning agent with them (Section 2.4). The folder starts absent and the first skill approved into it creates it. A write here sits outside every expert's subtree, so it needs a root tool.                                                                                                                                                                                                                                                                               |
+| File                                        | Built By                    | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+|---------------------------------------------|-----------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `topic.md`                                  | **AI + Human**              | Breadth map for a breadth-first reader: the topic's distilled ideas and the approaches worth reaching for, each naming the file and section that holds its details, plus the skills section that is the procedural pillar's breadth file (Section 2.8). The expert drafts and maintains the overview. The operator adds insight and approves.                                                                                                                                                                                                                         |
+| `index.md` (topic root)                     | **Hooks**                   | Depth index for precise retrieval, with the topic's tag subtree, its cross-topic mappings, and a catalog of this topic's own skills. Harness hooks regenerate it on change.                                                                                                                                                                                                                                                                                                                                                                                           |
+| `expert.md` (optional)                      | **Human + AI**              | Topic override of the PKB Topic Expert template (Section 2.3). The operator settles what it says and the expert drafts it.                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `skills/[skill-name]/SKILL.md` (optional)   | **Human + AI**              | The procedural pillar for one topic: a skill this topic's expert and its sub-topics' experts load, and nobody else (Section 2.4). The operator settles what it says and the expert drafts it. It is the one skill path inside the expert's own subtree.                                                                                                                                                                                                                                                                                                               |
+| `references/summary.md`                     | **AI + Human**              | Breadth summary of the theoretical pillar: what the sources established and the approaches they offer, each naming the file and section that holds its details. The expert drafts it. The operator edits and approves.                                                                                                                                                                                                                                                                                                                                                |
+| `references/[source-name]/[source-name].md` | **AI**, then **AI + Human** | Depth map of one source, in the shape Section 1.2 fixes. The ingestion skill writes the first pass inside the turn, because the operator named the source, and the operator approves any later pass that rewrites it.                                                                                                                                                                                                                                                                                                                                                 |
+| `notes/[note-title].md`                     | **Human + AI**              | What the operator knows from their own practice: an observation, an opinion, or something that worked (tagged `type.solution`). They settle what it says in the turn, where the expert drafts it, or in the analysis after `/close` once they tried the thing, where the Learning agent drafts it and the topic's own expert files it (Sections 2.6 and 2.7). The operator approves the exact text.                                                                                                                                                                   |
+| `notes/summary.md`                          | **AI + Human**              | Breadth summary of experience: distilled rules, notable solutions and the approaches worth reaching for again, each naming the file and section that holds its details. The operator edits and approves. **Highest priority among the knowledge files.**                                                                                                                                                                                                                                                                                                              |
+| `tags.md` (PKB root)                        | **Hooks**                   | Global tag registry, derived from file frontmatter. Regenerated whenever files change.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `index.md` (PKB root)                       | **Hooks**                   | Root catalog: every topic with its description, aggregated from `topic.md` frontmatter – the Librarian's routing view. It also catalogs the shipped skills and the root's own.                                                                                                                                                                                                                                                                                                                                                                                        |
+| `sessions/[objective-title].md` (PKB root)  | **AI + Human**              | One file per session, for its whole life (Section 2.7): the objective and the experts, the running record the session writes as it goes, the synthesis of what it worked out, holding as sections of itself the instruction sets the operator kept, one per experiment or tool, and the distillation the analysis appends. Harness code renders it, and the write needs the root tool of the row below, because no expert writes outside its own subtree. The record says what happened and needs no approval, and the operator approves the synthesis word for word. |
+| `skills/[skill-name]/SKILL.md` (PKB root)   | **Human + AI**              | The procedural pillar across topics: a skill every expert loads, and the Librarian and the Learning agent with them (Section 2.4). The folder starts absent and the first skill approved into it creates it. A write here sits outside every expert's subtree, so it needs a root tool.                                                                                                                                                                                                                                                                               |
 
 **Collaboration rule**: the practical and procedural pillars are **human-generated, AI-curated**. The notes themselves,
 the `skills/` folders and `expert.md` overrides carry the operator's own experience and their own ways of working, and
 the expert assists with clarity, grammar and structure. Every other meaning-carrying file, `topic.md`, the breadth
-summaries and a session's synthesis, is **AI-generated, human-curated**, and carries the expert's own reading and
-reasoning. The expert writes the theoretical pillar's depth files on first ingestion, and the operator curates them at
-the summary level. That difference in substance is the whole reason the practical pillar outranks the theoretical one: a
-note holds what the operator established under their own conditions, and a reference holds what somebody else claimed
-(Sections 1.7 and 1.8). The approval modes above cut across that line rather than restating it, since a note and a
-breadth summary both wait on the same reading of the same bytes.
+summaries and a session's synthesis, is **AI-generated, human-curated**. The expert writes the theoretical pillar's
+depth files on first ingestion, and the operator curates them at the summary level.
 
 An agent may draft a note or a skill itself in the analysis, and both stay on the human-generated side of that line,
 because the experience in them is the operator's: they cooked it, they ran it, they came back and said what happened.
@@ -132,16 +123,13 @@ the first alone:
    location has nothing to compare. Its frontmatter is valid from the turn the session opens and gains a `topic.*` tag
    as each further expert answers, so a session file carrying a running record and no synthesis yet is a valid knowledge
    file. These rules govern the frontmatter, and Section 2.7 governs the body.
-2. **Machine-generated files** – a topic's `index.md`, at a topic root or at any nesting depth below it, and the root
-   `tags.md`. Minimal generated frontmatter only. The PKB root holds no `index.md`, and the registry is the one derived
-   file above the topics (Section 1.5).
+2. **Machine-generated files** – `index.md` at any level and the root `tags.md`. Minimal generated frontmatter only.
 3. **Skill files** – everything under a `skills/` folder, at the PKB root or inside a topic, plus `expert.md`. These
    instruct an agent rather than describing a subject, so a skill file carries no PKB frontmatter, enters no knowledge
    index and contributes no tags, and every rule that reads PKB frontmatter passes it by. A `SKILL.md` carries the
    DeepAgent harness's own two fields, `name` and `description`, and nothing else. The PKB fields break the harness's
    parser, and the harness then drops the skill without an error anywhere. Those two fields are also what the skills
-   catalog lists, in a topic's `index.md` for that topic's own skills and in the root registry for the shipped skills
-   and the root's own (Section 1.9), a different artifact from the knowledge index. `AUTHORSHIP.md`, which
+   catalog in an `index.md` lists (Section 1.9), a different artifact from the knowledge index. `AUTHORSHIP.md`, which
    harness code writes beside a `SKILL.md` to record whose hand put the skill there (Section 2.8), is one of these too,
    and the catalog generator and the tree walk read only `SKILL.md` inside a skill folder, so it trips no
    `LEGACY_SKILL_LAYOUT` warning.
@@ -207,31 +195,11 @@ Tags are flexible and relational, so the PKB keeps one `tags.md` registry at its
 lightweight ontology for agent ingest, holding namespace definitions, per-topic subtrees, and cross-topic mappings. The
 `topic` namespace renders as one section per top-level topic root rather than as a single tree, so `topic.cooking` heads
 its own section and its sub-topics nest inside it. Each topic's `index.md` embeds its own subtree for local depth work.
-The PKB root holds no `index.md` beside the registry, and the registry is the file the Librarian reads to route
-(Section 2.2).
 
-A tag tree gives names, and the Librarian has to find the topic whose vocabulary does not match the objective it was
-handed, because an analogy that crosses subjects shares no tags with the problem it solves. So every node with a file
-behind it carries a one-line summary, and each summary is lifted rather than authored:
-
-- A `topic.*` node that a topic folder backs takes the `description` out of that topic's `topic.md`, the sentence the
-  operator already approved (Section 1.3), and gains the marker *(custom expert)* when the topic owns an `expert.md`, so
-  the Librarian never walks the tree to find one.
-- A `topic.*` node with no folder behind it is a tag inside a topic rather than a topic, and it stays bare.
-- `type.*` carries the static definitions the generator supplies.
-- `domain.*` stays bare on purpose. No file sits behind a domain the way `topic.md` sits behind a topic, so a summary
-  would have to be authored and stored somewhere new, and routing turns on topics. The gap is stated rather than filled.
-
-The registry also catalogs the skills the root resolves, the shipped ones and the root's own, from the `name` and
-`description` in each `SKILL.md` (Section 1.4). A topic's own skills stay in that topic's `index.md`.
-
-Maintenance is mechanical. Harness code regenerates the registry, scanning the files, rendering the full hierarchy,
-lifting each summary out of the file that already holds it and aggregating the cross-topic mappings from the
-`related_topics` declarations in file frontmatter, and it spends no LLM tokens. Nothing writes a description for the
-registry, so the registry and the `topic.md` it read cannot disagree, and a summary the operator wants changed is
-changed in the `topic.md` where they approved it. The registry is derived, so it reflects the tags the files use by
-construction, and governance stays in the dialog rather than in the file. Regeneration is byte-idempotent, which is what
-makes it safe to run after every turn.
+Maintenance is mechanical. Harness code regenerates the registry, scanning the files, rendering the full hierarchy and
+aggregating the cross-topic mappings from the `related_topics` declarations in file frontmatter, and it spends no LLM
+tokens. The generator supplies the static definition of the standard namespace, `type.*`. The registry is derived, so it
+reflects the tags the files use by construction, and governance stays in the dialog rather than in the file.
 
 **Example root `tags.md` (excerpt showing the Cooking subtree)**:
 
@@ -245,8 +213,8 @@ source_type: tag-registry
 
 ## Namespace: topic.cooking
 
-- `topic.cooking` – Home cooking end to end: equipment, technique and the dishes worth making again.
-    - `topic.cooking.baking` *(custom expert)* – Bread and pastry, where the dough sets the schedule.
+- `topic.cooking` – root topic
+    - `topic.cooking.baking`
     - `topic.cooking.grilling`
         - `topic.cooking.grilling.charcoal`
         - `topic.cooking.grilling.gas`
@@ -269,21 +237,14 @@ source_type: tag-registry
 - `domain.marketing`
     - `domain.marketing.ads`
 
-## Skills (from each `SKILL.md`)
-
-- `research` – Plan the questions a search asks, run it, and verify every quotation against its page.
-- `voice` – Draft in the operator's own register.
-
 ## Cross-topic mappings (aggregated from `related_topics`)
 
 - `topic.cooking.grilling` ↔ `topic.bbq.equipment`
 - `topic.cooking.heat-management` ↔ `topic.physics.thermodynamics`
 ```
 
-Two `topic.*` nodes there carry a summary and five do not, and the difference is a folder: `topic.cooking` and
-`topic.cooking.baking` are topics with a `topic.md` behind them, and `topic.cooking.grilling` and the rest are tags
-Cooking files under. Every namespace nests the same way, so `domain.*` is a tree as `topic.*` is. The generator sorts
-siblings case-insensitively by the full tag string, which is what makes regeneration idempotent.
+Every namespace nests the same way, so `domain.*` is a tree as `topic.*` is. The generator sorts siblings
+case-insensitively by the full tag string, which is what makes regeneration idempotent.
 
 ## 1.6 Human–AI Collaboration in the PKB
 
@@ -292,10 +253,10 @@ Librarian, or opens the session on one Topic Expert when they know the topic tha
 as long as the work lasts (Section 2.7). The analysis the Learning agent opens in the learning channel after `/close` is
 the one session the operator does not open (Sections 2.6 and 2.8). One collaboration model covers what a session files:
 the operator asks, the agent drafts, and the operator approves the exact text before it lands. Only who supplies the
-substance changes, and Section 1.3's collaboration rule draws that line. Two things land on the ask alone, the mode
-Section 1.3 calls on instruction. A session's running record needs no approval, because it says what happened rather
-than claiming anything is true. Naming a source is the approval on the first extraction of it, because the operator
-chose the source and the extraction is the reading of it (Section 1.3).
+substance changes, and Section 1.3's collaboration rule draws that line. Two things sit outside the model. A session's
+running record needs no approval, because it says what happened rather than claiming anything is true. Naming a source
+is the approval on the first extraction of it, because the operator chose the source and the extraction is the reading
+of it (Section 1.3).
 
 Three ordinary asks show the model.
 
@@ -311,8 +272,8 @@ they have just settled what a thing should say, so the expert drafts the entry, 
 topics it connects to, and the operator adds insight, removes errors and approves it or drops it. `topic.md` and the two
 breadth summaries stay separate on purpose, because each one is then a small file the operator approves in one read. A
 breadth file bounds both readers: the operator approves it in one sitting, and the Librarian loads it from many topics
-at once and reasons over the ideas from a position of breadth (Section 2.2), while the topic's own `index.md` carries
-the depth an agent goes to once the approach is settled.
+at once and reasons over the ideas from a position of breadth (Section 2.2), while `index.md` carries the depth an agent
+goes to once the approach is settled.
 
 Harness hooks keep the structure consistent (Section 1.9), the expert runs idea discovery under `discovery`, and it
 finalizes no human-approved content on its own.
@@ -425,13 +386,13 @@ Two properties of models make this the only safe handling.
    A write raises any conflict into the session that made it, and the operator settles it there (Section 1.7). This rule
    says which claim holds against another, and not what a pack lists first (Part 4).
 
-2. **Breadth vs. depth**: `summary.md` and `topic.md` serve a breadth-first reader. A topic's `index.md` serves a
-   depth-first reader. A Topic Expert assembles a context pack on that split, for a consumer such as the Project Manager
-   (separate project). The split is what bounds a pack: a breadth reader that receives depth files receives more than
-   one context window holds (Part 4).
+2. **Breadth vs. depth**: `summary.md` and `topic.md` serve a breadth-first reader. `index.md` serves a depth-first
+   reader. A Topic Expert assembles a context pack on that split, for a consumer such as the Project Manager (separate
+   project). The split is what bounds a pack: a breadth reader that receives depth files receives more than one context
+   window holds (Part 4).
 
-3. **Machine vs. human**: a machine builds every topic's `index.md` and the root registry. `summary.md` and `topic.md`
-   need the operator, and the expert finalizes neither without their approval.
+3. **Machine vs. human**: a machine builds every `index.md`. `summary.md` and `topic.md` need the operator, and the
+   expert finalizes neither without their approval.
 
 4. **Cross-topic solutions**: a solution note lives in one topic, the most relevant one, and nothing copies it. Tags,
    `related_topics` metadata, and Librarian routing carry the cross-topic discovery.
@@ -512,16 +473,15 @@ Once per agent run, over the files the turn created, changed, renamed, or remove
   the entry is a lift rather than a judgment, and generation stays deterministic. This is what lets a Librarian that
   read the breadth files across many topics go straight to the details of the one approach it settled on, and a pointer
   into a file or a section the tree no longer holds flags as a broken link like any other.
-- Regenerate the root `tags.md` registry from the tags the files use, carrying each topic's `topic.md` description on
-  its node, the marker *(custom expert)* on a topic that owns an `expert.md` so the Librarian never walks the tree to
-  find one, and the cross-topic mappings aggregated from the `related_topics` declarations. It is the Librarian's one
-  routing read (Sections 1.5 and 2.2), and the PKB root holds no `index.md` for it to duplicate. Plain deterministic
-  code, derived, and no LLM tokens spent.
-- Regenerate the skills catalog, inside each topic's `index.md` for that topic's own skills and inside the registry for
-  the shipped skills and the root's own, from the `name` and `description` in each `SKILL.md`, the one file inside a
-  skill folder the catalog and the tree walk read (Section 1.4). Each section lists the skills that level declared and
-  repeats no other level's, so the registry and the sections down to a topic read together give what resolves for that
-  topic (Section 2.4).
+- Regenerate the root `tags.md` registry from the tags the files use, and aggregate the cross-topic mappings from the
+  `related_topics` declarations. Plain deterministic code, derived, and no LLM tokens spent.
+- Regenerate the root `index.md`, a catalog of every topic and its `topic.md` description, the Librarian's one-file
+  routing view, and mark a topic that owns an `expert.md` with *(custom expert)*, so the Librarian never walks the tree
+  to find one (Section 2.2).
+- Regenerate the skills catalog inside each `index.md`, from the `name` and `description` in each `SKILL.md`, the one
+  file inside a skill folder the catalog and the tree walk read (Section 1.4). Each section lists the skills that level
+  declared and repeats no other level's, so the sections from the root down to a topic read together give what resolves
+  for that topic (Section 2.4).
 - Flag broken links and orphaned files.
 
 Scaffolding the standard structure (Section 1.2) for a new topic or sub-topic is mechanical in the same way, and it runs
@@ -614,12 +574,10 @@ two the turn carries.
 
 A Librarian turn is four steps. The first is a judgment call and the other three are harness code that always runs.
 
-1. **Classify.** The Librarian reads the root `tags.md`, the tag registry harness code regenerates (Section 1.5), and
-   decides which topics the objective bears on, or which an inbound item concerns. The registry is its one read, and it
-   is searchable by meaning rather than by name, because every `topic.*` node a topic folder backs carries the one-line
-   summary lifted out of that topic's own `topic.md`. A tag tree on its own gives names, and the topic that answers an
-   objective is often the one whose vocabulary shares no tag with it. The same file marks a topic that owns an
-   `expert.md` with *(custom expert)*, so the Librarian walks the tree for nothing, and its cross-topic mappings,
+1. **Classify.** The Librarian reads the root `index.md`, a hook-generated catalog of every topic and its description
+   aggregated from `topic.md` frontmatter, and decides which topics the objective bears on, or which an inbound item
+   concerns. The catalog marks a topic that owns an `expert.md` with *(custom expert)*, so the Librarian sees it in the
+   one file it already reads and walks the tree for nothing, and the cross-topic mappings in the root `tags.md`,
    aggregated from the `related_topics` declarations, are where it notices the second topic worth involving. It answers
    with a routing call naming the applicable topics and a one-line reason, never prose. This is the one step where a
    model holds discretion.
@@ -658,11 +616,11 @@ round here ends in a turn that waits for the operator's answer.
 
 The Librarian runs the seven steps of a search (Section 2.7) over Topic Experts, which is the loop a Topic Expert
 already runs over its search sub-agents, and five of the seven are the same step at a wider scale. Surveying the topic
-becomes surveying the registry, the classify step above, and the early exit does not come with it, because the registry
-holds one-line summaries rather than knowledge and no survey of it answers anything. Writing the questions is the step
-a turn lacks: one brief per expert, below. Verify comes across smaller, because the Librarian holds no fetched page to
-compare a quotation against, so code checks that every KB-relative path an expert cites exists and holds back a
-citation to a file that does not. Weighing becomes saying what you noticed, rather than a judgment about who is right.
+becomes surveying the catalog, the classify step above, and the early exit does not come with it, because the catalog
+holds descriptions rather than knowledge and no survey of it answers anything. Writing the questions is the step a turn
+lacks: one brief per expert, below. Verify comes across smaller, because the Librarian holds no fetched page to compare
+a quotation against, so code checks that every KB-relative path an expert cites exists and holds back a citation to a
+file that does not. Weighing becomes saying what you noticed, rather than a judgment about who is right.
 
 The Librarian cannot weigh the way an expert does. The expert has the topic's knowledge behind it and the Librarian has
 none, so it cannot tell a genuine contradiction from two claims both true under conditions neither side states. It can
@@ -689,7 +647,7 @@ question while the session is open and the analysis reads it after the close (Se
 loop names the sections that yielded nothing for the same reason.
 
 A later round is narrow by construction, because two topics' answers can be seen to interact only once those answers
-exist. It reaches the experts the operator's answer names, plus a topic in the registry the first round missed, and each
+exist. It reaches the experts the operator's answer names, plus a topic in the catalog the first round missed, and each
 brief carries the earlier claim as a quotation attributed to the expert that made it, asking what this topic holds about
 it rather than whether it is true. No expert answers another and nothing goes back to the expert that made the claim, so
 that fenced quotation is the whole of what crosses between them.
@@ -710,14 +668,14 @@ The **brief** is what the Librarian says when it opens its session on an expert,
   page off the internet is.
 
 The brief is the expert's whole starting context, and what it withholds is as deliberate as what it carries: the
-operator's raw turn, their beliefs, the root registry, and every other expert's full answer. An expert returns its
+operator's raw turn, their beliefs, the root catalog, and every other expert's full answer. An expert returns its
 findings rather than its working, so a round costs the Librarian a bounded amount of context, and an expert whose topic
 holds nothing says so rather than returning silence.
 
 ### The deep phase drafts the instruction sets and the selected experts check them
 
 The operator ends the breadth rounds by settling which approach is worth taking, and the deep phase starts there. The
-rounds before it went wide over the registry and every reply landed in the session file, so the merged answers stay in
+rounds before it went wide over the catalog and every reply landed in the session file, so the merged answers stay in
 the file and leave the context: the deep phase starts again from the objective, the approach the operator settled, and
 the topics that approach named. A model that carries every surveyed topic's summary into the detailed work blends them,
 and the description asks for the purge for that reason.
@@ -742,7 +700,7 @@ else.
 ## 2.3 Topic Experts
 
 A **Topic Expert** runs each topic, and it holds deep knowledge of that one topic and no awareness of any other. The
-root registry, the other experts' answers and the operator's wider objective reach it only through what a brief carries
+root catalog, the other experts' answers and the operator's wider objective reach it only through what a brief carries
 (Section 2.2), so the isolation is a property of the agent rather than a discipline the Librarian keeps on its behalf.
 One default **Topic Expert template** serves the whole PKB. A topic that needs behavior beyond skill overloads overrides
 the template with an `expert.md` in its topic root. The DeepAgent harness resolves this on the pattern the maintenance
@@ -760,8 +718,8 @@ The expert combines two layers of capability:
 
 Responsibilities:
 
-- Answer a question about the topic from the breadth files (`topic.md`, `summary.md`) or the depth files (the topic's
-  own `index.md`, the source maps), as the request requires.
+- Answer a question about the topic from the breadth files (`topic.md`, `summary.md`) or the depth files (`index.md`,
+  the source maps), as the request requires.
 - Ingest what the Librarian routes: classify it as a reference or a note, tagging a solution `type.solution`, draft the
   files, and apply the metadata and tags the standards set. Ingest it through the lens of this topic, because one source
   reaching two experts should produce two different extractions and neither is a duplicate of the other, and decline
@@ -778,9 +736,8 @@ Responsibilities:
 - Run the conflict-detection sub-agent over the tree when the session writes or changes a note or a reference, and
   settle what it reports with the operator in that same session (Section 1.7).
 - Carry out the judgment side of topic maintenance (Section 1.9). Harness hooks enforce the mechanical side.
-- Bring every artifact to the operator as Part 1 requires, the two things that land on instruction aside (Sections 1.3
-  and 1.6): they read the exact text before it lands, and a tag the PKB has never used is proposed before any file uses
-  it (Section 1.5).
+- Bring every artifact to the operator as Part 1 requires, the two exceptions of Section 1.6 aside: they read the exact
+  text before it lands, and a tag the PKB has never used is proposed before any file uses it (Sections 1.5 and 1.6).
 
 An expert writes inside its own topic, and its session file sits outside it, in the root `sessions/` folder (Section
 1.2), so a root tool performs every write into that file: the expert's running record while the session runs, and the
@@ -795,7 +752,8 @@ The expert stays the author of the extraction and stops deciding when it is fini
 anything binary is extracted to text first, with the PKB keeping both. A web page the operator points at is an inbound
 source like a file: harness code fetches it once and stages the capture the way every other inbound source stages, so
 the path rule holds from there on and the source folder keeps what the page said on the day it was read (Section 1.2). A
-later pass over the same source takes the two modes Section 1.3 gives that file.
+later pass over the same source appends inside the turn, and a pass that would reword an argument already filed stops
+for the operator (Section 1.3).
 
 ### Example: a Cooking Topic Expert in action
 
@@ -917,9 +875,9 @@ voice for Cooking or a tasting-session discovery skill, and it redefines no gene
 the output whichever skill version produced it. `conflict-detection` is the exception, because its whole output is a
 report into a session and Tier 1 has no file to validate (Sections 1.9 and 2.8).
 
-The generated skills catalog inside each topic's `index.md` shows the result: a topic that overloads `voice` shows its
-own `voice` in its own section, where it shadows the entry of the same name above it, and a reader learns which one an
-agent loads (Section 1.9).
+The generated skills catalog inside each `index.md` shows the result: a topic that overloads `voice` shows its own
+`voice` in its own section, where it shadows the entry of the same name above it, and a reader learns which one an agent
+loads (Section 1.9).
 
 The name decides whether a file forks anything, and the name that decides is the `name` in the file's own frontmatter.
 The DeepAgent harness reads the three skill locations in order and keeps the last skill declaring a given name, so
@@ -1015,7 +973,7 @@ it refuses the rename once `/end` has sealed this file, because a sealed file is
 ┌──────────────────────────────────────────────────────────────────────┐
 │                            PKB TOPICS                                │
 │         references/ · notes/ · skills/  (the three pillars)          │
-│         + topic.md, each topic's index.md, the root tags.md          │
+│             + topic.md, index.md, root index.md, tags.md             │
 │                  + the root's skills/ and sessions/                  │
 └──────────────────────────────────────────────────────────────────────┘
 ```
@@ -1034,7 +992,7 @@ The expert that ran the closed session does not do this, and the reason is the q
 expert is deep in its subject, and *what did this session establish* is a question about the session: it weighs the
 argument the operator and the expert had, the places the expert was talked out of something among them, and an agent
 grading its own transcript is being asked to be two things at once. The Librarian is no better placed, because its
-competence is the registry and the interaction between two topics' answers.
+competence is the catalog and the interaction between two topics' answers.
 
 Telling what is new about a topic stays that topic's expert's judgment, so the Learning agent reaches whichever experts
 an analysis needs, the way the Librarian does, through the harness rather than through the tree. An analysis of a Topic
@@ -1256,9 +1214,9 @@ per expert that took part, so the file names who answered and the analysis that 
 material. A running record in the body changes none of that, because the schema constrains the frontmatter and leaves
 the body to the session. A rename is a file the turn renamed, and Tier 1 regenerates the indexes and the registry over
 it and flags a link left pointing at the old path (Section 1.9). The write-time check does not run on a session file at
-all, because Section 1.7 puts the check on a note or a reference. The record itself lands on instruction and needs no
-approval, because it says what happened rather than claiming anything is true, and the operator approves the synthesis
-word for word in the analysis session (Section 1.3).
+all, because Section 1.7 puts the check on a note or a reference. The record itself needs no approval, because it says
+what happened rather than claiming anything is true, and the operator approves the synthesis word for word in the
+analysis session.
 
 The sections run in the order the life does: the objective and the experts, the running record, the synthesis, and the
 distillation. The synthesis holds the questions the session asked, every source it kept, every source it rejected and
@@ -1395,10 +1353,10 @@ it again with a narrower question, and the session is still open for them to say
 | A candidate the operator rejects                | The rejection list inside the synthesis; the running record holds it either way, synthesized or not                            |
 | Nothing at all                                  | Nowhere: no note, no synthesis, no folder, and the session file says so                                                        |
 
-The first three rows are approved in the sense Section 1.3 fixes: the operator reads the rendered text before it lands,
-in the session itself when they dictated the thing and in the analysis session when the analysis drafted it (Section
-2.8). An article lands on instruction instead: they name the candidate, harness code ingests only a page it printed for
-them and fetched itself, and it writes the first extraction inside the turn.
+The operator approves the rendered text of the first three, in the session itself when they dictated the thing and in
+the analysis session when the analysis drafted it (Section 2.8). An article goes in on their instruction instead: they
+name the candidate, harness code ingests only a page it printed for them and fetched itself, and it writes the first
+extraction inside the turn.
 
 The bar on the first row is three conditions and each one carries load: the operator did the thing, they came back and
 said what happened, and they approved the exact text that lands. An expert holding the first two alone holds an
@@ -1585,10 +1543,10 @@ knowledge base.
 
 The analysis opens its session in a learning channel rather than in a topic. The operator's first thought was a special
 topic `kb-learning`, and they ruled against it. A topic is an expert, a `topic.md`, three pillar folders, an agent id,
-an entry in the registry the Librarian routes on (Section 2.2), and a write confinement drawn around its own subtree,
-and the place these sessions run is none of those. Making it a topic produces an expert nobody wants to talk to, a
-routing target nobody should route to, and folders that hold nothing. The Learning agent is none of those things
-either: it holds no `topic.md` and no pillar folders, the registry never lists it, and the Librarian never routes to it.
+an entry in the catalog the Librarian routes on (Section 2.2), and a write confinement drawn around its own subtree, and
+the place these sessions run is none of those. Making it a topic produces an expert nobody wants to talk to, a routing
+target nobody should route to, and folders that hold nothing. The Learning agent is none of those things either: it
+holds no `topic.md` and no pillar folders, the catalog never lists it, and the Librarian never routes to it.
 
 The channel exists so that housekeeping never interrupts a topic conversation, and so the operator has one place to go
 for what the system has learned lately. Its sessions run one after another rather than at once, because a channel holds
@@ -1698,10 +1656,10 @@ either a knowledge file living in a folder the rules exempt or a fourth file cla
 inside `skills/` is the superseded layout and loads as no skill. A generated file was the other candidate, and Section
 1.6 refuses it because the operator's approval is what makes a breadth file worth reading.
 
-The skills catalog inside each topic's `index.md` (Section 1.9) is a different artifact and stays one. A catalog is
-generated and says which skills that level declared, and the section is approved and says what the operator learned
-about working, so a generated list would have to be human-approved and a distilled summary would have to be generated
-for the two to merge.
+The skills catalog inside each `index.md` (Section 1.9) is a different artifact and stays one. A catalog is generated
+and says which skills that level declared, and the section is approved and says what the operator learned about working,
+so a generated list would have to be human-approved and a distilled summary would have to be generated for the two to
+merge.
 
 ### Three gaps in the self-learning loop
 
@@ -1732,9 +1690,9 @@ The full PKB is a tree of topic roots, each following the standard structure of 
 
 ```
 KnowledgeBase/
-├── tags.md                 # Global tag registry, the Librarian's one routing read (machine-maintained)
-│                           #   tag tree, a summary per topic node, cross-topic mappings,
-│                           #   plus a catalog of the shipped skills and the root's own (1.5)
+├── index.md                # Root catalog: every topic + description (machine-maintained)
+│                           #   plus a catalog of the shipped skills and the root's own (1.9)
+├── tags.md                 # Global tag registry (machine-maintained)
 ├── .inbox/                 # Staging for sources on their way in – dot-prefixed, indexed nowhere
 ├── (optional) skills/      # PROCEDURAL – process skills every expert loads, plus adopted ones. Starts absent
 │   └── [skill-name]/       #   one folder per skill (session-loop/, ...)
@@ -1752,10 +1710,6 @@ KnowledgeBase/
 That is the whole tree, and the learning queue is not in it. A closed session enters the queue, the worker drains it one
 entry at a time, and the queue lives in harness state rather than in a file, so nothing under a topic root records
 that a session is waiting to be analysed (Section 2.8).
-
-The root holds one derived file, and the registry is it: the tag tree, the summaries and the skills catalog in one
-place. So every `index.md` in the tree belongs to a topic and sits at that topic's root or at any nesting depth below
-it, and nothing generates one at the root (Sections 1.4, 1.5 and 1.9).
 
 ## Bootstrapping an empty PKB
 
@@ -1781,9 +1735,8 @@ steady state:
 3. **The operator creates the first topics on demand.** The first topic is created inside a session, opened on the
    Librarian the way every other write reaches the tree (Sections 1.6 and 2.7), and it follows the creation flow of
    Section 1.9 from there. With zero topics, every inbound item is a topic gap. Nobody designs a taxonomy up front, the
-   tree grows from what the operator captures, and the hooks generate each topic's own `index.md` and the root registry
-   as soon as files exist. Before the first topic lands, the registry holds the static `type.*` definitions and the
-   catalog of the shipped skills, so the Librarian routing on it reads an empty topic tree rather than a missing file.
+   tree grows from what the operator captures, and the hooks generate the indexes and the tag registry as soon as files
+   exist.
 
 ---
 
@@ -1799,9 +1752,7 @@ and one file.
 A project agent reaches the PKB the way every other counterpart does (Part 2): it opens a session on the Librarian, or
 on a Topic Expert when it knows the topic that owns the work, and the PKB has no door that is not a session (rule 8,
 Section 1.8). The PKB cannot tell an agent from a person and does not try, so whoever opens that session is the
-operator, and every approval and write rule in this document reaches a project agent unchanged. Section 1.3's three
-approval modes turn on whether the operator reads the exact text and say nothing about who the operator is, which is
-what lets a project agent approve a write no undo reverses.
+operator, and every approval and write rule in this document reaches a project agent unchanged.
 
 ## Context packs
 
@@ -1812,9 +1763,7 @@ Research agent and implementation agent are the Project Manager's own names for 
 
 - **Research agents (breadth-first)** receive a Research Pack. It holds `topic.md`, the relevant subtrees of the root
   `tags.md`, `notes/summary.md` and `references/summary.md` for each relevant topic, and a session's synthesis last of
-  all. A subtree travels with the one-line summary on every node a topic folder backs and the *(custom expert)* markers
-  beside them (Section 1.5), so a research agent selects among topics off the same surface the Librarian routes on. It
-  reads no topic's `index.md` unless it asks for one.
+  all. A research agent reads no `index.md` unless it asks for one.
 - **Implementation agents (depth-first)** receive an Implementation Pack, once the task is defined. It holds
   `notes/summary.md`, the selected topic's `index.md` in full less its skills catalog, the
   `references/[source-name]/[source-name].md` files, and the relevant solution notes. `notes/summary.md` loads first,
@@ -1828,10 +1777,9 @@ A pack orders its files on its reader's needs, and rule 1 in Section 1.8 says wh
 than what a pack lists first (Section 1.7). An Implementation Pack places the reference maps ahead of the solution
 notes, because a solution note cites the theoretical material it rests on and the referenced material belongs in context
 ahead of the note citing it. No pack carries the procedural pillar, and the reason is the audience rather than the
-standing: a skill instructs the agents that work this PKB, and a consumer of a context pack works elsewhere. Both skills
-catalogs fall under that reason (Section 1.9): the pack builder drops the catalog section out of the topic `index.md` an
-Implementation Pack carries, and the registry's catalog of the shipped skills reaches no Research Pack, which takes the
-topic subtrees it needs rather than the whole registry.
+standing: a skill instructs the agents that work this PKB, and a consumer of a context pack works elsewhere. The skills
+catalog inside an `index.md` (Section 1.9) falls under the same reason, so the pack builder drops that section from the
+index it carries.
 
 A session's synthesis ranks last of what a Research Pack carries (Section 2.8), because it records how the topic came to
 know a thing rather than what the topic knows, and the running record and the distillation around it travel in no pack
