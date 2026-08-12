@@ -15,10 +15,10 @@ The PKB is a folder tree. *The tree* names those folders throughout this documen
 
 ```
 [Topic Root]/
-├── topic.md            # Human-approved overview, map and skills section (Section 2.8). Helpful for exploration.
+├── topic.md            # Operator-approved overview, map and skills section (Section 2.8). Helpful for exploration.
 ├── index.md            # Machine-generated canonical index (tag subtree, own skills). Helpful for exploitation.
 ├── references/         # THEORETICAL PILLAR – what others established (books, papers, articles)
-│   ├── summary.md      # Human-approved overview of all references. Helpful for exploration.
+│   ├── summary.md      # Operator-approved overview of all references. Helpful for exploration.
 │   └── [source-name]/  # One folder per ingested document
 │       ├── [source-name].md  # Map of the source: a section per part, a bullet per argument. Helpful for exploitation.
 │       └── [source-files]
@@ -27,7 +27,7 @@ The PKB is a folder tree. *The tree* names those folders throughout this documen
 │   ├── [note-title]/   # Optional folder for notes with media
 │   │   ├── [note-title].md  # The note text
 │   │   └── media/      # Images, screenshots, videos, etc.
-│   └── summary.md      # Human-approved distilled rules and solutions from all notes. Helpful for exploration.
+│   └── summary.md      # Operator-approved distilled rules and solutions from all notes. Helpful for exploration.
 ├── (optional) skills/  # PROCEDURAL PILLAR – how this topic is worked (Section 2.4)
 │   └── [skill-name]/
 │       ├── SKILL.md
@@ -315,7 +315,7 @@ at once and reasons over the ideas from a position of breadth (Section 2.2), whi
 the depth an agent goes to once the approach is settled.
 
 Harness hooks keep the structure consistent (Section 1.9), the expert runs idea discovery under `discovery`, and it
-finalizes no human-approved content on its own.
+finalizes no operator-approved content on its own.
 
 ## 1.7 Conflict Handling
 
@@ -325,9 +325,9 @@ The practical and procedural pillars outrank the theoretical one (Section 1.8, r
 It fixes precedence when an agent acts, and an agent follows the practical and the procedural where their guidance
 differs from a reference's. It also settles a contradiction between two claims, and that is the job of this section. It
 says nothing about the order a context pack lists its files in, which Part 4 settles on its reader's needs. Human
-content is the operator's own notes, the human-approved breadth summaries, and the skill files, and the skills belong to
-the first job alone: a skill says how to do something and asserts nothing about the subject, so no note and no reference
-can contradict one.
+content is the operator's own notes, the operator-approved breadth summaries, and the skill files, and the skills belong
+to the first job alone: a skill says how to do something and asserts nothing about the subject, so no note and no
+reference can contradict one.
 
 A conflict is therefore knowledge against knowledge. An operator's note that conflicts with a reference is correct,
 because the note is their own view of what the reference asserts, established under their own conditions, and the
@@ -420,10 +420,10 @@ Two properties of models make this the only safe handling.
 
 ## 1.8 Critical Rules
 
-1. **Human content wins**: the practical and procedural pillars outrank the theoretical one. An operator's note and a
-   human-approved breadth summary take precedence over a reference, and the expert changes no human content on its own.
-   A write raises any conflict into the session that made it, and the operator settles it there (Section 1.7). This rule
-   says which claim holds against another, and not what a pack lists first (Part 4).
+1. **Human content wins**: the practical and procedural pillars outrank the theoretical one. An operator's note and an
+   operator-approved breadth summary take precedence over a reference, and the expert changes no human content on its
+   own. A write raises any conflict into the session that made it, and the operator settles it there (Section 1.7).
+   This rule says which claim holds against another, and not what a pack lists first (Part 4).
 
 2. **Breadth vs. depth**: `summary.md` and `topic.md` serve a breadth-first reader. A topic's `index.md` serves a
    depth-first reader. A Topic Expert assembles a context pack on that split, for a consumer such as the Project Manager
@@ -1685,7 +1685,7 @@ follows without being asked.
 
 ### The procedural pillar's breadth file is a skills section inside `topic.md`
 
-Each subject pillar carries a human-approved `summary.md` (Section 1.6), and the procedural pillar carries a skills
+Each subject pillar carries an operator-approved `summary.md` (Section 1.6), and the procedural pillar carries a skills
 section inside `topic.md` instead. It is the procedural twin of `notes/summary.md`: what the operator has learned about
 working this topic, distilled the way the two subject summaries are, and the file that bounds a breadth read over the
 third pillar.
@@ -1700,7 +1700,7 @@ inside `skills/` is the superseded layout and loads as no skill. A generated fil
 
 The skills catalog inside each topic's `index.md` (Section 1.9) is a different artifact and stays one. A catalog is
 generated and says which skills that level declared, and the section is approved and says what the operator learned
-about working, so a generated list would have to be human-approved and a distilled summary would have to be generated
+about working, so a generated list would have to be operator-approved and a distilled summary would have to be generated
 for the two to merge.
 
 ### Three gaps in the self-learning loop
