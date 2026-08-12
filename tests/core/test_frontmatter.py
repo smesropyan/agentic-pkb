@@ -1,8 +1,8 @@
 """Frontmatter rules FM-1 … FM-15 of the Layer 1 rules document.
 
 Every test name ends in the rule id it covers, so ``grep -rn fm11 tests/`` finds the evidence for
-a rule. ``README_BLOCKS`` below is copied verbatim out of ``README.md`` and one test asserts it is
-still a byte-for-byte substring of it, so a README edit fails here rather than drifting away from
+a rule. ``DESIGN_BLOCKS`` below is copied verbatim out of ``DESIGN.md`` and one test asserts it is
+still a byte-for-byte substring of it, so a design edit fails here rather than drifting away from
 the implementation.
 """
 
@@ -22,11 +22,11 @@ from pkb.core.models import Metadata
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # --------------------------------------------------------------------------------------
-# Golden frontmatter blocks. `README_BLOCKS` below is the set asserted verbatim against
-# README.md; the rest exercise fields Layer 1 still defines.
+# Golden frontmatter blocks. `DESIGN_BLOCKS` below is the set asserted verbatim against
+# DESIGN.md; the rest exercise fields Layer 1 still defines.
 # --------------------------------------------------------------------------------------
 
-README_1_4 = """\
+DESIGN_1_4 = """\
 ---
 title: "Grill Performance in Windy Conditions"
 description: "How wind affects grill temperature and how to compensate for it"
@@ -78,18 +78,18 @@ last_reviewed: 2024-12-17
 ---
 """
 
-README_BLOCKS = {
-    "readme_1_4": README_1_4,
+DESIGN_BLOCKS = {
+    "design_1_4": DESIGN_1_4,
 }
 
 # FM-9 lets the serializer drop inline comments, so §1.4 is the one block whose canonical form
 # differs from its source — by exactly that comment.
-README_1_4_CANONICAL = README_1_4.replace(
+DESIGN_1_4_CANONICAL = DESIGN_1_4.replace(
     "source_type: note  # note, reference, solution, summary", "source_type: note"
 )
 
 ROUND_TRIP_BLOCKS = {
-    "readme_1_4": (README_1_4, README_1_4_CANONICAL),
+    "design_1_4": (DESIGN_1_4, DESIGN_1_4_CANONICAL),
 }
 
 MINIMAL_NOTE = """\
@@ -362,10 +362,10 @@ def test_unknown_keys_serialize_after_the_known_ones_fm7() -> None:
     assert text == '---\ntitle: "X"\nsource_type: note\nservings: 4\n---\n'
 
 
-def test_golden_blocks_are_verbatim_from_the_readme_fm8() -> None:
-    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-    for name, block in README_BLOCKS.items():
-        assert block in readme, f"{name} has drifted from README.md"
+def test_golden_blocks_are_verbatim_from_the_design_doc_fm8() -> None:
+    design = (REPO_ROOT / "DESIGN.md").read_text(encoding="utf-8")
+    for name, block in DESIGN_BLOCKS.items():
+        assert block in design, f"{name} has drifted from DESIGN.md"
 
 
 @pytest.mark.parametrize(
@@ -373,8 +373,8 @@ def test_golden_blocks_are_verbatim_from_the_readme_fm8() -> None:
     list(ROUND_TRIP_BLOCKS.values()),
     ids=[f"{name}_fm8" for name in ROUND_TRIP_BLOCKS],
 )
-def test_readme_blocks_round_trip_byte_identically_fm8(source: str, expected: str) -> None:
-    # §1.4 is the one block whose canonical form differs from the README's — by the inline comment
+def test_design_blocks_round_trip_byte_identically_fm8(source: str, expected: str) -> None:
+    # §1.4 is the one block whose canonical form differs from DESIGN.md's — by the inline comment
     # FM-9 explicitly excuses the serializer from reproducing. Every other byte matches.
     assert _round_trip(source) == expected
 
@@ -401,14 +401,14 @@ def test_serialize_keeps_the_body_untouched_fm8() -> None:
 
 
 def test_inline_comments_are_tolerated_and_never_leak_into_values_fm9() -> None:
-    meta = _meta(README_1_4)
+    meta = _meta(DESIGN_1_4)
     assert meta.source_type == "note"
     assert "#" not in (meta.source_type or "")
     assert meta.title == "Grill Performance in Windy Conditions"
 
 
 def test_surgical_edit_keeps_an_inline_comment_fm9() -> None:
-    edited = fm.set_field(README_1_4, "updated", date(2030, 6, 6))
+    edited = fm.set_field(DESIGN_1_4, "updated", date(2030, 6, 6))
     assert "source_type: note  # note, reference, solution, summary\n" in edited
 
 
@@ -452,7 +452,7 @@ def test_a_known_key_is_never_reported_as_unknown_fm10() -> None:
 # --------------------------------------------------------------------------------------
 
 
-def test_readme_resolution_edit_reproduces_the_after_block_fm11() -> None:
+def test_design_resolution_edit_reproduces_the_after_block_fm11() -> None:
     body = "The note text, untouched.\n\n- a bullet\n"
     before = CONFLICT_TAGGED_NOTE + body
 
@@ -475,7 +475,7 @@ def test_readme_resolution_edit_reproduces_the_after_block_fm11() -> None:
 
 
 def test_set_field_touches_exactly_one_line_fm11() -> None:
-    source = README_1_4 + "body\n"
+    source = DESIGN_1_4 + "body\n"
     edited = fm.set_field(source, "updated", date(2030, 6, 6))
     changed = [
         (before, after)
@@ -638,7 +638,7 @@ def test_an_empty_block_still_gains_a_field_fm11() -> None:
 
 
 def test_removing_an_absent_key_changes_nothing_fm11() -> None:
-    assert fm.remove_field(README_1_4, "last_reviewed") == README_1_4
+    assert fm.remove_field(DESIGN_1_4, "last_reviewed") == DESIGN_1_4
 
 
 # --------------------------------------------------------------------------------------
