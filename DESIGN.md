@@ -1057,7 +1057,9 @@ accidental one is not. Nothing caps the number an agent holds, for the reason no
 A project agent opens a session the way a person does, and for the same reasons: it needs knowledge the context packs of
 Part 4 do not carry, it wants a question searched, or it implements something the topic holds the conditions for. The
 PKB cannot tell an agent from a person and does not try, so whoever opens a session is the operator: every approval,
-every bar and every write rule in this document reaches them unchanged.
+every bar and every write rule in this document reaches them unchanged. That includes approving a write the tree has no
+undo for, and it is deliberate. A rule that let only a person approve one would need the PKB to tell them apart, and it
+cannot, so the rule would rest on a claim the caller makes about itself.
 
 ### A session opens on the Librarian or on a Topic Expert
 
