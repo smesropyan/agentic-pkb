@@ -127,9 +127,10 @@ the first alone:
 
 1. **Knowledge files** – notes, references, the breadth summaries, `topic.md` and session files. Full PKB frontmatter,
    as below. A session file is one of these too, and no topic owns it: it sits in the root `sessions/` folder, its
-   `topic` field reads `(session)`, it carries a `topic.*` tag for each expert that took part and names those topics in
-   `related_topics` so the registry picks up any crossing, and the check comparing a declared topic against a file's
-   location has nothing to compare. Its frontmatter is valid from the turn the session opens and gains a `topic.*` tag
+   `topic` field reads `(session)`, it carries a `topic.*` tag for each expert that took part and declares no
+   `related_topics`, and the check comparing a declared topic against a file's location has nothing to compare. Sitting
+   two experts down together shows no crossing, and a crossing that proves real reaches the registry through the note
+   the analysis files (Section 2.8). Its frontmatter is valid from the turn the session opens and gains a `topic.*` tag
    as each further expert answers, so a session file carrying a running record and no synthesis yet is a valid knowledge
    file. These rules govern the frontmatter, and Section 2.7 governs the body.
 2. **Machine-generated files** – a topic's `index.md`, at a topic root or at any nesting depth below it, and the root
@@ -371,11 +372,10 @@ analysis session (Section 2.7).
 A session that writes or changes a note or a reference runs a conflict-detection sub-agent over the tree, and all four
 axes of Section 2.8 run on that write. The first axis, `notes/summary.md` against `references/summary.md`, needs no
 trigger of its own: one trigger is simpler than two, and an axis with a trigger of its own is the axis that never runs.
-Harness code picks the candidate pairs by claim-to-claim overlap, and the sub-agent labels each one under the
-`conflict-detection` skill, holding read tools and no write tool of any kind. Every pair the code picked reaches the
-session that wrote the file whatever the label says. A check the operator asks for over a topic is the only other route,
-and nothing looks on its own: no tag records a conflict, no queue holds one, and no timer re-reads a pair a write
-already compared.
+Harness code picks the candidate pairs and the sub-agent labels each one under the `conflict-detection` skill, holding
+read tools and no write tool of any kind. Every pair the code picked reaches the session that wrote the file whatever
+the label says. A check the operator asks for over a topic is the only other route, and nothing looks on its own: no tag
+records a conflict, no queue holds one, and no timer re-reads a pair a write already compared.
 
 The report names both files and quotes both sides. It separates the pairs that genuinely oppose each other from the
 pairs that are both true under conditions neither file states, because the two ask the operator different questions, and
@@ -571,9 +571,9 @@ require temperature and doneness tables in a recipe summary. An overload extends
 general standard, because Tier 1 validates the output whichever skill version produced it. `conflict-detection` is the
 exception, and it is the one worth watching: its whole output is a report into a session, so Tier 1 has no file to
 validate and an overload can weaken the check Section 1.7 rests on. `answering-a-brief` is the second of that kind, for
-the same reason: its output is a reply into a Librarian round rather than a file, so an overload that drops the
-provenance tags or the closed status leaves harness code filing an answer it can no longer read (Section 2.2). The same
-mechanism extends to the procedural-pillar skills of Section 2.4, `brainstorming`, `planning`, `briefing`, `web-search`,
+the same reason: its output is a reply into a Librarian round rather than a file, so an overload that stops naming the
+file or the page behind a claim leaves the verification with nothing to check (Section 2.2). The same mechanism extends
+to the procedural-pillar skills of Section 2.4, `brainstorming`, `planning`, `briefing`, `web-search`,
 `answering-a-brief` and `voice`.
 
 ### The Learning agent's judgment skills
@@ -623,8 +623,8 @@ topic's search tools, and it writes nothing into the tree.
 A Librarian session runs in two phases and the operator owns the boundary between them. The breadth phase reasons over
 the objective: the Librarian works it against the tag registry, the research sub-agents its rounds fan out work it
 against the internet, the experts the registry names answer out of their own topics, and the operator and the
-Librarian settle which approach is worth taking. The deep phase builds the instructions: code closes the sessions to
-the experts the approach left out, the Librarian interrogates the ones it kept, and the instruction sets come out of
+Librarian settle which approach is worth taking. The deep phase builds the instructions: the Librarian closes the
+sessions to the experts the approach left out, interrogates the ones it kept, and the instruction sets come out of
 that. Both phases are one pair of skills, `brainstorming` for the wide half and `planning` for the deep half, and a
 Topic Expert loads the same pair (Section 2.4). Scope is what differs between the two callers, and a scope is three
 bindings harness code supplies rather than a difference in the workflow: the map the survey step reads is the root
@@ -701,9 +701,8 @@ overrides it in a word. There are three. An `answer` turn is one the map the sco
 here and the topic's own breadth files at expert scope, and it ends there with the answer and the files behind it,
 because reaching outside for something already filed spends a budget and invites a page that contradicts a note the
 operator approved. A `breadth` turn runs one round, merges it and replies. An `objective` turn runs rounds until the
-operator settles an approach, and the deep phase follows. Code holds the level and the ratchet turns one way: a round
-that surfaces a gap or a contradiction raises it, and nothing lowers it, because lowering the level is how a model
-skips a phase it found expensive and reports the objective met.
+operator settles an approach, and the deep phase follows. A round that surfaces a gap or a contradiction goes deeper on
+the next one.
 
 ### A session runs that turn, and the operator is the round boundary
 
@@ -715,8 +714,8 @@ round here ends in a turn that waits for the operator's answer.
 The round is the `brainstorming` workflow's own loop, and a Topic Expert runs that same loop over its own subtree and
 its own web sub-agents (Sections 2.3 and 2.4). The map binding is what makes surveying here the classify step above,
 and the early exit out of a survey belongs to the `answer` depth instead, because the registry holds one-line
-summaries rather than knowledge. The two slots the scope fills are the weighing and the budgets (Section 2.4):
-weighing becomes saying what you noticed, and the budgets bind the sub-agents alone, as above. Everything else runs
+summaries rather than knowledge. Weighing is the one slot the scope fills (Section 2.4), and here it becomes saying
+what you noticed, while the budgets read the same at either scope and bind the sub-agents alone. Everything else runs
 the same at both scopes, verification included: code locates every quotation in bytes the harness holds, the page a
 sub-agent fetched and the file in the tree alike, checks that every KB-relative path an expert cites exists, and holds
 back a citation it cannot land, under its own heading with the reason it failed.
@@ -740,33 +739,22 @@ constraints and the Librarian holds none of the topics' knowledge, so the two of
 taking and which topics hold it. Reading two answers for an approach that transfers between them is a different act
 from judging which of the two is right, and the second stays out of reach for the reason above.
 
-Variety across rounds comes out of code. Harness code keeps the one-line label of each approach already on the table and
-injects the accumulated list into the next round's briefs, fenced as data, as the ground already covered. A brief that
-asks a model for something new is the instruction it reports following without following, so the list does the work a
-sentence of encouragement cannot. It carries the Librarian's own labels and never an expert's text, which keeps the
-isolation a brief buys, and it is the one channel that crosses between experts at all. The price is worth naming: a
-round told what has been said already leans toward saying something new over saying something right, so the labels sit
-in the reply beside the answers and the operator reads both.
+The same approaches come back as the rounds go on. Ideation measured over four thousand seeds fell to roughly 5%
+non-duplicate output, so the plateau is real, and the operator reads it off the candidate approaches each reply carries.
+Calling it is theirs rather than code's: an automatic ranker of ideas, checked against the humans ranking the same
+ideas, agreed with them no better than chance.
 
-Code reports a saturation measure with every round and acts on none of it. The measure is a dedup over the approach
-labels accumulated so far and the topics visited, and it says whether this round added anything the earlier ones did not
-already hold and whether the registry still holds an unvisited topic that bears on the objective. Ideation measured over
-four thousand seeds fell to roughly 5% non-duplicate output, so the plateau is real and cheap to detect. Acting on it
-stays out of code, because the operator owns the round boundary and an automatic ranker of ideas, checked against the
-humans ranking the same ideas, agreed with them no better than chance.
-
-A round ends in a typed menu, and each destination in it exists elsewhere in this design already: keep exploring, settle
-on approach N, propose a new topic (Section 1.9), ingest this source (Section 2.3), file nothing. Selecting one is the
-operator's act and nothing writes without it. The last three stay open in any phase, so a topic gap the operator spots
-in the middle of the deep phase goes through the door it would have gone through in the first round. The menu
-appears when the reply offers something to choose between, and a round still producing new approaches carries a
-sentence instead, because a five-item keyboard under every message is a worse conversation on a phone.
+A round ends by naming what the operator can do next, and each of those destinations exists elsewhere in this design
+already: keep exploring, settle on approach N, propose a new topic (Section 1.9), ingest this source (Section 2.3), file
+nothing. Selecting one is the operator's act and nothing writes without it. The last three stay open in any phase, so a
+topic gap the operator spots in the middle of the deep phase goes through the door it would have gone through in the
+first round.
 
 No round debates. The experts stay isolated until the merge, no critic persona reads another expert's answer, and
 nothing asks a model to argue a position it does not hold. Across 3,600 logged multi-agent consultations the agents
 repeated their opening position in 98.42% of cases rather than re-reading the evidence, so a debate round buys the
-appearance of scrutiny and moves few answers. Isolation until the merge is the control that works, this design has it,
-and the label list above is its one deliberate exception.
+appearance of scrutiny and moves few answers. Isolation until the merge is the control that works, and this design has
+it with nothing crossing between two experts but the one quotation a later brief carries.
 
 A part of the objective no expert answered goes in the reply under its own heading, beside the experts' answers, named
 as a gap, and the whole reply lands in the session's running record so the operator can chase the gap with a narrower
@@ -794,46 +782,39 @@ The **brief** is what the Librarian says when it opens its session on an expert,
 - Its boundary against the other briefs in this round, naming the other topic and never that topic's answer, so two
   experts are not asked one question and neither is asked nothing.
 - In a later round, the attributed quotation of the claim the operator's answer picked up, fenced as data the way a page
-  off the internet is, and the accumulated approach labels fenced beside it.
+  off the internet is.
 
-Every answer comes back in one shape, whichever round asked for it. Each claim carries a provenance tag:
-`[FILED: <kb-path>]` where a file in the topic holds it, `[CITED: <url>]` where a page does, and `[ASSUMED]` where the
-expert reasoned it out. The answer closes with one status out of a fixed vocabulary, so code files the reply without a
-model reading it (Section 2.4). A topic's line in the registry confers `[FILED:]` on nothing, because the registry holds
-summaries and that tag names the file the claim sits in.
+Every answer comes back in one shape, whichever round asked for it. A claim a file in the topic holds names that file
+and a claim off a page names the page, because code checks both: the path against the tree, the quotation against the
+bytes the harness holds (Section 2.4).
 
 The brief is the expert's whole starting context, and what it withholds is as deliberate as what it carries: the
 operator's raw turn, their beliefs, the root registry, and every other expert's full answer. An expert returns its
 findings rather than its working, so a round costs the Librarian a bounded amount of context, and an expert whose topic
 holds nothing says so rather than returning silence.
 
-### The operator settles the approach, and code switches the mode
+### The operator settles the approach, and the deep phase opens on it
 
-The operator ends the breadth rounds by settling which approach is worth taking, and their confirmation is the only
-thing that switches the mode. Code owns the transition, because a switch left as a line in a prompt is one a model skips
-and then reports having made, and this design paid that price once already at the fan-out.
+The operator ends the breadth rounds by settling which approach is worth taking, and their confirmation is what carries
+the session from `brainstorming` to `planning`. That is one session using its second skill, so nothing else marks the
+boundary and no machinery sits on it.
 
-The switch happens in one move. Code appends the operator's confirming words verbatim to the session file as a settled
-entry beside the objective, recomputes the callee set from the topics the approach names, closes the sessions to the
-experts outside that set, and starts the deep phase from the file rather than from the thread. A closed session
-leaves the model request altogether rather than sitting inside it marked inactive, because a model choosing among four
-callees selects better than the same model choosing among eleven.
+`planning` opens on the objective, the settled approach and the topics that approach named, and the rounds behind them
+stay in the session file where the operator can ask for them. The restatement is the skill's own instruction and it
+happens once. A model that carries every surveyed topic's summary into the detailed work blends them, and a run that
+repeated the accumulated state at every turn scored below one that restated it once at the end, where that single
+restatement recovered about half of what splitting an instruction across turns had cost.
 
-The restatement happens once, at the boundary. The deep phase opens on the objective, the settled approach and the
-topics that approach named, while the rounds behind it stay in the session file where the operator can ask for them. A
-model that carries every surveyed topic's summary into the detailed work blends them, and the description asks for the
-purge for that reason. A run that repeated the accumulated state at every turn scored below one that restated it once at
-the end, and that single restatement recovered about half of what splitting an instruction across turns had cost.
-Persisting the entry before the switch rather than holding it in context is what carries the switch across a daemon
-restart, which matters because the operator is often answering from a phone.
+The Librarian then closes the sessions to the experts the approach left out. A model cannot take a session out of its
+own request, so this is an action rather than a line a prompt asks for, and it is the same close said anywhere else
+(Section 2.7). A closed session leaves the request altogether rather than sitting inside it marked inactive, because a
+model choosing among four callees selects better than the same model choosing among eleven. Each of those sessions
+enters the learning queue (Section 2.8), so one Librarian objective hands the Learning agent several analyses at once,
+where that loop was sized for the sessions an operator opens and closes by hand.
 
-The Librarian may not draft an instruction set before that entry exists. A model that committed to an answer inside the
-first fifth of a conversation scored 30.9 where one that waited scored 64.4, and the two phases are that measurement
-turned into a gate the model cannot open on its own.
-
-Every session code closes at the switch enters the learning queue (Section 2.8), so one Librarian objective hands the
-Learning agent several analyses at once, where that loop was sized for the sessions an operator opens and closes by
-hand.
+An instruction set drafted before the operator settles has no approach to serve, which is the whole reason `planning`
+opens on one. A model that committed to an answer inside the first fifth of a conversation scored 30.9 where one that
+waited scored 64.4.
 
 ### The deep phase drafts the instruction sets and the selected experts check them
 
@@ -847,16 +828,16 @@ Three rules shape a set beyond its two parts. The result clause has to be checka
 at all, and the honest clause names the operator as the check and says so rather than manufacturing an assertion nothing
 runs. Each set states in full what it consumes and what it produces, because each expert saw only its own subtree and
 the reader works under conditions the PKB does not hold, so "as in set 2" points at something the reader cannot resolve;
-a boundary states no method, which leaves the no-steps rule where it stands. And every claim carries the provenance tag
-the brief asked the experts for, so the operator reads which line of the plan a file in the tree supports and which one
-the Librarian inferred.
+a boundary states no method, which leaves the no-steps rule where it stands. And a claim a file in the tree supports
+names that file, the way the experts' answers do, so the check below has a path to test and the operator reads which
+line of the plan rests on the tree.
 
-The checks on a draft are external, and none of them runs inside the turn that wrote it. Code scans for placeholders and
-refuses a draft that answers an open question the operator was meant to answer. Code locates every quotation in bytes
-the harness holds, checks that every KB-relative path a `[FILED:]` tag names exists, and checks every `topic.*` the
-draft names against the registry. A model grading its own draft measured worse than the same model checking nothing,
-where an external verifier that was itself sound measured a gain, and the split above is that result written into the
-machine.
+The checks on a draft are external, and none of them runs inside the turn that wrote it. Code scans for placeholders,
+locates every quotation in bytes the harness holds, checks that every KB-relative path the draft cites exists, and
+checks every `topic.*` it names against the registry. A draft that answers an open question the operator was meant to
+answer is a line `planning` carries and the operator catches at the replan gate below, because no check in code tells
+that answer from any other. A model grading its own draft measured worse than the same model checking nothing, where an
+external verifier that was itself sound measured a gain, and the split above is that result written into the machine.
 
 Each selected expert then checks the sets that touch its topic, on a brief of the ordinary shape: here is the
 instruction set, here is the claim of yours it rests on, and here is the approach it serves. The questions are bounded
@@ -869,9 +850,9 @@ answers come back attributed under each expert's heading the way a wide round's 
 
 A finding against a claim revises the draft, and code reruns the checks above over the revision. A finding against the
 approach revises nothing, because the approach is the operator's: the machine stops at one replan gate they see, with
-the expert's words quoted, and they either amend the approach, which appends another settled entry and recomputes the
-callee set, or accept the set as drafted. A disagreement between two experts the Librarian cannot resolve reaches them
-by the same route.
+the expert's words quoted, and they either amend the approach, which settles a new one and closes whatever it leaves
+out, or accept the set as drafted. A disagreement between two experts the Librarian cannot resolve reaches them by the
+same route.
 
 The session hands the sets out as messages while it runs, and the ones the operator keeps land in the session file, in
 the synthesis they approve word for word, with a root tool performing that write (Sections 2.4 and 2.7). Nothing about
@@ -906,10 +887,10 @@ Responsibilities:
   reaching two experts should produce two different extractions and neither is a duplicate of the other, and decline
   material that holds nothing this topic cares about.
 - Answer the brief the Librarian opens its session with, which is the whole of what the expert is handed there (Section
-  2.2). `answering-a-brief` shapes that reply (Section 2.4): the breadth files answer first, every claim carries where
-  it came from, and the answer closes with one status out of a fixed vocabulary so code files it without a model reading
-  it. An expert whose topic holds nothing on that question says so, because a silence reads as an expert that never ran,
-  and it answers no other expert's brief at all.
+  2.2). `answering-a-brief` shapes that reply (Section 2.4): the breadth files answer first, and every claim names the
+  file or the page it came from, which is what the checks in code have to work on. An expert whose topic holds nothing
+  on that question says so, because a silence reads as an expert that never ran, and it answers no other expert's brief
+  at all.
 - Work a session with the operator for as long as the work lasts (Section 2.7): brainstorm and plan over the topic
   (below), reach outside it through `web-search` when the topic cannot answer, weigh what comes back against the topic's
   notes, object while the operator can still act on it, and take their results back as the experiments come in.
@@ -949,23 +930,22 @@ and nothing else, because an expert reaches no other expert and no brief routes 
 are the topic's own subtree, plus the session file through the root tool.
 
 The rest is the same text at either scope, so a change to how a round works reaches both callers in one edit: the depth
-classification and its one-way ratchet, one question per callee, the brief's four parts and what it withholds, retrieved
-text fenced as data, the accumulated approach labels, the saturation measure code reports and never acts on, the typed
-menu, the operator settling an approach before anything is drafted, the provenance tag on every claim, the placeholder
+a reply states, one question per callee, the brief's four parts and what it withholds, retrieved text fenced as data,
+the operator settling an approach before anything is drafted, the file or page named behind every claim, the placeholder
 scan, and the instruction set's schema (Section 2.2).
 
-Two slots inside the workflow take their filling from the scope, and code chooses the filling rather than the model.
-Weighing is one: the expert compares a verified claim against the topic's own notes and references, claim by claim, and
-says which disagreements genuinely oppose each other and which are both true under conditions neither side states. The
-Librarian holds no topic knowledge and so cannot do that, and it says the two answers bear on each other instead
-(Section 2.2). Budgets are the other: a step cap and a wall clock bind a search sub-agent, which nobody is watching, and
-bind no round, which ends in a turn waiting for the operator.
+One slot inside the workflow takes its filling from the scope, and code chooses the filling rather than the model.
+Weighing is that slot: the expert compares a verified claim against the topic's own notes and references, claim by
+claim, and says which disagreements genuinely oppose each other and which are both true under conditions neither side
+states. The Librarian holds no topic knowledge and so cannot do that, and it says the two answers bear on each other
+instead (Section 2.2). The budgets read the same at either scope, a step cap and a wall clock on a search sub-agent and
+nothing on a round (Section 2.4).
 
-A topic session reaches its deep phase on the same settling. The operator says which approach is worth taking, code
-appends their words to the session file, and `planning` drafts the instruction sets out of the work the session did
-(Section 2.7). No expert interrogates the draft here, because the one topic it rests on is this one, so the external
-checks and the operator are the whole of the check: code scans for placeholders, locates every quotation in bytes it
-holds, and tests every KB-relative path the draft cites.
+A topic session reaches its deep phase on the same settling. The operator says which approach is worth taking, and
+`planning` opens on it and drafts the instruction sets out of the work the session did (Section 2.7). No expert
+interrogates the draft here, because the one topic it rests on is this one, so the external checks and the operator are
+the whole of the check: code scans for placeholders, locates every quotation in bytes it holds, and tests every
+KB-relative path the draft cites.
 
 ### The notes weigh the results, and they never travel with the questions
 
@@ -1058,28 +1038,25 @@ content, and the pair is the cross-topic research skill the design owed the Libr
 
 - **`brainstorming`** runs the divergent half of an objective. It surveys the map its scope binds, decomposes the
   objective into one question per callee, reads the merged answers across the sections for an approach that transfers,
-  and ends the round with the operator. It returns three to five candidate approaches, each with its trade-off and the
-  files behind it, and two files that disagree on the question go to the operator rather than to the reading that suits
-  the answer. It holds the depth classification and its ratchet, the accumulated approach labels, the saturation measure
-  and the typed menu (Section 2.2). It files nothing, and anything worth keeping goes back through the front door as
-  ordinary ingestion.
+  and ends the round with the operator. It returns candidate approaches, each with its trade-off and the files behind
+  it, and two files that disagree on the question go to the operator rather than to the reading that suits the answer.
+  It files nothing, and anything worth keeping goes back through the front door as ordinary ingestion.
 - **`planning`** runs the convergent half once the operator has settled an approach, and it opens on the objective, that
   approach and the topics the approach named. It holds the instruction set's two parts, the rule that a result clause be
-  checkable, the boundary each set states in full about what it consumes and what it produces, the provenance tag on
-  every claim, and the one replan gate a finding against the approach stops at (Sections 2.2 and 2.7). Every check on a
-  draft runs outside the turn that wrote it.
+  checkable, the boundary each set states in full about what it consumes and what it produces, the file named behind a
+  claim the tree supports, and the one replan gate a finding against the approach stops at (Sections 2.2 and 2.7). Every
+  check on a draft runs outside the turn that wrote it.
 - **`briefing`** writes what one callee is handed, and both workflows call it: the objective verbatim, the one question
   and the shape its answer must take, the boundary against the other briefs in the round, and the fenced quotation a
   later round carries (Section 2.2). Vague briefs are the documented cause of two sub-agents searching the same thing
   while a third searches something nobody asked for. It carries the line the permission layer already enforces, that
-  sub-agents read and the expert writes, and the closed vocabulary a callee's answer ends in.
+  sub-agents read and the expert writes.
 - **`web-search`** reaches the internet, and both workflows call it at either scope (*Search comes from the model
   provider*, below). It plans nothing and files nothing: it takes one question, spends a context window on it, and
   brings back the pages it read, with the quotations code then locates in the bytes the harness holds.
 - **`answering-a-brief`** is the callee's side of `briefing`, and every Topic Expert loads it. It answers out of the
-  breadth files and goes deeper only where the question needs it, tags every claim with where it came from, closes with
-  one status out of the fixed vocabulary, says the topic holds nothing rather than filling the space, and answers no
-  other expert.
+  breadth files and goes deeper only where the question needs it, names the file or the page behind every claim, says
+  the topic holds nothing rather than filling the space, and answers no other expert.
 - **`voice`** carries the voice profile every draft is written in, narrowed per topic when one subject wants a different
   register from another. The operator corrects it from their own edits: one edit is a preference in the moment and the
   same change across three drafts is a rule the profile is missing, proposed with those drafts behind it and approved
@@ -1103,16 +1080,13 @@ operator writes or approves every one of them, whoever typed the draft. A `SKILL
 ### One pair of skills, two scopes
 
 `brainstorming` and `planning` ship once and run wherever the objective sits, and three bindings harness code supplies
-are the whole of the difference between the Librarian running them and a Topic Expert running them. The map the survey
-step reads is the root registry at Librarian scope, and the topic's breadth files and its `index.md` approach entries at
-expert scope. The callees a fan-out reaches are Topic Experts alongside web-search sub-agents at the root, and
-web-search sub-agents alone inside a topic, because an expert reaches no other expert. The writes allowed are the
-session file through the root tool at both scopes, plus the topic's own subtree for the expert. Sections 2.2 and 2.3
-state each filling beside the agent that gets it.
+are the whole of the difference between the Librarian running them and a Topic Expert running them: the map the survey
+step reads, the callees a fan-out reaches, and the writes allowed. Section 2.2 fills the three at Librarian scope and
+Section 2.3 fills them at expert scope, each beside the agent that gets it, so one binding list cannot become three that
+disagree. Weighing takes its filling from the scope as well, and Section 2.3 says what it becomes.
 
-Two slots inside the workflow take their filling from the scope as well, the weighing and the budgets, and Section 2.3
-says what each becomes. The rest is the same text, so no model reads which scope it is running at and decides how to
-behave, and the pair cannot drift into two pairs that disagree about the same round.
+The rest is the same text, so no model reads which scope it is running at and decides how to behave, and the pair cannot
+drift into two pairs that disagree about the same round.
 
 ### Search comes from the model provider
 
@@ -1150,8 +1124,7 @@ either budget stops that search and the expert says it stopped short of the obje
 while the session is still open, by asking for it again with a narrower question. Three sub-agents at once is the
 default width, it bounds how many run together rather than how many questions a round writes, and the deployment sets
 it rather than anything in the tree, because configuration an agent can write is configuration an agent can grant
-itself. The caller names the width it ran at the first time a search reports back, so the operator reads the setting
-rather than inferring it from how long the round took.
+itself.
 
 One provider serves the models and the search, so one outage takes both. The local fallback model runs in the hour the
 cloud is unreachable and search is unreachable in that same hour, so the searching stops: a search that cannot reach the
@@ -1418,11 +1391,11 @@ turn. `/close` does three things:
    analysis. That analysis is never synchronous with the command: the Learning agent reads the file from the beginning
    when the worker reaches the entry, and Section 2.8 bounds what it may conclude.
 
-The operator says `/close` on their own sessions, and one close runs without them: the mode switch inside a Librarian
-objective closes the sessions to the experts the settled approach left out, and each of those takes all three effects
-above (Section 2.2). The operator sees the closes in the reply that announces the switch, and the analyses reach them in
-the learning channel afterwards like any other (Section 2.8). Their own Librarian session stays open, because the deep
-phase runs in it.
+The operator says `/close` on their own sessions, and one close runs without them: once they settle an approach the
+Librarian closes the sessions to the experts that approach left out, and each of those takes all three effects above
+(Section 2.2). The operator sees the closes in the reply that follows, and the analyses reach them in the learning
+channel afterwards like any other (Section 2.8). Their own Librarian session stays open, because the deep phase runs in
+it.
 
 `/end`, when the session is finished, analysis included. The operator says it in the analysis session the learning
 channel holds, and it seals the closed session's own file once the analysis has appended what it distilled. Sealing is
@@ -1476,11 +1449,10 @@ the conflicts the work raised against the topic's notes, and on a Librarian sess
 append-only and the frontmatter carries no state field (Sections 1.4 and 1.5). The rename entry names the path the file
 had before, because nothing else remembers what a reader was looking for six months ago.
 
-The approach the operator settles is an entry of its own, in their own words, appended beside the objective before the
-deep phase starts. Code writes it and then opens the deep phase from the file rather than from the thread, so the switch
-survives a daemon restart and a reader six months later finds the approach the instruction sets rest on in the same file
-as the rounds that produced it (Section 2.2). A session on one Topic Expert settles the same way and appends the same
-entry (Section 2.3), and an objective the operator amends appends another rather than editing the first.
+The approach the operator settles lands in the record like every other turn, in their own words, so a reader six months
+later finds the approach the instruction sets rest on in the same file as the rounds that produced it (Section 2.2). A
+session on one Topic Expert settles the same way (Section 2.3), and an approach the operator amends is another entry
+rather than an edit to the first, because the body is append-only.
 
 The whole arc sits in one file because a note that came out of a session is a claim and the file is the evidence for
 that claim. The distillation section joins the two by recording how the lesson was reached as well as what it says, so a
@@ -1503,13 +1475,13 @@ all, because Section 1.7 puts the check on a note or a reference. The record its
 approval, because it says what happened rather than claiming anything is true, and the operator approves the synthesis
 word for word in the analysis session (Section 1.3).
 
-The sections run in the order the life does: the objective and the experts, the settled approach where the session
-reached one, the running record, the synthesis, and the distillation. The synthesis holds the questions the session
-asked, every source it kept, every source it rejected and why, the claims verification held back, the conflicts it
-raised against the topic's notes, the instruction sets the operator kept, and what the session worked out. A session
-that searched nothing keeps the objective and the synthesis and fills the source sections with nothing, because a
-discussion that reasoned from what the operator already holds and reached a conclusion reached one. A session that
-produced nothing still has a file: it leaves no synthesis rather than no file, and the distillation says so.
+The sections run in the order the life does: the objective and the experts, the running record, the synthesis, and the
+distillation. The synthesis holds the questions the session asked, every source it kept, every source it rejected and
+why, the claims verification held back, the conflicts it raised against the topic's notes, the instruction sets the
+operator kept, and what the session worked out. A session that searched nothing keeps the objective and the synthesis
+and fills the source sections with nothing, because a discussion that reasoned from what the operator already holds and
+reached a conclusion reached one. A session that produced nothing still has a file: it leaves no synthesis rather than
+no file, and the distillation says so.
 
 A Librarian session keeps one file like every other session, and one rather than several because splitting the crossing
 into per-topic accounts loses the thing worth keeping. Harness code writes it on the route a root process skill takes:
@@ -1517,18 +1489,16 @@ the operator approves the exact bytes of the synthesis and a root tool performs 
 nothing (Sections 2.4 and 2.8).
 
 One shape is refused, and it is narrow. A session that searched, admitted nothing past the verification of Section 2.4,
-and then wrote a confident synthesis anyway summarized a page it never read, so that filing is refused with the empty
-findings list quoted back. A session that never searched is a different thing and files as usual. A session that read
-one page, cooked from it, and learned one thing writes a note and no synthesis, because the synthesis holds what the
-session worked out and the note holds what the operator did.
+and then wrote a confident synthesis anyway summarized a page it never read, so that filing is refused and the refusal
+quotes back the claims verification held back. A session that never searched is a different thing and files as usual. A
+session that read one page, cooked from it, and learned one thing writes a note and no synthesis, because the synthesis
+holds what the session worked out and the note holds what the operator did.
 
 A rejection reaches the tree through this file alone. A candidate the operator turns down leaves no folder under
 `references/`, no stub, and no copy, per rule 4 in Section 1.8. The reason is theirs, recorded in the words they typed,
 and it lands in the running record on the turn they said it, so the next session on that objective reads what this one
-declined whether or not the synthesis ever named it. A later session that finds the same page is meant to show it
-labeled with the date and the reason, at the bottom, rather than hide it, because the page they turned down for one
-question may be the page they want for the next and a result dropped in silence looks like a result never found. Nothing
-carries the label there yet: a session file reaches no expert, which Section 2.8 marks as a gap.
+declined whether or not the synthesis ever named it. That record is the whole of it: a session file reaches no expert,
+which Section 2.8 marks as a gap, so a later search that returns the same page returns it unmarked.
 
 Candidates live with the session rather than in the tree. A page the search returned and the operator has not accepted
 stays with the session: the text goes when the search that found it ends, and its line in the running record stays.
@@ -1672,11 +1642,11 @@ the kind it proposes most naturally, because the Librarian's own competence has 
 `planning` ship, so such a proposal usually adopts one of them into the root folder with the lesson written in rather
 than writing a new skill, and adoption forks that skill for both callers from then on (Sections 2.2 and 2.4).
 
-The switch into the deep phase closes the sessions to the experts the settled approach left out (Section 2.2), and each
-of those enters the queue the way a session the operator closed by hand does. Most of them establish nothing and end in
-the silent path of step 7: the expert answered one brief out of files it already held, and an answer drawn from
-`notes/summary.md` teaches that topic nothing it did not hold that morning, so harness code writes the distillation
-saying so and seals the file without opening a session. One that did more reaches the operator like any other analysis,
+The Librarian closes the sessions to the experts the settled approach left out (Section 2.2), and each of those enters
+the queue the way a session the operator closed by hand does. Most of them establish nothing and end in the silent path
+of step 7: the expert answered one brief out of files it already held, and an answer drawn from `notes/summary.md`
+teaches that topic nothing it did not hold that morning, so harness code writes the distillation saying so and seals the
+file without opening a session. One that did more reaches the operator like any other analysis,
 in the learning channel, with each text approved on its own. The load lands on the queue rather than on them: one
 objective closes several sessions at once, the worker drains them one entry at a time, and the channel holds one
 analysis at a time (below).
@@ -1976,9 +1946,9 @@ Research agent and implementation agent are the Project Manager's own names for 
 
 - **Research agents (breadth-first)** receive a Research Pack. It holds `topic.md` less its skills section, the
   relevant subtrees of the root `tags.md`, `notes/summary.md` and `references/summary.md` for each relevant topic, and
-  a session's synthesis last of all. A subtree travels with the one-line summary on every node a topic folder backs and
-  the *(custom expert)* markers beside them (Section 1.5), so a research agent selects among topics off the same surface
-  the Librarian routes on. It reads no topic's `index.md` unless it asks for one.
+  a session's synthesis last of all. A subtree travels with the one-line summary on every node a topic folder backs
+  (Section 1.5), so a research agent selects among topics off the same surface the Librarian routes on. It reads no
+  topic's `index.md` unless it asks for one.
 - **Implementation agents (depth-first)** receive an Implementation Pack, once the task is defined. It holds
   `notes/summary.md`, the selected topic's `index.md` in full less its skills catalog, the
   `references/[source-name]/[source-name].md` files, and the relevant solution notes. `notes/summary.md` loads first,
@@ -2028,6 +1998,6 @@ other channel, rule 8 in Section 1.8 included.
 
 The five exclusions in Section 2.8 bind a project retrospective as hard as they bind any other session's analysis, and a
 retrospective is where they break most easily. A project that tried four approaches and shipped none of them still
-reports the fourth as the one to recommend, and a rule distilled from that reads the same as a rule somebody earned. A
-project agent names what the project shipped and says so when the work never worked, because the session file is the
-whole of the evidence the analysis has.
+reports the fourth as the one to recommend, and a rule distilled from that reads the same as a rule somebody earned.
+Whether the record says the four never shipped is the project agent's to report and nothing here can check it, so the
+exclusions reach only as far as the session file does.
