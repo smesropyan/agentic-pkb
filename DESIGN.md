@@ -101,7 +101,7 @@ anything is true, and the synthesis the session ends with waits on the operator 
 | `notes/[note-title].md`                     | **Approved**                          | What the operator knows from their own practice: an observation, an opinion, or something that worked (tagged `type.solution`). They settle what it says in the turn, where the expert drafts it, or in the analysis after `/close` once they tried the thing, where the Learning agent drafts it and the topic's own expert files it (Sections 2.6 and 2.7). The operator approves the exact text.                                                                                                                                                                   |
 | `notes/summary.md`                          | **Approved**                          | Breadth summary of experience: distilled rules, notable solutions and the approaches worth reaching for again, each naming the file and section that holds its details. The operator edits and approves. It is human content, so it outranks the theoretical pillar and nothing orders it against the notes it distils (Section 1.8, rule 1).                                                                                                                                                                                                                         |
 | `tags.md` (PKB root)                        | **Derived**                           | Global tag registry and the Librarian's one routing read (Section 1.5): the tag tree, a one-line summary on every node a topic folder backs, the *(custom expert)* markers, the cross-topic mappings and the catalog of the shipped skills and the root's own. Every field is lifted from a file that already carries it, and harness code regenerates it once per agent run (Section 1.9).                                                                                                                                                                           |
-| `sessions/[objective-title].md` (PKB root)  | **On instruction**, then **Approved** | One file per session, for its whole life (Section 2.7): the objective and the experts, the approach the operator settled in their own words, the running record the session writes as it goes, the synthesis of what it worked out, holding as sections of itself the instruction sets the operator kept, one per experiment or tool, and the distillation the analysis appends. Harness code renders it, and the write needs the root tool of the row below, because no expert writes outside its own subtree. The record says what happened and needs no approval, and the operator approves the synthesis word for word. |
+| `sessions/[objective-title].md` (PKB root)  | **On instruction**, then **Approved** | One file per session, for its whole life (Section 2.7): the objective and the experts, the running record the session writes as it goes, the approach the operator settled landing in it in their own words, the synthesis of what it worked out, holding as sections of itself the instruction sets the operator kept, one per experiment or tool, and the distillation the analysis appends. Harness code renders it, and the write needs the root tool of the row below, because no expert writes outside its own subtree. The record says what happened and needs no approval, and the operator approves the synthesis word for word. |
 | `skills/[skill-name]/SKILL.md` (PKB root)   | **Approved**                          | The procedural pillar across topics: a skill every expert loads, and the Librarian and the Learning agent with them (Section 2.4). The folder starts absent and the first skill approved into it creates it. A write here sits outside every expert's subtree, so it needs a root tool.                                                                                                                                                                                                                                                                               |
 
 **Collaboration rule**: the practical and procedural pillars are **human-generated, AI-curated**. The notes themselves,
@@ -424,7 +424,7 @@ Two properties of models make this the only safe handling.
   letting it would hand that bias write access to a tree with no undo.
 - A model given two passages that contradict each other misses the contradiction, scoring under 11% on pairs human
   annotators had already marked. The check is a reporter and never an editor for that reason: the operator reads both
-  quotes and decides, a pair code's overlap never picked is expected rather than a defect, and a pair it picked reaches
+  quotes and decides, a pair the code never picked is expected rather than a defect, and a pair it picked reaches
   the operator whatever the sub-agent labels it.
 
 ### What the PKB does not do
@@ -1875,8 +1875,8 @@ KnowledgeBase/
 │       ├── SKILL.md
 │       └── AUTHORSHIP.md   #   Harness-written: whose hand put the skill there (2.8)
 ├── (optional) sessions/         # One file per session on the Librarian or one expert, whole life. Starts absent
-│   └── [objective-title].md     #   Objective and experts, settled approach, record, synthesis with the instruction
-│                                #   sets the operator kept, distillation
+│   └── [objective-title].md     #   Objective and experts, record, synthesis with the instruction sets the
+│                                #   operator kept, distillation
 │                                #   topic: "(session)", a tag per expert (2.7)
 │                                #   the operator names it, and /name renames the file (2.5)
 ├── [Topic Root]/           # Section 1.2's structure, once per topic and again per sub-topic
