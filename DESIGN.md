@@ -1719,10 +1719,9 @@ The split between the two is the design's expectation rather than a measurement:
 establishes anything, and a filing rate above about one in five is evidence that the bar is broken rather than generous.
 So only a candidate that cleared it asks the operator to decide anything. Put every closed session in front of them as a
 candidate instead and the review list is mostly nothing, so the operator stops reading it and the one that mattered goes
-unread with the rest. The literature on lessons-learned databases reports that failure and agrees about the cause. The
-bar governs what the analysis raises by itself and governs nothing the operator asks for: a session they want something
-filed out of is filed on their word, and the bar keeps the analysis from filling their queue rather than keeping them
-out of their own knowledge base.
+unread with the rest, which is how a lessons-learned archive dies. The bar governs what the analysis raises by itself
+and governs nothing the operator asks for: a session they want something filed out of is filed on their word, and the
+bar keeps the analysis from filling their queue rather than keeping them out of their own knowledge base.
 
 The analysis session attaches in the learning channel rather than in a topic. The operator's first thought was a special
 topic `kb-learning`, and they ruled against it. A topic is an expert, a `topic.md`, three pillar folders, an agent id,
