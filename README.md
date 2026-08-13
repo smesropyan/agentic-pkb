@@ -54,12 +54,13 @@ Achieving a goal or solving a problem generally splits into two stages: finding 
 implementing the solution. The search for a solution is the most creative part. That is where insightful approaches
 appear, the kind that are obvious in retrospect and cheap to carry out, but hard to think of directly. The creativity of
 such a solution often lies in combining similar approaches from different areas, a breadth-first search over other
-domains for similar problems and how they were solved there. In his book *Range*, David Epstein shows how creativity
-thrives on breadth of experience and defined constraints rather than on early specialization or endless freedom.
+domains (brainstorming) for similar problems and how they were solved there. In his book *Range*, David Epstein shows
+how creativity thrives on breadth of experience and defined constraints rather than on early specialization or endless
+freedom.
 
-To facilitate this approach the PKB indexes what it stores in two ways, breadth and depth. `summary.md` holds the
-distilled ideas and insights of a topic, along with the approaches that could be valuable, and `index.md` records
-exactly where the details of a particular approach can be found.
+To facilitate this approach the PKB indexes what it stores in two ways, breadth (for brainstorming) and depth (for
+planning). `summary.md` holds the distilled ideas and insights of a topic, along with the approaches that could be
+valuable, and `index.md` records exactly where the details of a particular approach can be found.
 
 That organization lets an agent load `summary.md` from many topics into its context and reason over the ideas from a
 position of breadth, assisted by the operator. Once the approach is settled, the agent purges the wide context and loads
