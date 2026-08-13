@@ -54,6 +54,7 @@ testpaths = ["tests"]
 addopts = "-q --strict-markers -m 'not live'"
 markers = [
     "live: reaches a real provider over the network; needs credentials (deselected by default)",
+    "superseded: asserts the superseded design; removed when the owning phase rebuilds the module",
 ]
 
 [tool.ruff]
