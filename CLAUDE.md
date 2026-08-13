@@ -1,107 +1,27 @@
 # agentic-pkb
 
-The **Personal Knowledge Base** — a structured markdown tree that only agents write to, with the
-mechanical structure enforced in code and the meaning curated in dialog with the human.
+The Personal Knowledge Base (PKB) is an AI-assisted expert system that fuses theoretical, practical and procedural
+knowledge for the topics the operator works in. `README.md` is the specification: the goal, the three pillars,
+sessions and the self-learning loop. `DESIGN.md` is the technical design that serves it, in ten sections: the tree,
+sessions, the agents, the skills, the workflows, conflict handling, the self-learning loop, and how work is handed
+out.
 
-## Where the design lives
+## The ruling (2026-08-13)
 
-| Document | What it fixes |
-|----------|---------------|
-| `README.md` | *What* the PKB is: tree structure, frontmatter, tags, conflict handling, agent roles. The human's design spec. |
-| `docs/superpowers/specs/2026-08-06-pkb-architecture-design.md` | *How the system is built*: three layers, their seams, invariants I1–I3, build order. Approved. |
-| `docs/superpowers/specs/2026-08-06-pkb-core-layer1-rules.md` | Every Layer 1 rule with a stable id (`FM-1`, `PA-3`, `VA-12`, `GE-4`, `MA-3`, `SC-9`). The contract `pkb.core` is tested against. |
-| `docs/superpowers/specs/2026-08-06-pkb-agents-layer2-rules.md` | Every Layer 2 rule (`RT-*`, `RG-*`, `MW-*`, `LB-*`, `PR-*`, `SK-*`): runtime, registry, permissions, gates, middleware, the routing workflow, the shipped prompts and skills. The contract `pkb.agents` is tested against. |
-| `docs/superpowers/specs/2026-08-07-pkb-service-server-layer3-rules.md` | Every Layer 3 rule (`SV-*`, `RO-*`, `SS-*`, `AP-*`, `ST-*`, `MC-*`, `PK-*`): the service protocol, HTTP routes, SSE, approvals, packs, the MCP mount and the Telegram wiring. Built. |
-| `docs/superpowers/specs/2026-08-08-pkb-tui-clients-layer4-rules.md` | Every Layer 4 rule (`CL-*`, `DC-*`, `TU-*`): the shared approval helper, the SSE decoder, the transport and the Textual client. Built. |
-| `docs/superpowers/specs/2026-08-08-pkb-telegram-layer5-rules.md` | Every Layer 5 rule (`TG-*`): the supervised bot task, the owner allow-list, the durable update ledger and approval prompts, the Bot API port, and every length, ordering and keyboard rule an approval on a phone depends on. Built. **§9 is a channel per expert**: Telegram topics inside the one private chat, `TG-72`…`TG-95`, arranged around the deleted-topic hazard. Built; see §9.13. |
-| `docs/superpowers/specs/2026-08-07-large-source-ingestion.md` | Every `LS-*` rule: sources that do not fit a turn — one file per source with the arguments as sections, `.inbox` staging, re-ingestion and reconciliation. Crosses all three layers. **Built** as `pkb.sources` + `pkb.agents.ingestion` — see its "As built" section; the status header at the top is stale. |
-| `docs/reference/deepagents-0.7.5-api-recon.md` | Verified signatures of the harness Layer 2 will use. |
-| `docs/how-to/getting-started.md` | Not design, and **the one to read first**: a fresh clone to a knowledge base with something in it. Install, the daemon, the model, a worked first conversation with real transcripts, daily use, the other doors, symptom-first troubleshooting, and what is not built. Every command in it was executed. |
-| `docs/how-to/telegram.md` | Not design — the phone deep-dive, and it assumes `getting-started.md`: @BotFather to approving a write from your phone, a topic per expert (§8), what every `/health` telegram field means, and the symptoms of each way it goes wrong. |
+The operator ruled: re-implement, not reconcile. `src/` and `tests/` implement the design that `README.md` and
+`DESIGN.md` superseded on this date. They are reference material and a parts bin, salvaged module by module only as
+a phase rebuilds it, never trusted as a base to patch. The archived specs under
+`docs/superpowers/specs/superseded/` carry the measurements and the defect history that priced the new design; no
+rule id in them binds the new build. Behaviour questions are answered from `DESIGN.md`, never from the old code.
 
-## Build order (architecture §11)
+## The roadmap
 
-1. `pkb.core` — schema, validator, generators, scaffolder. **Built.** See §7 "As built" in the
-   Layer 1 rules for what diverged, and `src/pkb/core/__init__.py` for the surface Layer 2 imports.
-2. `pkb.agents` — runtime, registry, expert factory, Librarian, middleware, default skills, and the
-   Librarian's routing workflow (`routing.py`: classify, fan out, attributed merge). **Built and
-   merged.** See §2 of the Layer 2 rules for where the harness diverges from the architecture doc,
-   and `docs/reference/deepagents-0.7.5-harness-grounding.md` for the executed evidence.
-3. `pkb.service` + `pkb.server` + `pkb.packs` — the protocol, the `threads`/`pkb_proposals` tables,
-   the run supervisor, HTTP routes, SSE, the MCP mount and the daemon. **Built.** See §8 "As built"
-   in the Layer 3 rules for what the grounding pass corrected and the thirteen defects the suite
-   found.
-4. `pkb.clients` + `pkb.tui` — the shared approval helper, the SSE decoder, the HTTP transport and
-   the Textual client. **Built.** Run it with `python -m pkb.tui` against a running daemon. See §8
-   "As built" in the Layer 4 rules.
-5. `pkb.server.telegram` + `pkb.server.telegram_api` + `pkb.service.telegram` — the supervised bot
-   task, the Bot API port and the durable bindings, ledger and approval prompts. **Built.** See §8
-   "As built" in the Layer 5 rules for the shipped `BotApi` surface, the two clauses of TG-48/TG-49
-   that are deliberately not built, and what the conformance pass had to change.
-6. **A channel per expert** (Layer 5 §9): Telegram topics inside the one private chat, so the phone
-   reaches each expert without going through the Librarian. The TUI, HTTP and MCP could already do
-   that. **Built.** The addressing unit is the **channel** `(chat_id, topic_id)`, with
-   `topic_id == 0` for General, and a topic exists only where a human typed `/channels`. **The truth
-   about a topic is the `message_thread_id` on the send *response*.** A send into a deleted
-   private-chat topic returns `ok: true` and lands in General, no update announces a deletion, and a
-   build that does not compare keeps posting one expert's approve buttons under another's name. See
-   §9.13 "As built" for the divergences, §9.10-§9.12 for the defects three passes found, and Q32 for
-   the one thing still open.
-
-**Enable the bot** with both halves of its security in the environment — `PKB_TELEGRAM_TOKEN` and
-`PKB_TELEGRAM_OWNERS` — and the mapping, which names no credential, in a JSON file beside the
-SQLite database (`<db>.telegram.json`, or `--telegram-config`). **The file maps each chat's General
-area and nothing else**: every other channel is a topic the human made with `/channels`, and the id
-Telegram minted for it lives in `pkb_telegram_channels`. No client shows a topic id and nothing
-enumerates one afterwards, so it is an address rather than a decision (TG-17 amended):
-
-```sh
-cp .env.example .env && chmod 600 .env   # gitignored; `--env-file` points elsewhere
-```
-```json
-{"chats": {"<chat_id>": "librarian"}}
-```
-
-`PKB_TELEGRAM_OWNERS` is a comma- or space-separated list of Telegram *user* ids and it is **the
-system's only authentication boundary**: a bot's username is discoverable and the token is a public
-inbound path into a tree with no undo, so unset refuses everyone. It lives beside the token rather
-than in the mapping because it is the token's other half — whoever is on it can approve an
-irreversible write — which leaves one file to protect and one to gitignore. A mapping file that
-still carries `owners` is a **startup error** naming the variable, because an allow-list in a file
-nothing reads looks exactly like one that is in force. A real environment variable always wins over
-a line in `.env`, so a systemd unit or a container secret is never overridden by a stale file.
-
-Both are read in `pkb.daemon` and nowhere else — neither telegram module may import `os`, and a
-built seam scan enforces it. No token leaves the bot off and the daemon serving. Setup from nothing
-to approving a write from your phone: `docs/how-to/telegram.md`, and `.env.example` is the template.
-
-**Topics need BotFather's "Threaded Mode"**: a per-bot toggle, **off by default**, read once from
-`getMe.has_topics_enabled` at startup and published as `/health`'s `telegram.topics_enabled`. With
-it off nothing changes: no send carries a `message_thread_id`, the bot creates no topic, and
-`/channels` answers with the BotFather instruction (TG-75). The toggle is the human's to flip and
-they may never flip it, so that unchanged path is permanent rather than a migration step.
-
-**The daemon owns runs.** A run is a plain `asyncio.Task` publishing into a per-run hub; an HTTP
-response subscribes to it. A dropped connection **detaches** — it never cancels — because D2's whole
-promise is that a turn outlives the terminal that started it, and an ingestion turn killed because a
-phone crossed a tunnel is that promise broken. Cancellation is a deliberate act with its own route.
-Run the daemon with `python -m pkb.daemon <kb-root>` and the client with `python -m pkb.tui`; the
-daemon binds localhost and has no auth (arch §10).
-
-**`pkb.clients` is transport-free and UI-free** — no httpx, no textual — and a contract enforces it,
-because step 5's Telegram adapter runs *inside* the daemon and calls `PkbService` directly. The
-approval helper is the one place an interrupt becomes a `Decision`, so both human channels answer
-identically; only the rendering differs.
-
-Large-source ingestion has its own spec and **is built** (2026-08-07). It changes **nothing**
-in `pkb.core`: one physical file per source with the arguments as sections inside it is the shape
-Layer 1 already implements. What it adds is `pkb.sources` (a leaf module: extraction and staging, no
-harness import) and `pkb.agents.ingestion` — a resumable, chunked loop that walks a source through a
-windowed reader rather than a whole-file `read_file`. **The loop is code, not a tool the model may
-decline to call**: the harness asks one bounded question per section and the sections that yielded
-nothing are named in the file, because the failure this shape exists to prevent is a confident
-write-up of the part that fit in one context window with nothing recording that the rest was never
-opened. Reached from any Topic Expert in plain language — `docs/how-to/getting-started.md` §6.
+`docs/superpowers/plans/2026-08-13-reimplementation-roadmap.md` is the build plan. Phase 0 grounds the repo, Phase 1
+builds the tree, Phase 2 builds sessions, Phase 3 builds the agents and their skills, Phase 4 builds the workflows
+and the self-learning loop, and Phase 5 hands work out and rewires the transports. Each phase gets its own plan,
+written at phase start with the superpowers writing-plans skill against the design and the then-current tree, and
+executed subagent-driven. `docs/how-to/` still documents the superseded build; it is rewritten from a clean clone
+after Phase 5.
 
 ## Models
 
@@ -141,31 +61,17 @@ The deployment is an Ollama **Pro** plan: three concurrent cloud models, usage w
 limits resetting on 5-hour and weekly windows. Overflow queues, then rejects with 429; a 502 means a
 cloud model was unreachable.
 
-## Conventions
+## Conventions that survive
 
-- **Rule ids are the contract.** A docstring or test that implements a rule cites its id. Changing
-  behaviour means changing the rule in the spec first.
-- **Findings, not exceptions**, for content defects. Exceptions are for unusable inputs only.
-- **KB-relative POSIX strings** for every path in a `Finding`, a model field, or rendered output.
-- **Layer 1 is plain Python**: no LLM, no network, no subprocess, no database, no git. Its whole test
-  suite runs on `tmp_path`.
-- **Only Layer 1 writes derived files** (`index.md` anywhere, root `tags.md`) — invariant I3.
-- **Derived output carries no timestamps or counts.** Byte-idempotence is what keeps a flush from
-  churning the tree on every turn.
-- Layer 1 flags; it never repairs. Nothing moves or deletes human content — there is no undo (D6).
-- **The shipped skills are mounted, not seeded.** They live in package data
-  (`src/pkb/agents/skills/`) and are mounted read-only ahead of the knowledge base's own `skills/`,
-  which stays empty until the human adopts one. Adoption is a permanent fork: the copy shadows the
-  shipped default and later improvements stop reaching it. `skills/**` is a third file class —
-  exempt from PKB frontmatter and from every index and tag artifact.
-- **Inbound sources stage in `<kb>/.inbox/`.** Dot-prefixed, so Layer 1's walk already skips it —
-  verified: nothing from it is recorded, validated, indexed or tagged. A *path* comes in rather than
-  a paste; anything binary is extracted to text and **both are kept**, the extraction being what the
-  ingestion loop reads and the original being what a topic gets a copy of. The tool stages the file
-  and the agent only reads it — an expert's writes are confined to its own topic subtree (RT-15).
-- **A topic gets a copy of a source only by ingesting it gainfully** — at least one insight. Zero
-  insights leaves no folder, no stub and no copy: no trace at all, rather than an empty folder
-  implying the source was considered and is somehow relevant.
+- Rule ids are the contract. A docstring or test that implements a rule cites its id. New ids are minted per design
+  section, per the roadmap: `T-*` for §1 The Tree, `S-*` §2 Sessions, `A-*` §3 The Agents, `K-*` §4 The Skills,
+  `W-*` §5 The Workflows, `C-*` §6 Conflict Handling, `L-*` §7 The Self-Learning Loop, `H-*` §8 Handing Work Out.
+- Findings, not exceptions, for content defects. Exceptions are for unusable inputs only.
+- KB-relative POSIX strings for every path in a finding, a model field, or rendered output.
+- Derived files are byte-idempotent and carry no timestamps or counts. Only the mechanical layer writes them.
+- There is no undo. Nothing moves or deletes operator content.
+- `.env` stays gitignored at mode 600. A real environment variable always wins over a line in it.
+- The repo is public. No credentials in any committed file, ever.
 
 ## Commands
 
