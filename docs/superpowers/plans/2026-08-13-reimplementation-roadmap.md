@@ -121,6 +121,25 @@ channel-is-identity model, `/pending`-style parked approvals, every gate.
 **Proves itself by:** a session opened, named, worked, closed, and its file sealed with `/end`,
 driven through the API alone.
 
+## Required research for Phases 3 and 4 (the operator's directive, 2026-08-13)
+
+Before either phase plan is written, a deep web-research pass goes into the implementations, not
+the readmes, of five repositories the operator named, plus the wider literature on brainstorming
+and planning agents:
+
+- `https://github.com/obra/superpowers` — draw heavily on the skill designs.
+- `https://github.com/gsd-build/get-shit-done` and `https://github.com/gsd-build/gsd-2` — GSD 1
+  and 2: questioning, workflows, agent prompts.
+- `https://github.com/nousresearch/hermes-agent` — research and build upon the self-learning
+  design; the old §2.8 guards (RS-141/RS-142) came from here and the new Learning agent should be
+  grounded in what the implementation actually does.
+- `https://github.com/openclaw/openclaw` — agent interactions and orchestration.
+
+Read the agent implementations themselves: prompts, loop code, stop conditions, hand-offs. Findings
+land in a research brief beside the phase plan, with strength labels, and anything adopted must
+still beat the measurements this design already carries (code fan-out, attributed merge, no debate
+rounds).
+
 ## Phase 3: The Agents and the Skills (DESIGN §3–§4)
 
 **Builds:** the three agents with the Librarian holding no topic and the Learning agent holding
