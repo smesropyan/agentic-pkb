@@ -5,7 +5,7 @@ pass over a file yields the complete correction list an agent needs (rule CX-5).
 reserved for programming errors and for operations that cannot proceed at all.
 
 Rule ids (``FM-1``, ``VA-9``, ...) refer to
-``docs/superpowers/specs/2026-08-06-pkb-core-layer1-rules.md``.
+``docs/superpowers/specs/superseded/2026-08-06-pkb-core-layer1-rules.md``.
 """
 
 from __future__ import annotations

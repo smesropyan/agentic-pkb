@@ -4,7 +4,7 @@ Plain Python over a directory tree: no LLM, no network, no database, no subproce
 from the agent or transport layers (invariant I1, rule CX-1). Its whole test suite runs against
 ``tmp_path``.
 
-Rules are numbered in ``docs/superpowers/specs/2026-08-06-pkb-core-layer1-rules.md`` (``FM-*``,
+Rules are numbered in ``docs/superpowers/specs/superseded/2026-08-06-pkb-core-layer1-rules.md`` (``FM-*``,
 ``PA-*``, ``TG-*``, ``VA-*``, ``GE-*``, ``SC-*``, ``MA-*``, ``CX-*``). Code and tests cite those ids;
 changing behaviour means changing the rule first.
 
