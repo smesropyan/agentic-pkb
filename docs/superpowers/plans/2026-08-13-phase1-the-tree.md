@@ -53,18 +53,16 @@ rules are minted first and every docstring and test cites them.
 | `tests/core/golden/tags.md`, `empty_tags.md` | Regenerated for the new registry (Task 6) |
 | `tests/core/test_design_example.py` | Created: the proves-itself test (Task 10) |
 
-## Two proposals this plan makes where the design is silent
+## Two rulings where the design was silent
 
-**P1 — the approach-entry shape (Task 7).** DESIGN §1.1/§1.9 say each topic `index.md` carries one
-entry per approach a breadth file lists, a lift not a judgment, but fix no on-disk shape for the
-listing. Proposal: a breadth file may carry a `## Approaches` section whose items are
-`- <name>: <kb-path>#<heading>`; the generator copies exactly those lines. **Checkpoint: present
-this to the operator with Task 7's diff; one line reverses it.**
+**P1 — RULED by the operator, 2026-08-13.** A breadth file may carry a `## Approaches` section
+whose items are `- <name>: <kb-path>#<heading>`; the generator copies exactly those lines, and a
+malformed line becomes a finding, never a guess. No checkpoint needed.
 
-**P2 — a root `index.md` on disk is reported, not deleted (Task 5).** The design says the root
-holds no `index.md`; an existing one (every current KB has one) is operator-visible content the
-mechanical layer must not delete (no-undo). Proposal: `UNEXPECTED_ROOT_ENTRY` finding names it and
-the generator simply stops writing it. **Checkpoint with Task 5's diff.**
+**P2 — RULED by the operator, 2026-08-13.** A root `index.md` on disk yields an
+`UNEXPECTED_ROOT_ENTRY` finding and is never touched; the generator stops writing it and the
+operator deletes it by hand once. The layer's no-delete rule stays absolute, no carve-outs. No
+checkpoint needed.
 
 ---
 
