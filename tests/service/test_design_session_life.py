@@ -287,7 +287,21 @@ def test_a_session_lives_its_whole_life_through_the_api(tmp_path: Path) -> None:
         record_section = after_turn[record_start:synthesis_start]
         assert message in record_section
         assert REPLY in record_section
-        assert "topic.cooking" in after_turn.split("---", 2)[1]
+        # S-30: "one topic.* tag per expert that took part." This session opened on
+        # topic/cooking, so SessionFileWriter.create already wrote the tag at creation
+        # (frontmatter, checked below), before the turn ever ran — an end-to-end run through
+        # this one session cannot tell "add_expert_tag fired on the turn and was idempotent"
+        # apart from "add_expert_tag never fired at all," because the only visible effect a
+        # call over an already-tagged file can add is a duplicate, and Phase 2 drives nothing
+        # that joins a *second* expert to make the add-path's own liveness observable from
+        # outside. So the assertion below is deliberately narrow — exactly once, never
+        # duplicated by the turn — rather than a presence check that would still pass with
+        # the run-completion hook disabled entirely. The hook's own liveness (that
+        # add_expert_tag really is called on every completed run) is pinned where it IS
+        # end-to-end-visible: by a monkeypatched spy counting the calls directly, in
+        # tests/service/test_session_record.py::test_a_topic_expert_run_adds_its_topic_tag_once_s30.
+        frontmatter_block = after_turn.split("---", 2)[1]
+        assert frontmatter_block.count("topic.cooking") == 1
         turn_findings = validate_content(kb_root, renamed["file_path"], after_turn)
         assert not has_errors(turn_findings), turn_findings
 
