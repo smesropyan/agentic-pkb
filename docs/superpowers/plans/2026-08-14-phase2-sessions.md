@@ -82,7 +82,7 @@ carries the amendment on T-19's own row. No checkpoint needed.
 
 **Files:** Create `docs/superpowers/specs/2026-08-14-sessions-S-rules.md`.
 
-- [ ] **Step 1:** Read `DESIGN.md` §2 whole (all ten subsections) and mint `S-*` rows in the
+- [x] **Step 1:** Read `DESIGN.md` §2 whole (all ten subsections) and mint `S-*` rows in the
   Phase 1 rules-file format (id, rule quoting §2 where exact, severity, the check that asserts it).
   Cover at minimum: the session as the durable named thing, its name held by itself not a channel;
   the operator defined per-session (whoever establishes it and sets its goal, human or agent
@@ -98,21 +98,21 @@ carries the amendment on T-19's own row. No checkpoint needed.
   no pending queue anywhere; every write reaches the tree through a session; P3 and P4 as proposal
   rows marked for the operator. Boundary rows (assert-nothing markers): the analysis/distillation
   content is Phase 4's `L-*`; Telegram surface polish is Phase 5.
-- [ ] **Step 2:** Self-check mapping §2.1–§2.10 → rule ids at the file's foot; no subsection empty.
-- [ ] **Step 3:** `make check` (must stay green). Commit: `spec: mint the S-rules for sessions`.
+- [x] **Step 2:** Self-check mapping §2.1–§2.10 → rule ids at the file's foot; no subsection empty.
+- [x] **Step 3:** `make check` (must stay green). Commit: `spec: mint the S-rules for sessions`.
 
 ### Task 2: Deselect the superseded session-model tests
 
 **Files:** test files only, plus nothing else.
 
-- [ ] **Step 1:** Mark `@pytest.mark.superseded` (narrowest level) tests whose ASSERTIONS depend on
+- [x] **Step 1:** Mark `@pytest.mark.superseded` (narrowest level) tests whose ASSERTIONS depend on
   retired session design, found from these starting greps plus judgment:
   `grep -rln 'pkb_proposals\|/proposals\|pending_interrupt\|interrupt' tests/service tests/server tests/tui tests/agents`
   `grep -rln '"/new"\|origin_channel' tests/` (channel-identity era)
   Judgment rule as Phase 1 Task 2: fixture-uses-it is not enough; assertion-depends-on-it marks.
   The TUI approval modal tests and client approval-helper tests assert parked approvals — mark
   with a Phase-5 comment. Gate/interrupt assertions in tests/agents mark with a Phase-3 comment.
-- [ ] **Step 2:** `make check` green; record counts in the commit body.
+- [x] **Step 2:** `make check` green; record counts in the commit body.
   Commit: `test: deselect the superseded session-model assertions`.
 
 ### Task 3: The session store
@@ -129,13 +129,13 @@ carries the amendment on T-19's own row. No checkpoint needed.
   The store enforces the state machine; illegal transitions raise the service's error type.
 - Consumes: `threads.py`'s SQLite/migration discipline (copy the shape, new table `sessions`).
 
-- [ ] **Step 1:** Failing tests: creation records operator and objective; the state machine
+- [x] **Step 1:** Failing tests: creation records operator and objective; the state machine
   (open→closed→ended, re-close errors, end-from-open errors); `queue()` returns exactly the closed
   set ordered by `closed_at`; rename updates `name`+`updated_at`; unnamed sessions get a
   deterministic name from the objective (slug, the way thread ids are minted today — read
   `threads.py` and reuse its slug/id discipline).
-- [ ] **Step 2:** FAIL → implement → PASS → `make check`.
-- [ ] **Step 3:** Commit: `feat: the session store — durable, named, one state machine`.
+- [x] **Step 2:** FAIL → implement → PASS → `make check`.
+- [x] **Step 3:** Commit: `feat: the session store — durable, named, one state machine`.
 
 ### Task 4: The session file writer
 
@@ -154,12 +154,12 @@ carries the amendment on T-19's own row. No checkpoint needed.
   error findings rather than landing an invalid file.
 - Consumes: `pkb.core.frontmatter.serialize`, Phase 1's SESSION classification.
 
-- [ ] **Step 1:** Failing tests: created file classifies `FileRole.SESSION` and validates clean;
+- [x] **Step 1:** Failing tests: created file classifies `FileRole.SESSION` and validates clean;
   record appends preserve every existing byte before the append point; rename moves and retitles
   with content preserved; writes after `mark_ended` raise; a write that would produce an error
   finding is refused and the file is untouched (write to a temp+swap or validate-before-write).
-- [ ] **Step 2:** FAIL → implement → PASS → `make check`.
-- [ ] **Step 3:** Commit: `feat: the session file — one file, whole life, written by harness code`.
+- [x] **Step 2:** FAIL → implement → PASS → `make check`.
+- [x] **Step 3:** Commit: `feat: the session file — one file, whole life, written by harness code`.
 
 ### Task 5: Routes and commands
 
@@ -177,18 +177,18 @@ carries the amendment on T-19's own row. No checkpoint needed.
   backing). `DELETE /sessions/{id}` does NOT exist — nothing deletes a session.
 - Consumes: Tasks 3–4.
 
-- [ ] **Step 1:** Failing route tests via the existing FastAPI test-client patterns in
+- [x] **Step 1:** Failing route tests via the existing FastAPI test-client patterns in
   tests/server; every route above, plus: a run on a closed session is refused; `/end` on an open
   session is refused; the SSE events stream carries the run events for whichever channel asks; an
   unknown `agent_id` at session creation is refused (S-9); a session created on the Librarian, zero
   experts yet, creates its file cleanly and validates (P5).
-- [ ] **Step 2:** FAIL → implement → PASS → `make check` (TUI/clients compile-keepers: point
+- [x] **Step 2:** FAIL → implement → PASS → `make check` (TUI/clients compile-keepers: point
   `pkb/clients` + `pkb/tui` at `/sessions` minimally — same JSON shapes where possible; mark any
   client test that asserts retired routes superseded with a Phase-5 comment. `src/pkb/server/mcp.py`
   is a third transport calling the service Protocol directly, not an HTTP client of the routes —
   repoint its `create_thread`/`start_run` calls to sessions with the same minimal treatment; its
   proposal resources die in Task 6 with the rest of the approval surface. — Task 2 review, finding 2).
-- [ ] **Step 3:** Commit: `feat: session routes — the API is the one way in`.
+- [x] **Step 3:** Commit: `feat: session routes — the API is the one way in`.
 
 ### Task 6: The gates die
 
@@ -198,7 +198,7 @@ carries the amendment on T-19's own row. No checkpoint needed.
 runtime/registry composes it), `src/pkb/server/mcp.py` and `src/pkb/service/telegram.py` where
 they surface approvals.
 
-- [ ] **Step 1:** Failing tests: a note-write tool call inside a run LANDS during the turn with no
+- [x] **Step 1:** Failing tests: a note-write tool call inside a run LANDS during the turn with no
   interrupt raised (use the existing fake-model run harness from tests/agents — find the pattern
   that drives a scripted tool call); the runtime exposes no interrupt-resume surface; importing
   `pkb.service.proposals` fails. Also run
@@ -206,7 +206,7 @@ they surface approvals.
   — Task 5 kept `approval_mode` as a truthful compile-keeper on the session-run path (off the HTTP
   surface), and this task's own greps would never find it; once interrupts are off it is fully
   inert, so remove it or document explicitly why it stays (Task 5 review, item 6).
-- [ ] **Step 2:** Implement: interrupts off at the composition point (delete the gate config, not
+- [x] **Step 2:** Implement: interrupts off at the composition point (delete the gate config, not
   the deepagents library shim), delete proposals.py + store init + exports, delete approval
   surfacing in mcp.py/telegram.py with truthful minimal replacements (a Telegram approval prompt
   becomes nothing — sends that referenced it are Phase 5's polish; keep the module compiling and
@@ -218,7 +218,7 @@ they surface approvals.
   re-homes runs and not gate-free until this task; earlier, the drivers would still have to script
   threads and gates, then be rewritten twice more (Task 2 review, finding 1 — without an owner,
   Task 10 would delete these tests instead of rebuilding them). `make check`.
-- [ ] **Step 3:** Commit: `feat: the operator's instruction is the approval — gates and proposals removed`.
+- [x] **Step 3:** Commit: `feat: the operator's instruction is the approval — gates and proposals removed`.
 
 ### Task 7: Channels attach to sessions
 
@@ -228,13 +228,13 @@ they surface approvals.
 (retitle fan-out on rename becomes real). Tests: extend `tests/service/test_sessions.py` +
 `tests/server/test_session_routes.py`.
 
-- [ ] **Step 1:** Failing tests: two channels attach to one session and both appear in
+- [x] **Step 1:** Failing tests: two channels attach to one session and both appear in
   `channels()`; rename retitles every attached channel (assert via the store + a recorded telegram
   send in the existing fake-transport pattern from tests/server/test_telegram*); `/close` detaches
   every channel; a Telegram binding row maps a chat/topic to a SESSION id.
-- [ ] **Step 2:** FAIL → implement minimally (deep Telegram UX — pickers, topic creation flows —
+- [x] **Step 2:** FAIL → implement minimally (deep Telegram UX — pickers, topic creation flows —
   stays as-is where it can, marked superseded where its assertions die; Phase 5 rebuilds polish).
-- [ ] **Step 3:** `make check`. Commit: `feat: channels attach to sessions, several at once`.
+- [x] **Step 3:** `make check`. Commit: `feat: channels attach to sessions, several at once`.
 
 ### Task 8: The turn writes the record
 
@@ -244,24 +244,24 @@ compressed — the entry is the run's final text plus the operator's message, ve
 re-summarization) and touches `add_expert_tag` when the run's agent maps to a topic. Tests: extend
 `tests/service/test_session_file.py` with the run-completion hook via the fake-run pattern.
 
-- [ ] **Step 1:** Failing test: a completed run leaves the exchange in the file under `## Record`;
+- [x] **Step 1:** Failing test: a completed run leaves the exchange in the file under `## Record`;
   two runs append in order; a run on the Librarian adds no topic tag, a run on a Topic Expert adds
   its `topic.*` tag once.
-- [ ] **Step 2:** FAIL → implement → PASS → `make check`.
-- [ ] **Step 3:** Commit: `feat: the running record lands as the work happens`.
+- [x] **Step 2:** FAIL → implement → PASS → `make check`.
+- [x] **Step 3:** Commit: `feat: the running record lands as the work happens`.
 
 ### Task 9: The proves-itself test
 
 **Files:** Create `tests/service/test_design_session_life.py` (written to pass).
 
-- [ ] **Step 1:** One end-to-end test through the API test client and a scripted fake model:
+- [x] **Step 1:** One end-to-end test through the API test client and a scripted fake model:
   create a session on a Topic Expert with an objective → the file exists, classifies SESSION,
   validates clean → `/name` renames (file moved, title rewritten, attached channel retitled) →
   one worked turn → the record holds it and the expert's tag is in frontmatter → `/close` → the
   session is in `GET /sessions?state=closed` (the queue) and channels are detached → `/end` →
   sealed marker present, a further run and a further write both refused → the file's section order
   matches DESIGN §2.7's life. Then tick this plan's Task 1–9 checkboxes.
-- [ ] **Step 2:** `make check`. Commit: `test: a session lives its whole life through the API`.
+- [x] **Step 2:** `make check`. Commit: `test: a session lives its whole life through the API`.
 
 ### Task 10: Delete the superseded session tests and dead modules
 
