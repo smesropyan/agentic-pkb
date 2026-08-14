@@ -346,6 +346,9 @@ def test_is_generated_is_the_generator_owned_set_pa12(
 
 
 def test_expert_resolves_to_the_nearest_ancestor_topic_pa13(kb: Path) -> None:
+    """PA-13, T-3: "its parent topic's Topic Expert serves it unless it holds its own
+    ``expert.md``" — a sub-topic with none resolves up to its parent's, and gaining its own
+    ``expert.md`` stops the walk at the sub-topic itself."""
     grilling = kb / "Cooking" / "sub-topics" / "Grilling"
     assert paths.resolve_expert(kb, grilling) == kb / "Cooking" / "expert.md"
 
@@ -678,6 +681,9 @@ def test_reserved_name_as_item_is_detectable_pa19(kb: Path) -> None:
 def test_classify_location_role_table_va13(
     kb: Path, rel_path: str, role: FileRole, file_class: FileClass
 ) -> None:
+    """VA-13, T-8: every ``FileRole`` this fixture tree can produce, paired with the ``FileClass``
+    it falls under — the parametrized table a role missing from the partition would show up in as
+    a missing case, not a silent gap."""
     write(kb / rel_path)
     assert paths.classify(kb, kb / rel_path) == (role, file_class)
 

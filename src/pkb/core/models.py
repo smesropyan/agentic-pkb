@@ -14,7 +14,8 @@ from dataclasses import dataclass, field
 from datetime import date
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Final
 
 from pkb.core.errors import Finding
 
@@ -133,6 +134,52 @@ class FileRole(StrEnum):
     ASSET = "asset"
     UNKNOWN = "unknown"
     """A markdown file in a place the standard structure does not describe (VA-38, MA-8)."""
+
+
+class ApprovalMode(StrEnum):
+    """Who is allowed to put bytes on disk, and whether a human read them first (T-6).
+
+    Three modes cover the tree (DESIGN §1.2, quoted): **derived** — harness code writes the file,
+    no agent may write it, and nobody approves it; **approved** — an agent drafts, and the operator
+    reads the exact bytes before the file lands; **on instruction** — the file lands inside the turn
+    on the operator's ask, and that ask is the approval. This is data, not enforcement: Layer 1
+    exposes the table as the contract surface, and gating a write on it is Layer 2's job.
+    """
+
+    DERIVED = "derived"
+    APPROVED = "approved"
+    ON_INSTRUCTION = "on-instruction"
+
+
+APPROVAL_MODES: Final[Mapping[FileRole, tuple[ApprovalMode, ...]]] = MappingProxyType(
+    {
+        FileRole.TOPIC_OVERVIEW: (ApprovalMode.APPROVED,),
+        FileRole.TOPIC_INDEX: (ApprovalMode.DERIVED,),
+        FileRole.EXPERT: (ApprovalMode.APPROVED,),
+        FileRole.SKILL: (ApprovalMode.APPROVED,),
+        FileRole.REFERENCES_SUMMARY: (ApprovalMode.APPROVED,),
+        FileRole.REFERENCE: (ApprovalMode.ON_INSTRUCTION, ApprovalMode.APPROVED),
+        FileRole.NOTE: (ApprovalMode.APPROVED,),
+        FileRole.NOTES_SUMMARY: (ApprovalMode.APPROVED,),
+        FileRole.ROOT_TAGS: (ApprovalMode.DERIVED,),
+        FileRole.SESSION: (ApprovalMode.ON_INSTRUCTION, ApprovalMode.APPROVED),
+    }
+)
+"""The role → approval-mode table DESIGN §1.2's 11-row table fixes, verbatim (T-6).
+
+Ten :class:`FileRole` keys carry the design table's eleven rows: ``SKILL`` stands for both the
+topic-level and the root ``skills/[skill-name]/SKILL.md`` rows, which name the identical mode. A
+role naming two modes carries them **in order** — naming a source is the approval on the first
+map of it, and a session's running record needs no approval while its synthesis waits on the
+operator word for word (§1.2) — so ``REFERENCE`` and ``SESSION`` are the only two-element values.
+``CAPTURED_SOURCE``, ``ASSET`` and ``UNKNOWN`` carry no PKB frontmatter and name no row in the
+design table, so they have no entry here; a lookup for one of them is a caller error; not a
+degraded case this table quietly answers.
+
+Data only, matching Layer 1's own rule (CLAUDE.md, "Conventions"): nothing here enforces approval,
+gates a tool call, or reads a session's turn history — that is Layer 2's concern once it reaches
+the file lifecycle rules (`S-*`). Layer 1 exposes the table so both layers cite the same contract.
+"""
 
 
 # --------------------------------------------------------------------------------------

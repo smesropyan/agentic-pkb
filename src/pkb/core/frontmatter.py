@@ -32,6 +32,7 @@ from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
 from pkb.core.models import FieldProblem, Metadata, ParsedDocument
+from pkb.core.tags import Namespace
 
 __all__ = [
     "AUTHORED_SOURCE_TYPES",
@@ -90,8 +91,11 @@ DERIVED_SOURCE_TYPES: Final[frozenset[str]] = frozenset({"index", "catalog", "ta
 
 SOURCE_TYPES: Final[frozenset[str]] = AUTHORED_SOURCE_TYPES | DERIVED_SOURCE_TYPES
 
-_TAG_NAMESPACES: Final[frozenset[str]] = frozenset({"topic", "status", "type", "domain"})
-"""Closed namespace set (TG-2); ``normalize_related_topic`` keys off it (FM-15)."""
+_TAG_NAMESPACES: Final[frozenset[str]] = frozenset(n.value for n in Namespace)
+"""Closed namespace set (TG-2), derived from :class:`~pkb.core.tags.Namespace` rather than
+hand-maintained (T-17): ``normalize_related_topic`` keys off it (FM-15). There is no ``status.*``
+member here for the same reason there is none on ``Namespace`` — the PKB writes instructions and
+executes nothing, so nothing in the tree records a status field (T-32)."""
 
 _QUOTED_FIELDS: Final[frozenset[str]] = frozenset({"title", "description", "topic"})
 """Always double-quoted on write (FM-8)."""

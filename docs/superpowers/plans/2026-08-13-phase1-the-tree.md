@@ -312,24 +312,32 @@ def test_a_status_tag_is_an_unknown_namespace_finding_t(tmp_path):
   agents/server/packs tests keep their markers for Phases 3–5.
 - Modify: `src/pkb/core/__init__.py` exports; `src/pkb/contracts.py` if it names deleted symbols.
 
-- [ ] **Step 1:** `grep -rln 'pytestmark.*superseded\|mark\.superseded' tests/core/` — delete those
+- [x] **Step 1:** `grep -rln 'pytestmark.*superseded\|mark\.superseded' tests/core/` — delete those
   tests (whole files where wholly dead). **Step 2:** Remove dead exports; run
-  `grep -rn 'root_index\|STATUS_DEFINITIONS\|EXTENSION_MARKER\|status\.draft\|status\.approved\|status\.conflict-review' src/`
-  — must be empty (the status literals are T-32's own list; the Task 3 review widened this).
-- [ ] **Step 3:** `make check` — green; record final counts. **Step 4:** Commit:
+  `grep -rn 'root_index\|STATUS_DEFINITIONS\|EXTENSION_MARKER\|status\.draft\|status\.approved\|status\.conflict-review' src/pkb/core/`
+  — empty (scoped to `pkb.core`, the layer this plan builds; the same literals remain legitimate in
+  `pkb.agents`' own conflict workflow, T-32's removal being a Layer 1 rule only).
+- [x] **Step 3:** `make check` — green; record final counts. **Step 4:** Commit:
   `chore: remove the superseded tree tests and dead exports`.
 
 ---
 
 ## Self-Review (run after Task 11)
 
-1. **Spec coverage:** walk `DESIGN.md` §1.1–§1.10 and the T-rules table; every rule has a citing
-   test in `test_tree_rules.py` or `test_design_example.py`. List gaps as new tasks.
-2. **Placeholder scan:** the one intentionally elided test body (Task 4 Step 1's second test) must
-   be concrete in the written test file; no `...` survives into committed tests.
-3. **Type consistency:** `SkillEntry`, `FileRole.SESSION`, `FileRole.CAPTURED_SOURCE` and the
-   `render_root_tags` keyword match across Tasks 5–7 and the tests.
-4. **The two proposals:** P1 and P2 were surfaced to the operator with their tasks' reports.
+- [x] **Spec coverage:** walk `DESIGN.md` §1.1–§1.10 and the T-rules table; every rule has a citing
+  test — not only in `test_tree_rules.py` or `test_design_example.py`, as this step first assumed,
+  but anywhere in `tests/core/` (`T-2`'s home is `test_validation.py`, `T-13`'s is
+  `test_frontmatter.py`, and so on). The first pass through this step found 19 rules
+  (`T-2, T-3, T-4, T-5, T-7, T-8, T-10, T-13, T-18, T-19, T-20, T-21, T-28, T-29, T-30, T-31, T-33,
+  T-35, T-36`) with behavioral coverage but no citing rule id, plus `T-6` genuinely un-built (no
+  role→approval-mode table existed to test) and `T-36`'s TZ/locale/absolute-root clause genuinely
+  untested. Closed as the final-review fixes: the 41-row mapping lives in this commit's message
+  body.
+- [x] **Placeholder scan:** the one intentionally elided test body (Task 4 Step 1's second test)
+  is concrete in the written test file; no `...` survives into any committed test in `tests/core/`.
+- [x] **Type consistency:** `SkillEntry`, `FileRole.SESSION`, `FileRole.CAPTURED_SOURCE` and the
+  `render_root_tags` keyword match across Tasks 5–7 and the tests; `make types` is clean.
+- [x] **The two proposals:** P1 and P2 were surfaced to the operator with their tasks' reports.
 
 ## Verification
 
@@ -337,3 +345,20 @@ def test_a_status_tag_is_an_unknown_namespace_finding_t(tmp_path):
 - `tests/core/test_design_example.py` is the end-to-end proof and stays in the suite.
 - Idempotence: the double-regeneration assertion in Task 10.
 - Layer discipline: import-linter still reports 5 kept contracts (pkb.core imports nothing above it).
+
+## Self-Review executed
+
+Run for real, after the branch review found five findings the self-review step above had missed on
+its first pass (Task 11 and this section's own checkboxes were left unticked at the time). All five
+closed in one commit:
+
+1. Built `ApprovalMode` and the `FileRole → tuple[ApprovalMode, ...]` table (`APPROVAL_MODES`) in
+   `pkb.core.models`, matching DESIGN §1.2's 11-row table exactly (T-6).
+2. Closed the citation gap: the compact 41-row rule → test mapping lives in this commit's own
+   message body, not duplicated here — this is the step-1 spec-coverage pass, finally executed
+   against the whole of `tests/core/` rather than the two files this section originally named.
+3. `frontmatter._TAG_NAMESPACES` now derives from `tags.Namespace` instead of hand-listing a
+   fourth, retired member (`status`).
+4. Placeholder scan: clean — no `...` in any committed test body under `tests/core/`.
+5. Type consistency: clean — `make types` passes over the new `ApprovalMode`/`APPROVAL_MODES`
+   surface and every edited test file.

@@ -273,6 +273,8 @@ def test_type_vocabulary_members_validate_tg6(raw: str) -> None:
 
 
 def test_unknown_type_tag_is_an_error_tg6() -> None:
+    """TG-6, T-18: ``type.*`` is the closed set of exactly the four values DESIGN §1.5's table
+    names; a fifth (``type.article``) is ``UNKNOWN_TYPE_TAG``."""
     findings = validate_tag("type.article")
     assert _codes(findings) == ["UNKNOWN_TYPE_TAG"]
     assert findings[0].rule_id == "TG-6"
@@ -285,12 +287,17 @@ def test_unknown_type_tag_is_an_error_tg6() -> None:
 
 
 def test_domain_namespace_is_open_tg8() -> None:
+    """TG-8, T-20: ``domain.*`` is checked for syntax and depth only — open, unconstrained by file
+    location, and no allowlist exists for it."""
     assert validate_tag("domain.finance.tax") == []
     # location never constrains a domain tag: a Cooking note may carry a legal one
     assert validate_tag("domain.legal.compliance", path="Cooking/notes/x.md") == []
 
 
 def test_topic_namespace_is_open_and_has_no_registry_api_tg9() -> None:
+    """TG-9, T-21: "create no ad-hoc tag" is a Layer 2 dialog concern, not a Layer 1 gate —
+    ``pkb.core`` exposes no ``approve_tag``/``register_tag`` function, and a novel syntactically
+    valid ``topic.*`` tag validates clean regardless."""
     import pkb.core.tags as tags_module
 
     assert validate_tag("topic.cooking.sous-vide") == []

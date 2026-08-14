@@ -7,9 +7,12 @@ Every test name ends in the rule id it covers, matching the convention in
 
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
+
+import pytest
 
 from pkb.core import frontmatter, maintenance, paths, scaffold, tags
 from pkb.core.errors import Severity, errors_only
@@ -22,7 +25,7 @@ from pkb.core.generators.tags_registry import (
     root_tags_findings,
 )
 from pkb.core.generators.topic_index import render_topic_index, topic_index_findings
-from pkb.core.models import FileClass, FileRole
+from pkb.core.models import APPROVAL_MODES, ApprovalMode, FileClass, FileRole
 from pkb.core.scan import scan
 from pkb.core.validation import validate_content, validate_tree
 from tests.core.conftest import write_kb
@@ -834,3 +837,128 @@ def test_per_run_regeneration_touches_exactly_the_indexes_and_the_registry_t41(
         "Cooking/sub-topics/Grilling/index.md",
     }
     assert report.scan_requests == []
+
+
+# --------------------------------------------------------------------------------------
+# Final-review closing fixes — T-6's approval-mode table, T-36's TZ/locale/absolute-root
+# independence, genuinely uncovered by anything above
+# --------------------------------------------------------------------------------------
+
+
+def test_role_to_approval_mode_table_matches_design_1_2_exactly_t6() -> None:
+    """T-6: the role → approval-mode table ``pkb.core`` exposes matches DESIGN §1.2's 11-row table
+    exactly, not merely covers every role — the wrong mode on any one row is a defect this asserts
+    directly, the way completeness alone (T-8's partition) cannot catch. ``FileRole.SKILL`` stands
+    for the table's two ``skills/[skill-name]/SKILL.md`` rows, topic-level and root, which name the
+    identical mode; ``CAPTURED_SOURCE``, ``ASSET`` and ``UNKNOWN`` name no row in the design table
+    and carry no entry."""
+    assert dict(APPROVAL_MODES) == {
+        FileRole.TOPIC_OVERVIEW: (ApprovalMode.APPROVED,),
+        FileRole.TOPIC_INDEX: (ApprovalMode.DERIVED,),
+        FileRole.EXPERT: (ApprovalMode.APPROVED,),
+        FileRole.SKILL: (ApprovalMode.APPROVED,),
+        FileRole.REFERENCES_SUMMARY: (ApprovalMode.APPROVED,),
+        FileRole.REFERENCE: (ApprovalMode.ON_INSTRUCTION, ApprovalMode.APPROVED),
+        FileRole.NOTE: (ApprovalMode.APPROVED,),
+        FileRole.NOTES_SUMMARY: (ApprovalMode.APPROVED,),
+        FileRole.ROOT_TAGS: (ApprovalMode.DERIVED,),
+        FileRole.SESSION: (ApprovalMode.ON_INSTRUCTION, ApprovalMode.APPROVED),
+    }
+
+
+def test_two_mode_roles_carry_their_modes_in_order_t6() -> None:
+    """T-6/T-7: "naming a source is the approval on the first map of it... a session's running
+    record needs no approval while its synthesis waits on the operator word for word" (§1.2) — the
+    first-written pass is ``ON_INSTRUCTION``, and every later pass over the same file is
+    ``APPROVED``, in that order."""
+    assert APPROVAL_MODES[FileRole.REFERENCE] == (
+        ApprovalMode.ON_INSTRUCTION,
+        ApprovalMode.APPROVED,
+    )
+    assert APPROVAL_MODES[FileRole.SESSION] == (
+        ApprovalMode.ON_INSTRUCTION,
+        ApprovalMode.APPROVED,
+    )
+
+
+def test_a_captured_source_names_no_row_in_the_approval_table_t6() -> None:
+    """T-6/T-14: a captured source, an asset and an unclassified file carry no PKB frontmatter and
+    name no row in DESIGN §1.2's table, so the table carries no entry for them either — a lookup
+    for one is a caller error, not a degraded case the table quietly answers."""
+    for role in (FileRole.CAPTURED_SOURCE, FileRole.ASSET, FileRole.UNKNOWN):
+        assert role not in APPROVAL_MODES
+
+
+_COOKING_T36_DESC = "Home cooking end to end: equipment, technique and the dishes worth making."
+
+
+def _t36_fixture_files() -> dict[str, str]:
+    """A small but non-trivial tree: a mapping and a domain tag, so both registry sections that
+    could plausibly leak an absolute path or a locale-sensitive sort render, not only the trivial
+    ones."""
+    return {
+        "Cooking/topic.md": _knowledge_file(
+            title="Cooking",
+            description=_COOKING_T36_DESC,
+            topic="Cooking",
+            tags_=["topic.cooking", "type.summary"],
+            source_type="summary",
+        ),
+        "Cooking/notes/summary.md": _knowledge_file(
+            title="Notes summary",
+            description="Distilled rules from cooking experience",
+            topic="Cooking",
+            tags_=["topic.cooking", "type.summary"],
+            source_type="summary",
+        ),
+        "Cooking/references/summary.md": _knowledge_file(
+            title="References summary",
+            description="Overview of ingested cooking sources",
+            topic="Cooking",
+            tags_=["topic.cooking", "type.summary"],
+            source_type="summary",
+        ),
+        "Cooking/notes/wind.md": _knowledge_file(
+            title="Wind shelter",
+            description="A windbreak beside the grill",
+            topic="Cooking",
+            tags_=["topic.cooking.grilling", "domain.legal.compliance", "type.note"],
+            source_type="note",
+        ).replace("source_type: note", "related_topics: [ bbq.equipment ]\nsource_type: note"),
+    }
+
+
+def _render(kb: Path, tz: str) -> tuple[str, str]:
+    """The registry and one topic index, rendered with the process ``TZ`` set to ``tz`` for the
+    duration — ``time.tzset()`` is what makes a changed ``TZ`` env var actually take effect on a
+    POSIX process (it is cached otherwise), and it is called again after the patch is undone so a
+    later test does not keep running under the timezone this one borrowed."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("TZ", tz)
+        if hasattr(time, "tzset"):
+            time.tzset()
+        snapshot = scan(kb)
+        registry = render_root_tags(snapshot)
+        topic = render_topic_index(snapshot, "Cooking")
+    if hasattr(time, "tzset"):
+        time.tzset()
+    return registry, topic
+
+
+def test_regeneration_is_independent_of_tz_and_absolute_root_path_t36(tmp_path: Path) -> None:
+    """T-36: "output does not depend on filesystem iteration order, locale, timezone, wall-clock
+    time, or the absolute KB root path" (§1.9, quoted) — the one clause of T-36 nothing else in this
+    suite exercises. Two knowledge bases carrying byte-identical *relative* content, built at two
+    different absolute depths under ``tmp_path``, rendered under two different ``TZ`` values (UTC
+    and Pacific/Auckland — a positive offset with daylight-saving rules, about as far from UTC as
+    this suite can get), must render byte-identical derived output. GE-4/GE-6/GE-9 already establish
+    *why* — no clock, no host, pure rendering — this is the end-to-end property that would catch a
+    regression that broke that invariant."""
+    files = _t36_fixture_files()
+    shallow = write_kb(tmp_path / "kb", files)
+    deep = write_kb(tmp_path / "much" / "deeper" / "path" / "to" / "the-same-tree", files)
+
+    utc = _render(shallow, "UTC")
+    auckland = _render(deep, "Pacific/Auckland")
+
+    assert utc == auckland

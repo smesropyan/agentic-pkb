@@ -55,6 +55,8 @@ from pkb.core.errors import (
 from pkb.core.generators import regenerate_all
 from pkb.core.maintenance import find_broken_links, find_orphans, flush
 from pkb.core.models import (
+    APPROVAL_MODES,
+    ApprovalMode,
     FileClass,
     FileRecord,
     FileRole,
@@ -80,6 +82,8 @@ from pkb.core.tags import Namespace, Tag, TagTree, build_tag_tree, files_with_ta
 from pkb.core.validation import validate_content, validate_file, validate_tree
 
 __all__ = [
+    "APPROVAL_MODES",
+    "ApprovalMode",
     "FileClass",
     "FileRecord",
     "FileRole",

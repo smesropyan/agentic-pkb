@@ -282,7 +282,10 @@ def _read_golden(name: str) -> str:
     ids=GOLDEN_NAMES,
 )
 def test_goldens_match_ge31(name: str, tmp_path: Path) -> None:
-    """Full-file string equality against every golden; one drifting space fails it (GE-31)."""
+    """Full-file string equality against every golden; one drifting space fails it (GE-31). T-35:
+    this is the "reproduces the golden topic ``index.md`` files and root ``tags.md`` byte-for-byte"
+    half of the once-per-run regeneration duty, run over every live golden in one parametrized
+    sweep rather than one fixture apiece."""
     assert render_goldens(tmp_path)[name] == _read_golden(name)
 
 
@@ -815,7 +818,10 @@ def test_inline_escapes_a_trailing_backslash_in_link_text_ge26(tmp_path: Path) -
 
 
 def test_inline_renders_one_well_formed_bullet_ge26(tmp_path: Path) -> None:
-    """A hostile description still produces exactly one bullet line (GE-26)."""
+    """A hostile description still produces exactly one bullet line (GE-26). T-5's mechanical half:
+    the bullet is built from the item's frontmatter ``description`` and its tags, and the fixture's
+    own ``"Body.\\n"`` text — the note's body — never appears in it; ``render_topic_index`` inlines
+    a link and frontmatter fields, never body text."""
     hostile = _note("Hostile", "placeholder", "topic.physics").replace(
         '"placeholder"', '"first · [x]\\n  second"'
     )

@@ -18,6 +18,7 @@ from hypothesis import strategies as st
 
 from pkb.core import frontmatter as fm
 from pkb.core.models import Metadata
+from pkb.core.tags import Namespace
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -532,6 +533,9 @@ def test_removing_an_absent_key_changes_nothing_fm11() -> None:
 
 
 def test_generated_tags_md_frontmatter_is_two_keys_fm12() -> None:
+    """FM-12, T-10: class 2 (machine-generated files) carries minimal generated frontmatter only —
+    the root ``tags.md`` parses to exactly ``{title, source_type}``, never ``tags``/``created``/
+    ``updated``/``related_topics``/``description``."""
     generated = '---\ntitle: "PKB Tag Registry"\nsource_type: tag-registry\n---\n'
     meta = _meta(generated)
     assert meta.present_keys == ("title", "source_type")
@@ -541,6 +545,11 @@ def test_generated_tags_md_frontmatter_is_two_keys_fm12() -> None:
 
 
 def test_generated_index_frontmatter_carries_no_date_key_fm12() -> None:
+    """FM-12, T-10: a generated topic ``index.md`` carries no ``tags``/``created``/``updated``/
+    ``related_topics`` key — its ``title``/``description``/``topic``/``source_type`` are lifted
+    from what it indexes, not authored, which is why the root ``tags.md`` (the other Class 2 file,
+    covered above) has no ``description`` at all: "asking it for one would ask the generators to
+    fail their own validation" (§1.3, quoted) applies where nothing exists to lift it from."""
     generated = fm.serialize(
         Metadata(
             title="Cooking — Index",
@@ -625,6 +634,14 @@ def test_parse_never_raises_fm13(text: str) -> None:
 # --------------------------------------------------------------------------------------
 
 
+def test_tag_namespaces_is_derived_from_the_namespace_enum_fm15_t17() -> None:
+    """FM-15/T-17: ``_TAG_NAMESPACES`` is derived from ``tags.Namespace``, not hand-maintained —
+    finding #3 of the final review. ``status`` is gone because ``Namespace`` never had it (T-17);
+    a fourth namespace on ``Namespace`` would widen this set with no separate edit here to forget."""
+    assert {namespace.value for namespace in Namespace} == fm._TAG_NAMESPACES
+    assert "status" not in fm._TAG_NAMESPACES
+
+
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
@@ -632,7 +649,7 @@ def test_parse_never_raises_fm13(text: str) -> None:
         ("bbq.equipment", "topic.bbq.equipment"),
         ("topic.bbq.equipment", "topic.bbq.equipment"),
         ("  bbq.equipment  ", "topic.bbq.equipment"),
-        ("status.draft", "status.draft"),
+        ("status.draft", "topic.status.draft"),
         ("type.note", "type.note"),
         ("domain.legal.compliance", "domain.legal.compliance"),
         ("", ""),
@@ -642,13 +659,20 @@ def test_parse_never_raises_fm13(text: str) -> None:
         "dotted_fm15",
         "already_prefixed_fm15",
         "whitespace_fm15",
-        "status_namespace_fm15",
+        "status_is_not_a_namespace_fm15_t17",
         "type_namespace_fm15",
         "domain_namespace_fm15",
         "empty_fm15",
     ],
 )
 def test_normalize_related_topic_fm15(raw: str, expected: str) -> None:
+    """FM-15, T-13: "the declared value is the bare topic path, and the registry renders it under
+    the ``topic.`` namespace... while a value that already carries the namespace stands as
+    written" (§1.3, quoted) — ``bbq``/``bbq.equipment`` gain the prefix, ``topic.bbq.equipment`` is
+    idempotent. The ``status.draft`` case is also T-17: ``status`` is not one of the three
+    recognized namespaces (`Namespace`), so it gets the same ``topic.`` prefix any other
+    unrecognized leading segment would — the closing of finding #3's namespace-derivation gap
+    (`_TAG_NAMESPACES` used to hand-list ``status`` as if it were still valid here)."""
     assert fm.normalize_related_topic(raw) == expected
 
 

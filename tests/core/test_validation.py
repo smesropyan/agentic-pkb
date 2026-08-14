@@ -404,6 +404,9 @@ def test_open_namespaces_never_yield_a_vocabulary_finding_va8(kb: Path) -> None:
     ],
 )
 def test_tag_cardinality_va9(kb: Path, declared: tuple[str, ...], code: str) -> None:
+    """VA-9, T-19: "at least one ``topic.*`` tag and exactly one ``type.*`` tag" — zero of either
+    and two ``type.*`` tags are each their own error. ``TAG_DEPTH_EXCEEDED``, T-19's fourth code,
+    is TG-3's own (``test_four_segments_pass_five_fail_tg3``, ``tests/core/test_tags.py``)."""
     text = note_at(NOTE_PATH, tags=tag_block(*declared))
     finding = only(validate_content(kb, NOTE_PATH, text), code)
     assert finding.severity is Severity.ERROR
@@ -506,6 +509,10 @@ def test_source_type_must_match_the_location_va13(kb: Path) -> None:
 def test_the_location_table_accepts_its_own_rows_va13(
     kb: Path, path: str, source_type: str, type_tag: str
 ) -> None:
+    """VA-13; the ``va13-reference`` case is also T-7's mechanical half: a first-written
+    ``references/<src>/<src>.md`` — all seven required fields, ``source_type: reference``,
+    ``type.reference`` — validates with zero findings, which is as much of "naming the source is
+    the approval on the first map of it" as Layer 1 checks without a turn history."""
     text = note_at(
         path,
         source_type=source_type,
@@ -515,6 +522,8 @@ def test_the_location_table_accepts_its_own_rows_va13(
 
 
 def test_a_solution_may_not_live_under_references_va14(kb: Path) -> None:
+    """VA-14, T-31: ``references/**`` accepts only ``type.reference`` — the mechanical proxy T-34
+    enforces for §1.8 rule 8's read/done line."""
     path = "Cooking/references/grill-basics/grill-basics.md"
     text = note_at(
         path,
@@ -525,6 +534,8 @@ def test_a_solution_may_not_live_under_references_va14(kb: Path) -> None:
 
 
 def test_a_note_may_not_be_tagged_type_reference_va14(kb: Path) -> None:
+    """VA-14, T-31: ``notes/**`` accepts only ``type.note``/``type.solution`` — the same folder-vs-
+    tag mechanical proxy, the other direction."""
     path = "Cooking/notes/x.md"
     text = note_at(
         path,
@@ -769,6 +780,8 @@ def test_a_clean_knowledge_base_yields_no_findings_va1(kb: Path) -> None:
 
 
 def test_a_folder_hosted_item_needs_its_main_file_va16(kb: Path) -> None:
+    """VA-16, T-2: "give every item inside its own folder a main file named after it" — a folder
+    whose main file's stem diverges from the folder name is ``MISSING_MAIN_FILE``."""
     write(kb, "Cooking/notes/steak-sear/note.md", note_at("Cooking/notes/steak-sear/note.md"))
     finding = only(validate_tree(kb), "MISSING_MAIN_FILE")
     assert finding.value == "steak-sear.md"
@@ -823,6 +836,8 @@ def test_a_note_folder_is_never_text_free_va22(kb: Path) -> None:
 
 
 def test_media_beside_note_text_warns_va23(kb: Path) -> None:
+    """VA-23, T-2: "media for a folder-hosted note stays inside the note's own ``media/``
+    subfolder" — a sibling outside it is ``MEDIA_OUTSIDE_MEDIA_FOLDER``."""
     write(
         kb,
         "Cooking/notes/steak-sear/steak-sear.md",

@@ -72,6 +72,8 @@ def normalized(value: str) -> str:
 
 
 def test_scaffold_creates_exactly_the_standard_members_sc1(tmp_path: Path) -> None:
+    """SC-1, T-4: the member set carries no ``skills/`` — "the topic's first approved skill creates
+    the ``skills/`` folder; its absence means nobody has approved a skill yet" (§1.1, quoted)."""
     kb = make_kb(tmp_path)
     result = cooking(kb)
 
@@ -104,6 +106,8 @@ def test_deleting_a_breadth_summary_is_reported_by_validate_tree_sc1(tmp_path: P
 
 
 def test_every_scaffolded_file_validates_with_zero_errors_sc3(tmp_path: Path) -> None:
+    """SC-3; also T-4's second half: ``validate_tree`` reports no finding for the missing
+    ``skills/`` folder a scaffolded topic never gets."""
     kb = make_kb(tmp_path)
     result = scaffold_topic(
         kb,

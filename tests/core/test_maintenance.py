@@ -164,7 +164,12 @@ def test_no_derived_file_carries_a_date_ma2(sample_kb: Path) -> None:
 
 
 def test_flush_over_an_untouched_tree_rewrites_no_content_file_ma3(sample_kb: Path) -> None:
-    """Scan-and-stamp is forbidden: with an empty touched set every content file is untouched."""
+    """Scan-and-stamp is forbidden: with an empty touched set every content file is untouched — the
+    proof three T-rules each need a slice of: T-33's ``flush(kb, touched_paths=())`` leaves every
+    content file byte-identical; T-28's "no Layer 1 generator ever writes into a breadth file's
+    approved prose region" (``topic.md``, ``notes/summary.md``, ``references/summary.md`` are
+    content files too); and T-30's "no generator or scaffolder duplicates a notes/ file across
+    topics" — nothing here writes one at all, into its own topic or anybody else's."""
     before = content_bytes(sample_kb, SAMPLE_KB_FILES)
 
     report = flush(sample_kb, today=TODAY)
@@ -380,7 +385,10 @@ def test_flush_changes_only_the_updated_line_of_touched_files_ma5(
 
 
 def test_the_only_frontmatter_field_ever_written_is_updated_ma6() -> None:
-    """Static proof: every targeted field write in this module names ``updated``, nothing else."""
+    """Static proof: every targeted field write in this module names ``updated``, nothing else —
+    T-29's mechanical half: "the expert changes no human content on its own" (§1.8 rule 1) has
+    nothing left to violate when the one field maintenance may ever touch is a stamp, never a note
+    or a breadth summary's prose."""
     written = [
         ast.literal_eval(call.args[1])
         for call in ast.walk(ast.parse(SOURCE))
@@ -877,7 +885,8 @@ def test_flush_survives_a_broken_tree_and_reports_it_ma14(tmp_path: Path) -> Non
 
 
 def test_flush_is_safe_to_run_twice_ma14(sample_kb: Path) -> None:
-    """Idempotence over the whole operation, not only over the generators."""
+    """Idempotence over the whole operation, not only over the generators — T-33: calling
+    ``flush`` twice in the same turn with the same ``touched_paths`` is a no-op the second time."""
     note = "Cooking/notes/summary.md"
     flush(sample_kb, [note], today=TODAY)
     after_first = content_bytes(sample_kb, SAMPLE_KB_FILES)

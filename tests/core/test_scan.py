@@ -134,6 +134,9 @@ def test_unexpected_root_entry_pa1(tmp_path: Path) -> None:
 
 
 def test_topic_discovery_is_recursive_and_preorder_pa5(sample_kb: Path) -> None:
+    """PA-5, T-3: a nested topic follows the same structure recursively under ``sub-topics/`` —
+    ``Cooking/sub-topics/Grilling`` is discovered as a topic root exactly the way a top-level one
+    is, modulo the path prefix (§1.1)."""
     snapshot = scan(sample_kb)
 
     assert list(snapshot.topics) == ["BBQ", "Cooking", "Cooking/sub-topics/Grilling"]
