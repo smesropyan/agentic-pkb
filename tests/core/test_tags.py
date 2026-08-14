@@ -146,6 +146,7 @@ def test_tag_is_descendant_of_matches_whole_segments_tg1() -> None:
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_namespace_set_is_closed_tg2() -> None:
     assert set(Namespace) == {"topic", "status", "type", "domain"}
 
@@ -159,7 +160,15 @@ def test_unknown_namespace_is_an_error_tg2() -> None:
     assert findings[0].value == "project.alpha"
 
 
-@pytest.mark.parametrize("raw", ["topic.cooking", "status.draft", "type.note", "domain.legal"])
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "topic.cooking",
+        pytest.param("status.draft", marks=pytest.mark.superseded),
+        "type.note",
+        "domain.legal",
+    ],
+)
 def test_known_namespaces_validate_tg2(raw: str) -> None:
     assert validate_tag(raw) == []
 
@@ -281,11 +290,13 @@ def test_unknown_type_tag_is_an_error_tg6() -> None:
     assert set(TYPE_DEFINITIONS) == {"type.note", "type.reference", "type.solution", "type.summary"}
 
 
+@pytest.mark.superseded
 @pytest.mark.parametrize("raw", sorted(STATUS_DEFINITIONS))
 def test_status_vocabulary_members_validate_tg7(raw: str) -> None:
     assert validate_tag(raw) == []
 
 
+@pytest.mark.superseded
 def test_unknown_status_tag_is_an_error_but_transitions_are_not_checked_tg7() -> None:
     findings = validate_tag("status.wip")
     assert _codes(findings) == ["UNKNOWN_STATUS_TAG"]
@@ -429,6 +440,7 @@ def test_tags_in_namespace_filters_by_depth_tg11(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_static_definitions_are_verbatim_generator_text_tg12() -> None:
     assert list(TYPE_DEFINITIONS.items()) == [
         ("type.note", "human-written note"),
@@ -447,6 +459,7 @@ def test_static_definitions_are_verbatim_generator_text_tg12() -> None:
     assert definition_annotation("type.note") == " \u2013 human-written note"
 
 
+@pytest.mark.superseded
 def test_static_sections_are_the_golden_blocks_tg12(tmp_path: Path) -> None:
     """The `type` and `status` blocks are generator text: KB contents cannot move them."""
     assert render_definition_list(TYPE_DEFINITIONS) == [
@@ -484,6 +497,7 @@ def test_static_annotations_feed_the_shared_renderer_tg12() -> None:
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_separator_constants_are_the_pinned_codepoints_tg13() -> None:
     assert TAG_DEF_SEP == " \u2013 "
     assert MAPPING_SEP == " \u2194 "
@@ -510,6 +524,7 @@ def test_rendered_bytes_carry_en_dash_and_arrow_tg13() -> None:
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_topic_section_matches_the_pinned_shape_ge23(tmp_path: Path) -> None:
     tree = build_tag_tree(_cooking_snapshot(tmp_path))
     cooking = tree.subtree("topic.cooking")

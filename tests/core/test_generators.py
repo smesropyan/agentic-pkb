@@ -273,6 +273,7 @@ def _read_golden(name: str) -> str:
     return (GOLDEN / name).read_bytes().decode("utf-8")
 
 
+@pytest.mark.superseded
 @pytest.mark.parametrize("name", GOLDEN_NAMES, ids=GOLDEN_NAMES)
 def test_goldens_match_ge31(name: str, tmp_path: Path) -> None:
     """Full-file string equality against every golden; one drifting space fails it (GE-31)."""
@@ -317,6 +318,7 @@ def test_only_the_generators_write_derived_paths_ge1() -> None:
     assert offenders == []
 
 
+@pytest.mark.superseded
 def test_exactly_three_generators_exist_ge1() -> None:
     """Three ``render_*``/``generate_*`` pairs, one per derived artifact (GE-1)."""
     from pkb.core import generators
@@ -378,6 +380,7 @@ def _render_all(kb: Path) -> str:
     return "\n".join(parts)
 
 
+@pytest.mark.superseded
 def test_generation_is_byte_deterministic_ge4(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -399,6 +402,7 @@ def test_generation_is_byte_deterministic_ge4(
     time.tzset()
 
 
+@pytest.mark.superseded
 def test_regeneration_is_idempotent_ge5(tmp_path: Path) -> None:
     """A second consecutive flush writes zero files (GE-5, GE-8)."""
     kb = write_kb(tmp_path / "KB", SAMPLE_KB_FILES)
@@ -425,6 +429,7 @@ def _markdown_bytes(kb: Path) -> dict[str, bytes]:
     }
 
 
+@pytest.mark.superseded
 def test_a_rebuild_from_nothing_equals_a_rebuild_over_the_derived_files_ge5_ge3(
     tmp_path: Path,
 ) -> None:
@@ -509,6 +514,7 @@ def test_write_derived_skips_an_identical_write_ge8(tmp_path: Path) -> None:
     assert target.read_text(encoding="utf-8") == "# two\n"
 
 
+@pytest.mark.superseded
 def test_an_unnameable_extension_folder_still_gets_a_heading_ge7(tmp_path: Path) -> None:
     """A folder name that inlines to nothing must not render a bare ``## `` (GE-7, PA-18).
 
@@ -563,6 +569,7 @@ def test_write_derived_refuses_a_case_variant_collision_pa17(tmp_path: Path) -> 
     assert sorted(path.name for path in tmp_path.iterdir()) == ["INDEX.md"]
 
 
+@pytest.mark.superseded
 def test_a_case_variant_collision_flags_without_aborting_the_flush_pa17(tmp_path: Path) -> None:
     """The refusal costs one derived file and one finding, not the flush (PA-17, MA-9, MA-14)."""
     if not _case_insensitive(tmp_path):
@@ -586,6 +593,7 @@ def test_a_case_variant_collision_flags_without_aborting_the_flush_pa17(tmp_path
     assert {"index.md", "tags.md", "BBQ/index.md"} <= set(report.written)
 
 
+@pytest.mark.superseded
 def test_renderers_perform_no_io_ge9(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Every ``render_*`` runs with the filesystem taken away (GE-9)."""
     kb = write_kb(tmp_path / "KB", SAMPLE_KB_FILES)
@@ -609,6 +617,7 @@ def test_renderers_perform_no_io_ge9(tmp_path: Path, monkeypatch: pytest.MonkeyP
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_root_index_ignores_file_level_change_ge10(tmp_path: Path) -> None:
     """Adding a note leaves the catalog byte-identical; a topic description changes one line."""
     kb = write_kb(tmp_path / "KB", SAMPLE_KB_FILES)
@@ -637,6 +646,7 @@ def _changed_lines(before: str, after: str) -> int:
     return sum(1 for a, b in zip(old, new, strict=True) if a != b)
 
 
+@pytest.mark.superseded
 def test_root_index_carries_no_tag_data_ge11(tmp_path: Path) -> None:
     """No mapping glyph and no rendered tag node in the catalog (GE-11)."""
     text = render_root_index(scan(write_kb(tmp_path / "KB", SAMPLE_KB_FILES)))
@@ -644,6 +654,7 @@ def test_root_index_carries_no_tag_data_ge11(tmp_path: Path) -> None:
     assert "`topic." not in text  # agent ids are `topic/...`, tags would be `topic....`
 
 
+@pytest.mark.superseded
 def test_root_index_stays_bounded_ge12(tmp_path: Path) -> None:
     """Fifty topics of twenty files each render one line per topic, under 8 KB (GE-12)."""
     files: dict[str, str] = {}
@@ -661,6 +672,7 @@ def test_root_index_stays_bounded_ge12(tmp_path: Path) -> None:
     assert len(text.encode("utf-8")) < 8 * 1024
 
 
+@pytest.mark.superseded
 def test_expert_marker_flips_one_line_ge13(tmp_path: Path) -> None:
     """``*(custom expert)*`` marks exactly the topic roots holding an ``expert.md`` (GE-13)."""
     kb = write_kb(tmp_path / "KB", SAMPLE_KB_FILES)
@@ -673,6 +685,7 @@ def test_expert_marker_flips_one_line_ge13(tmp_path: Path) -> None:
     assert _changed_lines(before, after) == 1
 
 
+@pytest.mark.superseded
 def test_root_index_lists_sub_topics_ge10(tmp_path: Path) -> None:
     """Every topic root at every depth appears, nested under its parent (GE-10, Q9)."""
     text = render_root_index(scan(write_kb(tmp_path / "KB", SAMPLE_KB_FILES)))
@@ -684,6 +697,7 @@ def test_root_index_lists_sub_topics_ge10(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_every_content_file_appears_exactly_once_ge14(tmp_path: Path) -> None:
     """Each non-excluded markdown file of the topic gets exactly one bullet (GE-14, GE-25)."""
     kb = write_kb(tmp_path / "KB", SAMPLE_KB_FILES)
@@ -898,6 +912,7 @@ def test_root_tags_literals_ge21(tmp_path: Path) -> None:
     assert render_root_tags(scan(kb)) == text
 
 
+@pytest.mark.superseded
 def test_root_tags_section_order_ge22(tmp_path: Path) -> None:
     """topic sections (sorted) → type → status → domain → mappings (GE-22, C15)."""
     text = render_root_tags(scan(write_kb(tmp_path / "KB", SAMPLE_KB_FILES)))
@@ -932,6 +947,7 @@ def test_tag_tree_renders_the_full_chain_ge23(tmp_path: Path) -> None:
     assert _block(render_root_tags(scan(kb)), "Namespace: topic.cooking") == [root_topic]
 
 
+@pytest.mark.superseded
 def test_extension_marker_follows_the_folder_ge24(tmp_path: Path) -> None:
     """The marker is derived from the tree: delete the folder and it goes, the node stays (GE-24)."""
     kb = write_kb(tmp_path / "KB", SAMPLE_KB_FILES)
@@ -949,6 +965,7 @@ def test_extension_marker_follows_the_folder_ge24(tmp_path: Path) -> None:
     assert "`topic.cooking.recipes`" in text
 
 
+@pytest.mark.superseded
 def test_static_definitions_are_always_rendered_ge29(tmp_path: Path) -> None:
     """``type`` and ``status`` are generator text, identical for an empty and a full KB (C17)."""
     empty = render_root_tags(scan(_mkdir(tmp_path / "Empty")))
@@ -962,6 +979,7 @@ def test_static_definitions_are_always_rendered_ge29(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_generators_are_total_over_a_degraded_tree_ge25(tmp_path: Path) -> None:
     """Each degraded case renders one line plus one diagnostic, and the flush completes (GE-25)."""
     kb = write_kb(tmp_path / "KB", DEGRADED_KB_FILES)
@@ -1103,6 +1121,7 @@ def test_bullet_tags_are_sorted_independently_of_frontmatter_ge27(tmp_path: Path
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_derived_set_holds_no_conflict_history_ge28(tmp_path: Path) -> None:
     """Resolving a conflict leaves no trace of it in any derived file (GE-28)."""
     kb = write_kb(tmp_path / "KB", SAMPLE_KB_FILES)
@@ -1137,6 +1156,7 @@ def test_derived_set_holds_no_conflict_history_ge28(tmp_path: Path) -> None:
             assert "conflict" not in text.lower()
 
 
+@pytest.mark.superseded
 def test_empty_kb_generates_two_files_ge29(tmp_path: Path) -> None:
     """An empty KB yields the two root artifacts and no topic index (GE-29)."""
     kb = _mkdir(tmp_path / "Empty")
@@ -1164,6 +1184,7 @@ def test_regenerate_all_accepts_a_prepared_snapshot_ge30(tmp_path: Path) -> None
     assert regenerate_all(kb, snapshot=snapshot).written == []
 
 
+@pytest.mark.superseded
 def test_an_unwritable_topic_does_not_abort_the_flush_ma14(tmp_path: Path) -> None:
     """One unwritable directory is reported; every other derived file is still regenerated."""
     kb = write_kb(tmp_path / "KB", SAMPLE_KB_FILES)

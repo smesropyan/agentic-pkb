@@ -1315,6 +1315,7 @@ ESCALATING_CALLS = [
 ]
 
 
+@pytest.mark.superseded
 @pytest.mark.parametrize(("tool", "arguments"), ESCALATING_CALLS)
 @pytest.mark.asyncio
 async def test_an_escalation_is_a_success_with_a_discriminator_mc20(

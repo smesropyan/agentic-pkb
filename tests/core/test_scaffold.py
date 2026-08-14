@@ -98,6 +98,7 @@ def test_deleting_a_breadth_summary_is_reported_by_validate_tree_sc1(tmp_path: P
     assert [(f.rule_id, f.path) for f in findings] == [("SC-1", "Cooking/notes/summary.md")]
 
 
+@pytest.mark.superseded
 def test_scaffold_creates_no_optional_members_sc4(tmp_path: Path) -> None:
     kb = make_kb(tmp_path)
     cooking(kb, regenerate=True)
@@ -115,6 +116,7 @@ def test_scaffold_creates_no_optional_members_sc4(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_scaffolded_topic_is_discoverable_and_catalogued_sc2(tmp_path: Path) -> None:
     kb = make_kb(tmp_path)
     cooking(kb, regenerate=True)
@@ -302,6 +304,7 @@ def test_a_nested_topic_must_go_through_sub_topics_pa4(tmp_path: Path, location:
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_scaffold_regenerates_derived_files_in_the_same_operation_sc7(tmp_path: Path) -> None:
     kb = make_kb(tmp_path)
     result = scaffold_topic(

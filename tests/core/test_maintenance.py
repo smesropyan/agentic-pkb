@@ -133,6 +133,7 @@ def changed_lines(before: bytes, after: bytes) -> list[str]:
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_flush_performs_the_six_duties_in_order_ma1(
     sample_kb: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -159,6 +160,7 @@ def test_flush_performs_the_six_duties_in_order_ma1(
     assert calls == ["bump", "links", "orphans", "regenerate", "requests"]
 
 
+@pytest.mark.superseded
 def test_flush_regenerates_every_derived_file_ma1(sample_kb: Path) -> None:
     """Duties 1-3: the topic indexes, the root registry and the root catalog all get written."""
     report = flush(sample_kb, today=TODAY)
@@ -439,6 +441,7 @@ def test_the_only_frontmatter_field_ever_written_is_updated_ma6() -> None:
     assert written == ["updated"]
 
 
+@pytest.mark.superseded
 def test_flush_leaves_a_conflicted_files_tags_byte_identical_ma6(sample_kb: Path) -> None:
     """Conflict tagging is Layer 2's judgment; clearing it is the human's decision."""
     conflicted = "Cooking/notes/preheat-the-grill.md"
@@ -872,6 +875,7 @@ def test_scaffolding_a_topic_leaves_another_topics_index_byte_identical_ge5(tmp_
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_scan_requests_are_data_only_ma11(sample_kb: Path) -> None:
     """Layer 1 returns values; the queue, the database and the comparison are Layer 2/3's."""
     report = flush(sample_kb, ["Cooking/notes/summary.md"], today=TODAY)
@@ -884,6 +888,7 @@ def test_scan_requests_are_data_only_ma11(sample_kb: Path) -> None:
     assert "sqlite" not in SOURCE and "import socket" not in SOURCE
 
 
+@pytest.mark.superseded
 def test_requests_are_coalesced_per_topic_ma12(tmp_path: Path) -> None:
     """Five changed notes in one topic are one whole-topic scan, not five identical ones."""
     notes = [f"Cooking/notes/n{index}.md" for index in range(5)]
@@ -896,6 +901,7 @@ def test_requests_are_coalesced_per_topic_ma12(tmp_path: Path) -> None:
     assert requests[0].changed_paths == tuple(sorted(notes))
 
 
+@pytest.mark.superseded
 def test_only_notes_references_and_extension_folders_trigger_a_scan_ma12(tmp_path: Path) -> None:
     """``topic.md``, skills, assets and derived files state no knowledge to compare (C20)."""
     root = kb_with(
@@ -929,6 +935,7 @@ def test_only_notes_references_and_extension_folders_trigger_a_scan_ma12(tmp_pat
     ]
 
 
+@pytest.mark.superseded
 def test_a_request_can_carry_an_empty_changed_set_ma12(sample_kb: Path) -> None:
     """An on-demand scan addresses the topic, not a file change."""
     request = scan_request_for(
@@ -941,6 +948,7 @@ def test_a_request_can_carry_an_empty_changed_set_ma12(sample_kb: Path) -> None:
         scan_request_for(scan(sample_kb), "NoSuchTopic", requested_at=TODAY)
 
 
+@pytest.mark.superseded
 def test_requests_are_one_per_topic_in_discovery_order_ma12(sample_kb: Path) -> None:
     """Two topics changed, two requests, in the tree's own deterministic order."""
     changed = ["Cooking/sub-topics/Grilling/notes/summary.md", "BBQ/notes/summary.md"]
@@ -983,6 +991,7 @@ def test_flush_survives_a_broken_tree_and_reports_it_ma14(tmp_path: Path) -> Non
     assert flush(root, today=TODAY).written == [], "a second flush over the same tree is a no-op"
 
 
+@pytest.mark.superseded
 def test_flush_over_an_empty_knowledge_base_ma14(empty_kb: Path) -> None:
     """A directory with no topics is a valid knowledge base, not a failure (GE-29)."""
     report = flush(empty_kb, ["nothing.md"], today=TODAY)

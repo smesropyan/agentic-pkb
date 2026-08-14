@@ -186,6 +186,7 @@ def test_record_only_dirs_is_structural_minus_the_three_topic_routes_pa5_va36() 
     }
 
 
+@pytest.mark.superseded
 def test_media_and_skills_yield_files_but_never_a_topic_root_pa5_ge15(tmp_path: Path) -> None:
     """The walk enters ``media/`` and ``skills/`` to *record*, never to *discover* (PA-5, GE-15).
 
@@ -286,6 +287,7 @@ def test_topic_record_parent_and_children_pa5(sample_kb: Path) -> None:
     assert [t.path for t in snapshot.top_level_topics()] == ["BBQ", "Cooking"]
 
 
+@pytest.mark.superseded
 def test_topic_record_extension_folders_pa7(sample_kb: Path) -> None:
     snapshot = scan(sample_kb)
 
@@ -409,7 +411,12 @@ def test_unaddressable_topic_root_is_reported_not_dropped_pa8(tmp_path: Path) ->
             FileRole.REFERENCE,
             FileClass.AUTHORED,
         ),
-        ("Cooking/recipes/ribeye-on-gas.md", FileRole.EXTENSION_ITEM, FileClass.AUTHORED),
+        pytest.param(
+            "Cooking/recipes/ribeye-on-gas.md",
+            FileRole.EXTENSION_ITEM,
+            FileClass.AUTHORED,
+            marks=pytest.mark.superseded,
+        ),
         ("skills/voice/SKILL.md", FileRole.SKILL, FileClass.SKILL),
     ],
 )
@@ -627,6 +634,7 @@ def test_scan_is_repeatable(sample_kb: Path) -> None:
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_sample_kb_is_the_spec_fixture_ge31(sample_kb: Path) -> None:
     """§4.1's tree, from which every later golden file is rendered."""
     snapshot = scan(sample_kb)

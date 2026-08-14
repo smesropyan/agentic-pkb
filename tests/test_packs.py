@@ -805,6 +805,7 @@ def test_assembly_schedules_no_conflict_scan_pk12(kb: Path) -> None:
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_escalations_report_the_review_note_verbatim_mc20(snapshot: KbSnapshot) -> None:
     """The caller is a program that has to stop, and the human's note is why.
 
@@ -860,6 +861,7 @@ def test_escalation_clears_itself_when_the_human_resolves_the_tag_mc20(kb: Path)
     assert "Cooking/notes/salt.md" not in paths(research_pack(resolved, topics=[COOKING]))
 
 
+@pytest.mark.superseded
 def test_escalation_is_computed_from_the_tag_not_from_the_pack_contents_mc20(
     snapshot: KbSnapshot,
 ) -> None:

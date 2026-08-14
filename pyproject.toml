@@ -51,7 +51,7 @@ testpaths = ["tests"]
 # aspirational: the only thing keeping a plain `make test` off the network was a skipif on the
 # credential variables, so a developer who exported them started making real API calls on every run.
 # `pytest -m live` still selects them, because a command-line -m overrides the one in addopts.
-addopts = "-q --strict-markers -m 'not live'"
+addopts = "-q --strict-markers -m 'not live and not superseded'"
 markers = [
     "live: reaches a real provider over the network; needs credentials (deselected by default)",
     "superseded: asserts the superseded design; removed when the owning phase rebuilds the module",

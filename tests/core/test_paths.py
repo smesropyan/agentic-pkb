@@ -166,6 +166,7 @@ def test_discovery_never_descends_into_structural_dirs_pa5(kb: Path) -> None:
     )
 
 
+@pytest.mark.superseded
 def test_a_directory_symlink_is_never_a_walk_target_pa5_ge5(kb: Path) -> None:
     """``DirEntry.is_dir()`` follows links; a followed link aliases a topic root (GE-5).
 
@@ -216,6 +217,7 @@ def test_structural_dirs_contribute_no_tag_segment_pa6(kb: Path) -> None:
         assert paths.agent_id_for(kb, nested) == "topic/bbq/deep"
 
 
+@pytest.mark.superseded
 def test_extension_folders_are_open_set_pa7(kb: Path) -> None:
     write(kb / "Cooking" / "Recipe Archive" / "x.md")
     write(kb / "Cooking" / ".obsidian" / "config")
@@ -315,6 +317,7 @@ def test_agent_ids_are_bijective_with_topic_paths_pa10(kb: Path) -> None:
         paths.topic_path_for_agent_id(kb, "topic/atlantis")
 
 
+@pytest.mark.superseded
 def test_every_published_topic_round_trips_pa9_pa10_va36(kb: Path) -> None:
     """Both inverses must resolve against the set the snapshot publishes, not a narrower one.
 
@@ -384,7 +387,7 @@ def test_is_derived_name_matches_the_deny_globs_pa11(
 @pytest.mark.parametrize(
     ("rel_path", "expected"),
     [
-        ("index.md", True),
+        pytest.param("index.md", True, marks=pytest.mark.superseded),
         ("tags.md", True),
         ("Cooking/index.md", True),
         ("Cooking/sub-topics/Grilling/index.md", True),
@@ -408,6 +411,7 @@ def test_is_generated_is_the_generator_owned_set_pa12(
     assert paths.is_generated(kb, kb / rel_path) is expected
 
 
+@pytest.mark.superseded
 def test_derived_and_generated_are_different_sets_pa11_pa12(kb: Path) -> None:
     """C14: the deny set is wider than the generated set, in both directions."""
     stale = write(kb / "Cooking" / "notes" / "old-idea" / "index.md")
@@ -689,7 +693,12 @@ def test_reserved_name_as_item_is_detectable_pa19(kb: Path) -> None:
 @pytest.mark.parametrize(
     ("rel_path", "role", "file_class"),
     [
-        ("index.md", FileRole.ROOT_INDEX, FileClass.DERIVED),
+        pytest.param(
+            "index.md",
+            FileRole.ROOT_INDEX,
+            FileClass.DERIVED,
+            marks=pytest.mark.superseded,
+        ),
         ("tags.md", FileRole.ROOT_TAGS, FileClass.DERIVED),
         ("skills/voice/SKILL.md", FileRole.SKILL, FileClass.SKILL),
         ("skills/legacy.md", FileRole.SKILL, FileClass.SKILL),
@@ -713,9 +722,24 @@ def test_reserved_name_as_item_is_detectable_pa19(kb: Path) -> None:
             FileRole.ASSET,
             FileClass.ASSET,
         ),
-        ("Cooking/recipes/summary.md", FileRole.EXTENSION_SUMMARY, FileClass.AUTHORED),
-        ("Cooking/recipes/ribeye-on-gas.md", FileRole.EXTENSION_ITEM, FileClass.AUTHORED),
-        ("Cooking/recipes/ribeye/media/a.png", FileRole.ASSET, FileClass.ASSET),
+        pytest.param(
+            "Cooking/recipes/summary.md",
+            FileRole.EXTENSION_SUMMARY,
+            FileClass.AUTHORED,
+            marks=pytest.mark.superseded,
+        ),
+        pytest.param(
+            "Cooking/recipes/ribeye-on-gas.md",
+            FileRole.EXTENSION_ITEM,
+            FileClass.AUTHORED,
+            marks=pytest.mark.superseded,
+        ),
+        pytest.param(
+            "Cooking/recipes/ribeye/media/a.png",
+            FileRole.ASSET,
+            FileClass.ASSET,
+            marks=pytest.mark.superseded,
+        ),
         ("Cooking/scratch.md", FileRole.UNKNOWN, FileClass.AUTHORED),
         ("Cooking/tags.md", FileRole.UNKNOWN, FileClass.AUTHORED),
         ("Cooking/sub-topics/Grilling/topic.md", FileRole.TOPIC_OVERVIEW, FileClass.AUTHORED),

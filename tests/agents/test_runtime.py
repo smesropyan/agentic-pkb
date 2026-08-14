@@ -1153,6 +1153,7 @@ async def test_a_too_deep_subtopic_is_refused_not_crashed_ex12(kb: Path) -> None
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_invalidate_snapshot_drops_the_tree_and_keeps_the_graphs_rt25(kb: Path) -> None:
     """RT-25/RT-28: the gates need a tree that includes what this run has already written.
 

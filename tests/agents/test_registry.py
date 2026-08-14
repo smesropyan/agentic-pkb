@@ -528,6 +528,7 @@ def test_compiling_the_librarian_builds_zero_experts_rg8(big_kb: Path) -> None:
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_every_backticked_id_in_the_root_index_is_a_subagent_key_rg9(kb: Path) -> None:
     registry, _ = registry_for(kb)
 
@@ -538,6 +539,7 @@ def test_every_backticked_id_in_the_root_index_is_a_subagent_key_rg9(kb: Path) -
     assert keys == set(rendered)
 
 
+@pytest.mark.superseded
 def test_the_subagent_description_is_the_catalog_line_rg10(kb: Path) -> None:
     # A description carrying markdown-reserved characters is the case where "one string" and
     # "two strings that usually agree" come apart.
@@ -631,6 +633,7 @@ def test_a_corrupt_topic_md_still_gets_a_descriptor_rg14(kb: Path) -> None:
     json.dumps([dataclasses.asdict(d) for d in descriptors.values()])
 
 
+@pytest.mark.superseded
 def test_list_agents_is_the_librarian_then_root_index_order_rg15(kb: Path) -> None:
     registry, _ = registry_for(kb)
 

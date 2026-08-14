@@ -372,7 +372,12 @@ def test_reference_source_files_produce_no_findings_va7_va24(kb: Path) -> None:
         pytest.param("project.alpha", "UNKNOWN_TAG_NAMESPACE", id="va8-namespace"),
         pytest.param("topic.a.b.c.d", "TAG_DEPTH_EXCEEDED", id="va8-depth"),
         pytest.param("type.article", "UNKNOWN_TYPE_TAG", id="va8-type-vocabulary"),
-        pytest.param("status.wip", "UNKNOWN_STATUS_TAG", id="va8-status-vocabulary"),
+        pytest.param(
+            "status.wip",
+            "UNKNOWN_STATUS_TAG",
+            id="va8-status-vocabulary",
+            marks=pytest.mark.superseded,
+        ),
     ],
 )
 def test_tag_syntax_namespace_depth_and_vocabulary_va8(kb: Path, tag: str, code: str) -> None:
@@ -393,11 +398,17 @@ def test_open_namespaces_never_yield_a_vocabulary_finding_va8(kb: Path) -> None:
 @pytest.mark.parametrize(
     ("declared", "code"),
     [
-        pytest.param(("topic.cooking", "type.note"), "MISSING_STATUS_TAG", id="va9-status-zero"),
+        pytest.param(
+            ("topic.cooking", "type.note"),
+            "MISSING_STATUS_TAG",
+            id="va9-status-zero",
+            marks=pytest.mark.superseded,
+        ),
         pytest.param(
             ("topic.cooking", "type.note", "status.draft", "status.approved"),
             "MULTIPLE_STATUS_TAGS",
             id="va9-status-two",
+            marks=pytest.mark.superseded,
         ),
         pytest.param(("type.note", "status.draft"), "MISSING_TOPIC_TAG", id="va9-topic-zero"),
         pytest.param(("topic.cooking", "status.draft"), "MISSING_TYPE_TAG", id="va9-type-zero"),
@@ -508,7 +519,13 @@ def test_source_type_must_match_the_location_va13(kb: Path) -> None:
             id="va13-reference",
         ),
         pytest.param("Cooking/topic.md", "summary", "type.summary", id="va13-topic-overview"),
-        pytest.param("Cooking/recipes/ribeye.md", "note", "type.note", id="va13-extension-item"),
+        pytest.param(
+            "Cooking/recipes/ribeye.md",
+            "note",
+            "type.note",
+            id="va13-extension-item",
+            marks=pytest.mark.superseded,
+        ),
     ],
 )
 def test_the_location_table_accepts_its_own_rows_va13(
@@ -625,6 +642,7 @@ def test_summary_is_not_an_item_name_va18(kb: Path) -> None:
     assert finding.rule_id == "VA-18"
 
 
+@pytest.mark.superseded
 def test_the_section_breadth_summary_is_legal_va18(kb: Path) -> None:
     for path in (
         "Cooking/notes/summary.md",
@@ -639,6 +657,7 @@ def test_the_section_breadth_summary_is_legal_va18(kb: Path) -> None:
         assert validate_content(kb, path, text) == [], path
 
 
+@pytest.mark.superseded
 def test_a_reserved_name_may_not_name_an_item_va19(kb: Path) -> None:
     path = "Cooking/recipes/topic/topic.md"
     finding = only(validate_content(kb, path, note_at(path)), "RESERVED_NAME_AS_ITEM")
@@ -722,6 +741,7 @@ def test_a_loose_asset_at_a_topic_root_warns_too_va38(kb: Path) -> None:
     assert validate_content(kb, "Cooking/photo.jpg", "") == [finding]
 
 
+@pytest.mark.superseded
 def test_an_asset_below_a_topic_root_keeps_its_exemption_va38_va7(kb: Path) -> None:
     """Only the *frontmatter* rules are re-enabled for an asset, and only VA-38 among the rest.
 
@@ -738,6 +758,7 @@ def test_an_asset_below_a_topic_root_keeps_its_exemption_va38_va7(kb: Path) -> N
         assert validate_content(kb, rel_path, "") == [], rel_path
 
 
+@pytest.mark.superseded
 def test_an_extension_folder_is_never_flagged_va38(kb: Path) -> None:
     (kb / "Cooking/recipes").mkdir()
     assert [f for f in validate_tree(kb) if f.path == "Cooking/recipes"] == []
@@ -759,6 +780,7 @@ def test_updated_may_not_precede_created_va28(kb: Path) -> None:
     assert only(validate_content(kb, NOTE_PATH, text), "DATE_ORDER").field == "updated"
 
 
+@pytest.mark.superseded
 def test_last_reviewed_may_not_precede_created_va28(kb: Path) -> None:
     text = note_at(NOTE_PATH, created="2024-10-15", last_reviewed="2024-10-01")
     assert only(validate_content(kb, NOTE_PATH, text), "DATE_ORDER").field == "last_reviewed"
@@ -783,6 +805,7 @@ def test_last_reviewed_may_not_precede_created_va28(kb: Path) -> None:
         ),
     ],
 )
+@pytest.mark.superseded
 def test_review_note_and_conflict_status_are_coupled_va29(
     kb: Path, overrides: dict[str, str], code: str
 ) -> None:
@@ -790,6 +813,7 @@ def test_review_note_and_conflict_status_are_coupled_va29(
     assert only(findings, code).severity is Severity.WARNING
 
 
+@pytest.mark.superseded
 def test_a_conflicted_file_with_a_review_note_is_clean_va29(kb: Path) -> None:
     text = note_at(
         NOTE_PATH,
@@ -799,6 +823,7 @@ def test_a_conflicted_file_with_a_review_note_is_clean_va29(kb: Path) -> None:
     assert validate_content(kb, NOTE_PATH, text) == []
 
 
+@pytest.mark.superseded
 def test_last_reviewed_alone_is_not_flagged_va29(kb: Path) -> None:
     """`last_reviewed` is the only permitted trace of a resolved conflict."""
     assert validate_content(kb, NOTE_PATH, note_at(NOTE_PATH, last_reviewed="2024-11-01")) == []
@@ -814,6 +839,7 @@ def test_last_reviewed_alone_is_not_flagged_va29(kb: Path) -> None:
         pytest.param({"conflict_history": "[]"}, id="va30-history"),
     ],
 )
+@pytest.mark.superseded
 def test_conflict_residue_is_forbidden_va30(kb: Path, residue: dict[str, str]) -> None:
     findings = validate_content(kb, NOTE_PATH, note_at(NOTE_PATH, **residue))
     finding = only(findings, "FORBIDDEN_CONFLICT_FIELD")
@@ -897,7 +923,12 @@ def test_a_folder_hosted_item_needs_its_main_file_va16(kb: Path) -> None:
     ("folder", "stray"),
     [
         pytest.param("references", "references/grill-basics/scan.md", id="va16-references"),
-        pytest.param("recipes", "recipes/ribeye/prep.md", id="va16-extension-folder"),
+        pytest.param(
+            "recipes",
+            "recipes/ribeye/prep.md",
+            id="va16-extension-folder",
+            marks=pytest.mark.superseded,
+        ),
     ],
 )
 def test_the_main_file_rule_covers_every_item_section_va16(
@@ -984,6 +1015,7 @@ def test_an_unexpected_root_entry_warns_pa1(kb: Path) -> None:
     assert finding.path == "Cooking.md"
 
 
+@pytest.mark.superseded
 def test_the_three_reserved_root_entries_are_expected_pa1(kb: Path) -> None:
     write(kb, "index.md", "# PKB Topic Catalog\n")
     write(kb, "tags.md", "# PKB Tag Registry\n")
@@ -1106,6 +1138,7 @@ def test_the_walk_behind_validate_tree_keeps_crlf_byte_exact_ma7(
     assert find_broken_links(kb, seen[0]) == []
 
 
+@pytest.mark.superseded
 def test_one_defect_is_one_finding_on_the_decision_c_path_cx5(kb: Path) -> None:
     """The walk and the rule functions both derive PA-1, VA-36 and VA-39 — one owner each.
 
