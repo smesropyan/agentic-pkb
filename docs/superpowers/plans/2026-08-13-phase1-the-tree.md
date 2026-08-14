@@ -74,7 +74,7 @@ checkpoint needed.
 **Interfaces:**
 - Produces: rule ids `T-1`…`T-n` that every later task's docstrings and tests cite.
 
-- [ ] **Step 1:** Read `DESIGN.md` §1 (all ten subsections) and write the rules file: a table of
+- [x] **Step 1:** Read `DESIGN.md` §1 (all ten subsections) and write the rules file: a table of
   `T-*` rows — id, rule text (quoting §1 where exact), severity, and the check that will assert it.
   Cover at minimum: the topic structure and structural dirs (no extension folders, `sub-topics/`
   recursion); the three file classes with `AUTHORSHIP.md` in class 3 and captured sources exempt
@@ -89,9 +89,9 @@ checkpoint needed.
   and per-run regeneration; the `## Skills` section in `topic.md`; root `sessions/*.md` accepted as
   knowledge files with `topic: "(session)"` and no location-agreement check (the full session rules
   are Phase 2's `S-*`).
-- [ ] **Step 2:** Self-check: walk §1.1–§1.10 and confirm every subsection maps to ≥1 rule; list the
+- [x] **Step 2:** Self-check: walk §1.1–§1.10 and confirm every subsection maps to ≥1 rule; list the
   mapping at the bottom of the file.
-- [ ] **Step 3:** Commit: `spec: mint the T-rules for the tree`.
+- [x] **Step 3:** Commit: `spec: mint the T-rules for the tree`.
 
 ### Task 2: Deselect the superseded core tests
 
@@ -99,8 +99,8 @@ checkpoint needed.
 - Modify: `pyproject.toml` (addopts)
 - Modify: test files found by the greps below (marker lines only)
 
-- [ ] **Step 1:** Change addopts to `-q --strict-markers -m 'not live and not superseded'`.
-- [ ] **Step 2:** Mark `@pytest.mark.superseded` (module-level `pytestmark` where a whole file dies)
+- [x] **Step 1:** Change addopts to `-q --strict-markers -m 'not live and not superseded'`.
+- [x] **Step 2:** Mark `@pytest.mark.superseded` (module-level `pytestmark` where a whole file dies)
   every test matched by these greps — the old design's assertions:
   `grep -rln 'status\.draft\|status\.approved\|status\.conflict-review\|review_note\|last_reviewed' tests/`
   `grep -rln 'EXTENSION\|extension_folder\|topic-specific\|recipes/' tests/core tests/agents`
@@ -108,8 +108,8 @@ checkpoint needed.
   `grep -rln 'scan_queue\|_SCAN_TRIGGER_ROLES\|ScanRequest\|on_demand_request' tests/`
   Mark at the narrowest level that isolates the assertion (function over module where a file mixes
   live and dead). Do not delete anything yet: deletion is Task 11, after replacements exist.
-- [ ] **Step 3:** `make check` — green; record the new passed/deselected counts in the commit body.
-- [ ] **Step 4:** Commit: `test: deselect the superseded core assertions`.
+- [x] **Step 3:** `make check` — green; record the new passed/deselected counts in the commit body.
+- [x] **Step 4:** Commit: `test: deselect the superseded core assertions`.
 
 ### Task 3: Frontmatter — the fields shrink
 
@@ -122,7 +122,7 @@ checkpoint needed.
   `review_note`/`last_reviewed`; `Frontmatter` model without those attributes. Consumed by Tasks
   4–8.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/core/test_tree_rules.py
@@ -146,13 +146,13 @@ def test_a_retired_field_round_trips_as_unknown_t(tmp_path):
     assert "review_note" in doc.meta.unknown_fields
 ```
 
-- [ ] **Step 2:** `uv run pytest tests/core/test_tree_rules.py -v` — FAIL (fields still known).
-- [ ] **Step 3:** Remove the two fields from `OPTIONAL_FIELDS`, `CANONICAL_ORDER`, `_QUOTED_FIELDS`
+- [x] **Step 2:** `uv run pytest tests/core/test_tree_rules.py -v` — FAIL (fields still known).
+- [x] **Step 3:** Remove the two fields from `OPTIONAL_FIELDS`, `CANONICAL_ORDER`, `_QUOTED_FIELDS`
   (`review_note` only), the field constructors around `frontmatter.py:320`, and the two attributes
   on the model in `models.py`. Chase every `mypy` error the removal surfaces — `validation.py`'s
   VA-28/VA-29 references break here and are stubbed out with the rule removals completed in Task 4.
-- [ ] **Step 4:** `uv run pytest tests/core/test_tree_rules.py -v` — PASS. `make check` — green.
-- [ ] **Step 5:** Commit: `feat: shrink frontmatter to seven required fields plus related_topics`.
+- [x] **Step 4:** `uv run pytest tests/core/test_tree_rules.py -v` — PASS. `make check` — green.
+- [x] **Step 5:** Commit: `feat: shrink frontmatter to seven required fields plus related_topics`.
 
 ### Task 4: Tags — three namespaces, one closed set
 
@@ -164,7 +164,7 @@ def test_a_retired_field_round_trips_as_unknown_t(tmp_path):
 - Produces: `Namespace` = `{TOPIC, TYPE, DOMAIN}`; no `STATUS_DEFINITIONS`; validation requiring
   ≥1 `topic.*` and exactly one `type.*` and no `status.*` anywhere. Consumed by Tasks 5–8.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 from pkb.core import tags
@@ -179,11 +179,11 @@ def test_a_status_tag_is_an_unknown_namespace_finding_t(tmp_path):
     ...  # concrete body written against the existing scan/validate call shape in test_scan.py
 ```
 
-- [ ] **Step 2:** Run — FAIL. **Step 3:** Delete `Namespace.STATUS`, the status vocabulary block
+- [x] **Step 2:** Run — FAIL. **Step 3:** Delete `Namespace.STATUS`, the status vocabulary block
   (`tags.py` ~130–137), `STATUS_DEFINITIONS`, and the status branch of the registry renderer's
   definition sections; in `validation.py` delete VA-29 whole and the exactly-one-`status.*` clause
   of the tag-count rule, keeping ≥1 `topic.*` and exactly-one `type.*` under their new `T-*` ids.
-- [ ] **Step 4:** Run tests, then `make check` — the golden registry fixtures now fail; regenerate
+- [x] **Step 4:** Run tests, then `make check` — the golden registry fixtures now fail; regenerate
   them ONLY if Task 6 is not reordered before this lands — otherwise mark the two golden tests
   `superseded` here and Task 6 replaces them. **Step 5:** Commit:
   `feat: three tag namespaces, type the one closed set`.
@@ -204,15 +204,15 @@ def test_a_status_tag_is_an_unknown_namespace_finding_t(tmp_path):
   whatever its extension and is never opened for YAML. `sessions/*.md` at the root classifies
   `SESSION`, parsed as a knowledge file, with the topic-location agreement checks skipped.
 
-- [ ] **Step 1:** Failing tests: one per produced behaviour above, built on `tmp_path` trees the way
+- [x] **Step 1:** Failing tests: one per produced behaviour above, built on `tmp_path` trees the way
   `tests/core/test_scan.py` builds them (six tests, each citing its `T-*` id; the captured-source
   test writes `references/book/book.md` plus `references/book/extract.md` and asserts the second is
   `CAPTURED_SOURCE` with `doc is None`).
-- [ ] **Step 2:** Run — FAIL. **Step 3:** Implement: delete the three `FileRole` members and every
+- [x] **Step 2:** Run — FAIL. **Step 3:** Implement: delete the three `FileRole` members and every
   table row naming them (`_SOURCE_TYPES_BY_ROLE`, `_TYPE_TAGS_BY_ROLE` derive; VA-16/VA-38's
   extension clauses; `RECORD_ONLY_DIRS` extension entries); add the two new members and their
   classification in `paths.classify`; extend the root-layout check in `scan.py` (~line 319).
-- [ ] **Step 4:** Run, then `make check`. **Step 5:** Commit:
+- [x] **Step 4:** Run, then `make check`. **Step 5:** Commit:
   `feat: classify the new tree shape — sessions in, extensions and root index out`.
 
 ### Task 6: The registry is the one derived root file
@@ -235,16 +235,16 @@ def test_a_status_tag_is_an_unknown_namespace_finding_t(tmp_path):
   the root index and passes `shipped_skills=()` by default so Layer 1 keeps zero knowledge of the
   package-data mount (the daemon supplies the real list — Phase 5 wires it).
 
-- [ ] **Step 1:** Failing tests: build the DESIGN §1.6 example tree on `tmp_path` (Cooking with the
+- [x] **Step 1:** Failing tests: build the DESIGN §1.6 example tree on `tmp_path` (Cooking with the
   example description and an `expert.md`, the baking sub-topic, one note carrying
   `related_topics`), call `render_root_tags`, and assert the example's marked lines appear exactly:
   the described node, the `*(custom expert)*` node, a bare `domain.*` node, and the `## Skills`
   section head. Plus a byte-idempotence test (render twice, identical) and a lifted-not-authored
   test (change the `topic.md` description, re-render, the node line follows it).
-- [ ] **Step 2:** Run — FAIL. **Step 3:** Implement; delete `root_index.py` and the
+- [x] **Step 2:** Run — FAIL. **Step 3:** Implement; delete `root_index.py` and the
   `EXTENSION_MARKER` machinery in `derive.py`; regenerate both goldens with the repo's existing
   regeneration path and eyeball the diff against DESIGN §1.6 before accepting.
-- [ ] **Step 4:** Run, `make check`. **Step 5:** Commit:
+- [x] **Step 4:** Run, `make check`. **Step 5:** Commit:
   `feat: the registry carries the catalog — summaries, markers, skills; no root index`.
 
 ### Task 7: The topic index — skills catalog and approach entries
@@ -274,11 +274,11 @@ def test_a_status_tag_is_an_unknown_namespace_finding_t(tmp_path):
 - Modify: `src/pkb/core/scaffold.py`
 - Test: `tests/core/test_tree_rules.py`
 
-- [ ] **Step 1:** Failing tests: a scaffolded topic's `topic.md` contains a `## Skills` section;
+- [x] **Step 1:** Failing tests: a scaffolded topic's `topic.md` contains a `## Skills` section;
   no scaffolded file carries any `status.*` tag; the scaffolded tree validates with zero errors
   under the new rules. **Step 2:** Run — FAIL. **Step 3:** Implement (drop the `status.draft`
   stamping at `scaffold.py` placeholder templates, add the section). **Step 4:** Run, `make check`.
-- [ ] **Step 5:** Commit: `feat: scaffold the new topic shape`.
+- [x] **Step 5:** Commit: `feat: scaffold the new topic shape`.
 
 ### Task 9: Maintenance — regeneration only
 
@@ -286,10 +286,10 @@ def test_a_status_tag_is_an_unknown_namespace_finding_t(tmp_path):
 - Modify: `src/pkb/core/maintenance.py`
 - Test: `tests/core/test_tree_rules.py`
 
-- [ ] **Step 1:** Failing test: `maintenance` exposes no scan-trigger surface
+- [x] **Step 1:** Failing test: `maintenance` exposes no scan-trigger surface
   (`not hasattr(maintenance, "_SCAN_TRIGGER_ROLES")` plus the public API check that per-run
   regeneration covers exactly the topic indexes and the registry). **Step 2:** Run — FAIL.
-- [ ] **Step 3:** Delete the scan-trigger roles, the enqueue hook and their docstrings; keep
+- [x] **Step 3:** Delete the scan-trigger roles, the enqueue hook and their docstrings; keep
   per-write validation and per-run regeneration. **Step 4:** Run, `make check`. **Step 5:** Commit:
   `feat: maintenance regenerates and validates, nothing else`.
 
@@ -298,12 +298,12 @@ def test_a_status_tag_is_an_unknown_namespace_finding_t(tmp_path):
 **Files:**
 - Create: `tests/core/test_design_example.py`
 
-- [ ] **Step 1:** One end-to-end test, written to pass: scaffold a KB on `tmp_path`, create the
+- [x] **Step 1:** One end-to-end test, written to pass: scaffold a KB on `tmp_path`, create the
   DESIGN §1.6 example topics, file a note and a reference through the frontmatter serializer, run
   scan + validate (zero errors), regenerate everything twice (byte-identical both times), and
   assert the registry excerpt lines from DESIGN §1.6 appear verbatim. This is the phase's
   proves-itself scenario from the roadmap, kept as a living test.
-- [ ] **Step 2:** `make check`. **Step 3:** Commit: `test: the tree proves itself against DESIGN §1.6`.
+- [x] **Step 2:** `make check`. **Step 3:** Commit: `test: the tree proves itself against DESIGN §1.6`.
 
 ### Task 11: Delete the superseded core tests and dead exports
 

@@ -19,7 +19,7 @@ source_type: tag-registry
 
 ## Namespace: type
 
-- `type.note` – human-written note
+- `type.note` – an observation from the operator's own practice
 - `type.reference` – static source
 - `type.solution` – reusable solution (a note tagged as a solution)
 - `type.summary` – breadth overview

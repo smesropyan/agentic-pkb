@@ -449,7 +449,7 @@ def test_static_definitions_are_verbatim_generator_text_tg12() -> None:
     """Superseded by T-17: the ``status.*`` half of this test has no subject left in
     ``pkb.core.tags`` \u2014 the vocabulary is retired outright, not merely renamed."""
     assert list(TYPE_DEFINITIONS.items()) == [
-        ("type.note", "human-written note"),
+        ("type.note", "an observation from the operator's own practice"),
         ("type.reference", "static source"),
         ("type.solution", "reusable solution (a note tagged as a solution)"),
         ("type.summary", "breadth overview"),
@@ -458,7 +458,10 @@ def test_static_definitions_are_verbatim_generator_text_tg12() -> None:
     # longer carries, `status.approved` included, now that the vocabulary is gone (T-17).
     assert definition_annotation("status.approved") == ""
     assert definition_annotation("topic.cooking") == ""
-    assert definition_annotation("type.note") == " \u2013 human-written note"
+    assert (
+        definition_annotation("type.note")
+        == " \u2013 an observation from the operator's own practice"
+    )
 
 
 @pytest.mark.superseded
@@ -469,7 +472,7 @@ def test_static_sections_are_the_golden_blocks_tg12(tmp_path: Path) -> None:
     read, so its former golden lines are hardcoded rather than rendered.
     """
     assert render_definition_list(TYPE_DEFINITIONS) == [
-        "- `type.note` \u2013 human-written note",
+        "- `type.note` \u2013 an observation from the operator's own practice",
         "- `type.reference` \u2013 static source",
         "- `type.solution` \u2013 reusable solution (a note tagged as a solution)",
         "- `type.summary` \u2013 breadth overview",
