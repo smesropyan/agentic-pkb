@@ -166,7 +166,8 @@ No checkpoint needed.
 
 - [ ] **Step 1:** Failing route tests via the existing FastAPI test-client patterns in
   tests/server; every route above, plus: a run on a closed session is refused; `/end` on an open
-  session is refused; the SSE events stream carries the run events for whichever channel asks.
+  session is refused; the SSE events stream carries the run events for whichever channel asks; an
+  unknown `agent_id` at session creation is refused (S-9).
 - [ ] **Step 2:** FAIL → implement → PASS → `make check` (TUI/clients compile-keepers: point
   `pkb/clients` + `pkb/tui` at `/sessions` minimally — same JSON shapes where possible; mark any
   client test that asserts retired routes superseded with a Phase-5 comment. `src/pkb/server/mcp.py`
