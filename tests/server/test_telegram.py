@@ -65,6 +65,8 @@ from pkb.contracts import (
     expert_thread_id,
 )
 from pkb.server.telegram import (
+    _NEW_RETIRED,
+    _STALE_SESSION,
     COMMANDS,
     Channel,
     TelegramAdapter,
@@ -335,6 +337,16 @@ class ScriptedService(StubService):
         return await super().start_run(
             thread_id, message, approval_mode=approval_mode, run_id=run_id
         )
+
+    async def start_session_run(self, session_id: str, message: str) -> RunSubscription:
+        """The session-keyed successor (Task 7) — same refusal script, same journal kind, so every
+        pre-existing ``kinds(journal).count("start_run")``-shaped assertion keeps meaning what it
+        always meant: one admitted-or-refused turn, whichever entry point the adapter now calls."""
+        self.journal.append(("start_run", {"thread_id": session_id, "message": message}))
+        if self.refusals:
+            self.calls.append(("start_run", (session_id, message)))
+            raise self.refusals.pop(0)
+        return await super().start_session_run(session_id, message)
 
     async def resume(
         self, thread_id: str, decisions: Sequence[Decision], *, interrupt_id: str | None = None
@@ -661,7 +673,7 @@ async def test_an_unmapped_chat_runs_nothing_and_says_the_message_was_dropped_tg
     await deliver(bot, message_update(chat_id=STRANGER_CHAT, sender=OWNER, text="steak notes"))
 
     assert service.calls == []
-    assert await store.bound_thread(STRANGER_CHAT, GENERAL) is None
+    assert await store.bound_session(STRANGER_CHAT, GENERAL) is None
     assert "not kept" in api.texts[0]
 
 
@@ -697,7 +709,7 @@ async def test_three_updates_leave_one_run_and_two_silences_tg20(
 
     assert kinds(journal).count("start_run") == 1
     assert len(api.sent) == sent_after_owner, "the second and third updates produced no reply"
-    assert await store.bound_thread(STRANGER_CHAT, GENERAL) is None
+    assert await store.bound_session(STRANGER_CHAT, GENERAL) is None
 
 
 @pytest.mark.asyncio
@@ -1129,7 +1141,7 @@ async def test_a_pending_approval_neither_rotates_nor_retries_tg37(
 
     assert kinds(journal).count("start_run") == 1
     assert "create_thread" not in [name for name, _ in service.calls]
-    assert await store.bound_thread(CHAT, GENERAL) == THREAD
+    assert await store.bound_session(CHAT, GENERAL) == THREAD
 
 
 @pytest.mark.asyncio
@@ -1366,7 +1378,7 @@ async def test_answering_an_experts_approval_does_not_rebind_the_chat_tg59(
 
     await press(bot, (await handles(connection))[0], 0, "a")
 
-    assert await store.bound_thread(CHAT, GENERAL) == THREAD
+    assert await store.bound_session(CHAT, GENERAL) == THREAD
 
 
 @pytest.mark.asyncio
@@ -1939,8 +1951,8 @@ async def test_several_messages_share_one_thread_tg26(
     started = [entry["thread_id"] for kind, entry in journal if kind == "start_run"]
     assert len(started) == 6
     assert len(set(started)) == 1
-    assert [name for name, _ in service.calls].count("create_thread") == 1
-    assert await store.bound_thread(CHAT, GENERAL) == started[0]
+    assert [name for name, _ in service.calls].count("create_session") == 1
+    assert await store.bound_session(CHAT, GENERAL) == started[0]
 
 
 @pytest.mark.asyncio
@@ -1968,6 +1980,55 @@ async def test_only_new_rotates_the_thread_tg27(
     started = [entry["thread_id"] for kind, entry in journal if kind == "start_run"]
     assert len(set(started)) == 2
     assert [name for name, _ in service.calls].count("create_thread") == 2
+
+
+@pytest.mark.asyncio
+async def test_only_close_rotates_the_session_task7(
+    service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi, journal: Journal
+) -> None:
+    """Task 7 successor of ``test_only_new_rotates_the_thread_tg27``: with no ``/new`` left (S-15),
+    the same "no invisible rotation" property now belongs to ``/close`` — ordinary messages, and
+    even the retired ``/new`` keystroke itself, must never split one session into two, and only an
+    explicit ``/close`` may.
+    """
+    bot = adapter(service, store, api)
+
+    await deliver(bot, message_update(update_id=1, text="first"))
+    await deliver(
+        bot, message_update(update_id=2, text="/new")
+    )  # the dead command: a reply, no rotation
+    await deliver(bot, message_update(update_id=3, text="second"))
+
+    started = [entry["thread_id"] for kind, entry in journal if kind == "start_run"]
+    assert len(set(started)) == 1, (
+        "an ordinary message and the retired /new must not rotate anything"
+    )
+    assert [name for name, _ in service.calls].count("create_session") == 1
+
+    await deliver(bot, message_update(update_id=4, text="/close"))
+    await deliver(bot, message_update(update_id=5, text="third"))
+
+    started_after_close = [entry["thread_id"] for kind, entry in journal if kind == "start_run"]
+    assert len(set(started_after_close)) == 2, (
+        "/close is the one thing that may open a fresh session"
+    )
+
+
+@pytest.mark.asyncio
+async def test_new_gets_the_retirement_pointer_not_the_generic_fallback_task7(
+    service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """Fix round 1, finding 4: ``/new`` is recognized and answered with its own one-line pointer
+    (:data:`~pkb.server.telegram._NEW_RETIRED`, per :data:`COMMANDS`'s own docstring) — not the
+    generic "I know ..." unknown-command fallback (:data:`COMMANDS` no longer names it at all, so
+    the dispatcher would fall through to that branch without the explicit ``elif``) and not silence.
+    """
+    bot = adapter(service, store, api)
+
+    await deliver(bot, message_update(text="/new"))
+
+    assert api.transcript == _NEW_RETIRED
+    assert "I know" not in api.transcript
 
 
 # --------------------------------------------------------------------------------------
@@ -1999,6 +2060,19 @@ def test_the_command_surface_is_exactly_six_and_has_no_connect_or_talk_tg39() ->
     assert COMMANDS == ("/new", "/threads", "/agents", "/pending", "/cancel", "/channels")
     assert "/connect" not in COMMANDS
     assert "/talk" not in COMMANDS
+
+
+def test_the_command_surface_is_exactly_the_seven_s15() -> None:
+    """Task 7 successor of ``test_the_command_surface_is_exactly_six_and_has_no_connect_or_talk_
+    tg39`` and of ``test_telegram_topics.py``'s own ``set(COMMANDS)`` pin: S-15, quoted, "the set
+    settles at seven commands: ``/channels``, ``/threads``, ``/agents``, ``/cancel``, ``/name``,
+    ``/close`` and ``/end``." Exact tuple, exact order, and every retired name still absent —
+    fix round 1, finding 2: nothing pinned this, and an eighth command spliced into ``COMMANDS``
+    passed the whole suite.
+    """
+    assert COMMANDS == ("/channels", "/threads", "/agents", "/cancel", "/name", "/close", "/end")
+    for retired in ("/new", "/pending", "/connect", "/talk"):
+        assert retired not in COMMANDS
 
 
 @pytest.mark.asyncio
@@ -2097,8 +2171,8 @@ async def test_two_chats_on_one_agent_hold_independent_threads_tg25(
     await deliver(bot, message_update(update_id=1, chat_id=CHAT, text="first"))
     await deliver(bot, message_update(update_id=2, chat_id=OTHER_CHAT, text="second"))
 
-    first = await store.bound_thread(CHAT, GENERAL)
-    second = await store.bound_thread(OTHER_CHAT, GENERAL)
+    first = await store.bound_session(CHAT, GENERAL)
+    second = await store.bound_session(OTHER_CHAT, GENERAL)
     assert first is not None
     assert second is not None
     assert first != second
@@ -2477,16 +2551,16 @@ async def test_each_chat_runs_against_its_own_agent_tg1(
     Every earlier addressing test mapped both chats to one agent, so an adapter that routed every
     chat to the first agent in the mapping passed the whole suite: executed, replacing the routed
     agent with ``next(iter(config.chats.values()))`` broke nothing across 142 tests. Two chats, two
-    different experts, and each chat's ``create_thread`` asserted against the expert it was
-    configured for is the only shape that bites.
+    different experts, and each chat's ``create_session`` asserted against the expert it was
+    configured for is the only shape that bites (Task 7: repointed from ``create_thread``).
     """
     bot = adapter(service, store, api, chats={CHAT: COOKING, OTHER_CHAT: GRILLING})
 
     await deliver(bot, message_update(1, chat_id=CHAT, text="how long to rest a steak?"))
     await deliver(bot, message_update(2, chat_id=OTHER_CHAT, text="what temperature for coals?"))
 
-    created = [call for call in service.calls if call[0] == "create_thread"]
-    assert [agent for _, (agent, _origin) in created] == [COOKING, GRILLING]
+    created = [call for call in service.calls if call[0] == "create_session"]
+    assert [agent for _, (agent, *_rest) in created] == [COOKING, GRILLING]
 
 
 @pytest.mark.asyncio
@@ -2513,7 +2587,7 @@ async def test_a_thread_started_from_a_chat_is_stamped_telegram_tg4(
     await deliver(bot, message_update(text="where does the steak note go?"))
 
     assert ("create_thread", (COOKING, "telegram")) in service.calls
-    thread_id = await store.bound_thread(CHAT, GENERAL)
+    thread_id = await store.bound_session(CHAT, GENERAL)
     assert thread_id is not None
     assert service.rows[thread_id].origin_channel == "telegram"
 
@@ -2524,10 +2598,10 @@ async def test_remapping_a_chat_starts_a_fresh_thread_on_the_new_expert_tg26(
 ) -> None:
     """Editing the mapping must not keep filing into the previous expert (TG-26, TG-1).
 
-    ``bind`` wrote an ``agent_id`` column that nothing read, and ``_turn`` resolved the thread from
+    ``bind`` wrote an ``agent_id`` column that nothing read, and ``_turn`` resolved the session from
     the chat alone. Executed: a chat bound under ``topic/cooking`` and then re-mapped to
-    ``topic/grilling`` issued **zero** ``create_thread`` calls and sent the new message to the
-    original Cooking thread — a write to the wrong topic, with no undo, invisible from the phone
+    ``topic/grilling`` issued **zero** ``create_session`` calls and sent the new message to the
+    original Cooking session — a write to the wrong topic, with no undo, invisible from the phone
     and from ``/health``. That is precisely the mis-file TG-1 was ruled to eliminate.
 
     The rotation is announced, because TG-27's reasoning is about *invisible* rotations rather than
@@ -2538,9 +2612,38 @@ async def test_remapping_a_chat_starts_a_fresh_thread_on_the_new_expert_tg26(
 
     await deliver(bot, message_update(text="what temperature for coals?"))
 
-    assert ("create_thread", (GRILLING, "telegram")) in service.calls
-    assert await store.bound_thread(CHAT, GENERAL) != THREAD
+    assert (
+        "create_session",
+        (GRILLING, "what temperature for coals?", "telegram", None),
+    ) in service.calls
+    assert await store.bound_session(CHAT, GENERAL) != THREAD
     assert GRILLING in api.transcript
+
+
+@pytest.mark.asyncio
+async def test_a_stale_binding_is_announced_and_the_turn_still_completes(
+    service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """The second kind of staleness ``_turn`` heals (a session closed/ended elsewhere, or a
+    pre-Task-7 file's leftover thread id) must be **announced**, exactly like the agent-mismatch
+    branch right above it in the source — not a silent rebind. Fix round 1, finding 1: the first
+    build healed this without a word, contradicting the method's own docstring and the sibling
+    ``_REMAPPED`` branch. Both the notice and the completed turn are asserted, because a fix that
+    only announces and drops the message would be a different bug wearing the same diff.
+    """
+    await store.bind(CHAT, GENERAL, "a-session-nobody-minted", COOKING)
+
+    await deliver(adapter(service, store, api), message_update(text="one more thing"))
+
+    assert _STALE_SESSION in api.transcript
+    assert (
+        "create_session",
+        (COOKING, "one more thing", "telegram", None),
+    ) in service.calls
+    assert "Filed under Cooking." in api.transcript, (
+        "the turn must still complete, not just apologize"
+    )
+    assert await store.bound_session(CHAT, GENERAL) != "a-session-nobody-minted"
 
 
 # --------------------------------------------------------------------------------------
@@ -2941,11 +3044,11 @@ async def test_cancel_gives_back_the_subscriber_it_attached_tg52(
     closed: list[int] = []
     await bind(service, store)
 
-    async def attaching(thread_id: str) -> Any:
-        service.calls.append(("attach", (thread_id,)))
+    async def attaching(session_id: str) -> Any:
+        service.calls.append(("attach_session", (session_id,)))
         return local_subscription([], closes=closed)
 
-    service.attach = attaching  # type: ignore[method-assign]
+    service.attach_session = attaching  # type: ignore[method-assign]
     bot = adapter(service, store, api)
 
     await deliver(bot, message_update(text="/cancel"))
@@ -2980,15 +3083,15 @@ async def test_a_cancel_delivered_during_a_run_is_read_while_the_run_is_still_li
         close=lambda: None,
     )
 
-    async def start_run(*_args: Any, **_kwargs: Any) -> Any:
-        service.calls.append(("start_run", (THREAD, "")))
+    async def start_session_run(*_args: Any, **_kwargs: Any) -> Any:
+        service.calls.append(("start_session_run", (THREAD, "")))
         return holding
 
-    async def attaching(thread_id: str) -> Any:
+    async def attaching(session_id: str) -> Any:
         return holding
 
-    service.start_run = start_run  # type: ignore[method-assign]
-    service.attach = attaching  # type: ignore[method-assign]
+    service.start_session_run = start_session_run  # type: ignore[method-assign]
+    service.attach_session = attaching  # type: ignore[method-assign]
     await store.claim(
         0, CHAT, GENERAL, "message"
     )  # a warm ledger, so TG-30 does not drain the backlog
@@ -3107,6 +3210,7 @@ async def test_a_restart_reposts_the_keyboard_of_a_parked_fan_out_gate_tg31(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_a_restart_delivers_the_reply_the_chat_never_heard_tg31(
     service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
 ) -> None:
@@ -3116,6 +3220,12 @@ async def test_a_restart_delivers_the_reply_the_chat_never_heard_tg31(
     reply through the supervisor at all. Branch (c) posts it from the thread instead, marked late —
     a reply arriving hours after the question otherwise reads as a non-sequitur — and it is one
     message, never a replay of everything the chat already holds.
+
+    Superseded (Task 7 rebuilds this): the quoted text comes off ``ThreadDetail.messages``, which no
+    session-shaped call carries — ``pkb.service.sessions.Session`` has no message-history field, and
+    Task 8's running record is a file this transport does not read back. See
+    ``test_a_restarted_session_says_it_cannot_recover_the_text_task7`` for the honest successor
+    ``_post_late_reply`` gives instead of a quote it can no longer produce.
     """
     await bind(service, store)
     service.messages = [
@@ -3132,6 +3242,29 @@ async def test_a_restart_delivers_the_reply_the_chat_never_heard_tg31(
     assert len(api.sent) == 1
     assert "Filed under Cooking." in api.texts[0]
     assert "arriving late" in api.texts[0]
+    assert "start_run" not in [kind for kind, _ in service.calls]
+
+
+@pytest.mark.asyncio
+async def test_a_restarted_session_says_it_cannot_recover_the_text_task7(
+    service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """Task 7 successor of ``test_a_restart_delivers_the_reply_the_chat_never_heard_tg31``: a
+    session carries no message history on this Protocol, so branch (c) of TG-31's re-sync can no
+    longer quote the reply — it says so honestly (:data:`~pkb.server.telegram._LATE_UNKNOWN`)
+    rather than guessing at the text or staying silent, and it is still attributed and still one
+    message, never a replay.
+    """
+    await bind(service, store)
+    await store.claim(100, CHAT, GENERAL, "message")
+    await store.started(100, THREAD, RUN)
+    bot = adapter(service, store, api)
+
+    await bot._recover()
+    await drain(bot)
+
+    assert len(api.sent) == 1
+    assert "session file" in api.texts[0]
     assert "start_run" not in [kind for kind, _ in service.calls]
 
 

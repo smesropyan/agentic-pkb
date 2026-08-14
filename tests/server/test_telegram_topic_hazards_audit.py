@@ -43,7 +43,7 @@ import pytest
 import pytest_asyncio
 
 from pkb.contracts import ActionView, ApprovalRequest, MessageView, RunEnd
-from pkb.server.telegram import Channel, TelegramAdapter, TelegramConfig, _agent_of
+from pkb.server.telegram import Channel, TelegramAdapter, TelegramConfig
 from pkb.server.telegram_api import GENERAL, POLL_TIMEOUT
 from pkb.service import Thread, ThreadDetail
 from pkb.service.telegram import SqliteTelegramStore
@@ -451,6 +451,7 @@ async def test_an_approvals_outcome_follows_its_agent_to_the_repaired_topic_tg84
     assert [t for t in api.texts_in(GENERAL) if "has been deleted" in t]
 
 
+@pytest.mark.superseded
 async def test_a_restarted_runs_frames_still_name_their_agent_tg85(
     service: StubService, store: SqliteTelegramStore, api: AuditBotApi
 ) -> None:
@@ -461,13 +462,21 @@ async def test_a_restarted_runs_frames_still_name_their_agent_tg85(
     was therefore unattributed: not routed by TG-82's retirement, not prefixed by TG-85(b) on arrival
     in General, and unable to repair the channel it died in (TG-84) — on the one code path whose
     whole premise is that the topic may have been deleted while the daemon was down.
+
+    Superseded (Task 7 rebuilds this): ``_agent_of``/``_post_late_reply(channel, detail)`` are gone
+    with ``ThreadDetail`` itself — the re-sync path now reads a session id straight off the ledger
+    and asks the store for it (``TelegramAdapter._agent_of_session``), which carries ``agent_id`` on
+    the ``Session`` dataclass directly, so there is no "field does not exist" case left to attribute
+    nothing for. What TG-85 still guards — a restarted run's outcome is attributed rather than
+    anonymous — is asserted freshly wherever Task 7's own re-sync tests land, over a session id
+    rather than a ``ThreadDetail``.
     """
     assert not hasattr(ThreadDetail, "agent_id"), "the getattr this replaced would now be live"
     detail = ThreadDetail(
         thread=thread_row("t-cooking-1"),
         messages=(MessageView(role="assistant", text="Filed under Cooking.", created_at=None),),
     )
-    assert _agent_of(detail) == COOKING
+    assert detail.thread.agent_id == COOKING  # what the retired `_agent_of` helper read off it
 
     await store.open_channel(CHAT, COOK_TOPIC, COOKING)
     await store.retire_channel(CHAT, COOKING)

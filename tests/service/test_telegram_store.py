@@ -358,7 +358,7 @@ async def test_a_hundred_interleaved_statements_never_lock_the_file_st3(db_path:
         await asyncio.gather(*work)
 
         assert await first.next_offset() == 50
-        assert await second.bound_thread(CHAT + 3, GENERAL) == f"{THREAD}-3"
+        assert await second.bound_session(CHAT + 3, GENERAL) == f"{THREAD}-3"
 
 
 # --------------------------------------------------------------------------------------
@@ -367,7 +367,7 @@ async def test_a_hundred_interleaved_statements_never_lock_the_file_st3(db_path:
 
 
 @pytest.mark.asyncio
-async def test_an_unknown_chat_has_no_bound_thread_tg26(db_path: Path) -> None:
+async def test_an_unknown_chat_has_no_bound_session_tg26(db_path: Path) -> None:
     """The first message in a chat must be distinguishable from every later one.
 
     ``None`` is what selects ``create_thread``; anything else — a default id, an empty string —
@@ -375,7 +375,7 @@ async def test_an_unknown_chat_has_no_bound_thread_tg26(db_path: Path) -> None:
     opening line disappears into a 404 they never see.
     """
     async with opened(db_path) as store:
-        assert await store.bound_thread(CHAT, GENERAL) is None
+        assert await store.bound_session(CHAT, GENERAL) is None
 
 
 @pytest.mark.asyncio
@@ -391,7 +391,7 @@ async def test_a_binding_survives_a_restart_s(db_path: Path) -> None:
         await store.bind(CHAT, GENERAL, THREAD, LIBRARIAN)
 
     async with opened(db_path) as restarted:
-        assert await restarted.bound_thread(CHAT, GENERAL) == THREAD
+        assert await restarted.bound_session(CHAT, GENERAL) == THREAD
 
 
 @pytest.mark.asyncio
@@ -406,10 +406,10 @@ async def test_rebinding_replaces_the_thread_rather_than_stacking_one_tg27(db_pa
         await store.bind(CHAT, GENERAL, THREAD, LIBRARIAN)
         await store.bind(CHAT, GENERAL, "second-thread", LIBRARIAN)
 
-        assert await store.bound_thread(CHAT, GENERAL) == "second-thread"
+        assert await store.bound_session(CHAT, GENERAL) == "second-thread"
 
         await store.unbind(CHAT, GENERAL)
-        assert await store.bound_thread(CHAT, GENERAL) is None
+        assert await store.bound_session(CHAT, GENERAL) is None
 
 
 @pytest.mark.asyncio
@@ -433,7 +433,24 @@ async def test_rebinding_can_move_a_chat_to_another_agents_thread_tg40(db_path: 
         await store.bind(CHAT, GENERAL, THREAD, LIBRARIAN)
         await store.bind(CHAT, GENERAL, FANOUT_THREAD, COOKING)
 
-        assert await store.bound_thread(CHAT, GENERAL) == FANOUT_THREAD
+        assert await store.bound_session(CHAT, GENERAL) == FANOUT_THREAD
+
+
+@pytest.mark.asyncio
+async def test_rebinding_can_move_a_chat_to_a_different_agents_session_task7(
+    db_path: Path,
+) -> None:
+    """Task 7 successor of ``test_rebinding_can_move_a_chat_to_another_agents_thread_tg40``: the
+    same property — a channel accepts a rebind to a session it did not create, and simply becomes
+    the current one — proven with a session id rather than a retired derived-thread shape."""
+    first_session = "1e6a9f2c-11e1-4a7a-9b1e-2a6b7c8d9e0f"
+    second_session = "2f7b0a3d-22f2-5b8b-ac2f-3b7c8d9e0f10"
+    async with opened(db_path) as store:
+        await store.bind(CHAT, GENERAL, first_session, LIBRARIAN)
+        await store.bind(CHAT, GENERAL, second_session, COOKING)
+
+        assert await store.bound_session(CHAT, GENERAL) == second_session
+        assert await store.binding(CHAT, GENERAL) == (second_session, COOKING)
 
 
 @pytest.mark.asyncio
@@ -450,8 +467,8 @@ async def test_unbinding_one_chat_leaves_every_other_chat_alone_tg27(db_path: Pa
 
         await store.unbind(CHAT, GENERAL)
 
-        assert await store.bound_thread(CHAT, GENERAL) is None
-        assert await store.bound_thread(OTHER_CHAT, GENERAL) == FANOUT_THREAD
+        assert await store.bound_session(CHAT, GENERAL) is None
+        assert await store.bound_session(OTHER_CHAT, GENERAL) == FANOUT_THREAD
 
 
 @pytest.mark.asyncio
@@ -465,7 +482,50 @@ async def test_unbinding_a_chat_that_was_never_bound_is_not_an_error_tg27(db_pat
     async with opened(db_path) as store:
         await store.unbind(CHAT, GENERAL)
 
-        assert await store.bound_thread(CHAT, GENERAL) is None
+        assert await store.bound_session(CHAT, GENERAL) is None
+
+
+# --------------------------------------------------------------------------------------
+# § the session rename (Task 7) — a binding row maps a chat/topic to a SESSION id
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_bound_session_id_round_trips_through_a_fresh_store(db_path: Path) -> None:
+    """A binding row maps a chat/topic to a SESSION id — the row Task 7's brief names directly."""
+    session_id = "3a8c1d4e-33f3-6c9c-bd3a-4c8d9e0f1122"
+    async with opened(db_path) as store:
+        await store.bind(CHAT, GENERAL, session_id, COOKING)
+
+        assert await store.bound_session(CHAT, GENERAL) == session_id
+        assert await store.binding(CHAT, GENERAL) == (session_id, COOKING)
+
+
+@pytest.mark.asyncio
+async def test_the_bindings_table_migrates_a_pre_session_thread_id_column(db_path: Path) -> None:
+    """A file written before Task 7 has ``thread_id`` where the row now reads ``session_id`` — the
+    rename is a metadata-only ``ALTER TABLE … RENAME COLUMN`` (see ``_migrate``'s own docstring),
+    so a row minted under the old name is readable, unchanged, under the new one."""
+    async with connected(db_path) as connection:
+        await connection.execute(
+            f"CREATE TABLE {BINDINGS_TABLE} ("
+            f"chat_id INTEGER NOT NULL, topic_id INTEGER NOT NULL, thread_id TEXT NOT NULL, "
+            f"agent_id TEXT NOT NULL, bound_at TEXT NOT NULL, PRIMARY KEY (chat_id, topic_id))"
+        )
+        await connection.execute(
+            "INSERT INTO pkb_telegram_channel_bindings VALUES (?,?,?,?,?)",
+            (CHAT, GENERAL, THREAD, LIBRARIAN, "2026-08-08T09:00:00Z"),
+        )
+        await connection.commit()
+
+    async with opened(db_path) as store:
+        assert await store.bound_session(CHAT, GENERAL) == THREAD
+        assert await store.binding(CHAT, GENERAL) == (THREAD, LIBRARIAN)
+
+    with sqlite3.connect(db_path) as raw:
+        columns = {row[1] for row in raw.execute(f"PRAGMA table_info({BINDINGS_TABLE})")}
+    assert "session_id" in columns
+    assert "thread_id" not in columns
 
 
 # --------------------------------------------------------------------------------------
@@ -861,7 +921,7 @@ async def test_setup_over_an_existing_file_keeps_every_row_the_bot_already_wrote
         await restarted.setup()
 
         assert await restarted.next_offset() == 43
-        assert await restarted.bound_thread(CHAT, GENERAL) == THREAD
+        assert await restarted.bound_session(CHAT, GENERAL) == THREAD
         assert await restarted.prompt(HANDLE) is not None
 
 

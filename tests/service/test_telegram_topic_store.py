@@ -457,7 +457,7 @@ async def test_a_nullable_topic_column_would_hold_two_general_rows_for_one_chat_
         await store.bind(CHAT, GENERAL, "first", LIBRARIAN)
         await store.bind(CHAT, GENERAL, "second", LIBRARIAN)
 
-        assert await store.bound_thread(CHAT, GENERAL) == "second"
+        assert await store.bound_session(CHAT, GENERAL) == "second"
 
     assert len(rows_of(db_path, BINDINGS_TABLE)) == 1
 
@@ -478,9 +478,9 @@ async def test_two_topics_of_one_chat_hold_two_independent_conversations_tg72(
         await store.bind(CHAT, COOKING_TOPIC, "t-cooking", COOKING)
         await store.bind(CHAT, GRILLING_TOPIC, "t-grilling", GRILLING)
 
-        assert await store.bound_thread(CHAT, GENERAL) == "t-general"
-        assert await store.bound_thread(CHAT, COOKING_TOPIC) == "t-cooking"
-        assert await store.bound_thread(CHAT, GRILLING_TOPIC) == "t-grilling"
+        assert await store.bound_session(CHAT, GENERAL) == "t-general"
+        assert await store.bound_session(CHAT, COOKING_TOPIC) == "t-cooking"
+        assert await store.bound_session(CHAT, GRILLING_TOPIC) == "t-grilling"
         assert await store.binding(CHAT, COOKING_TOPIC) == ("t-cooking", COOKING)
 
 
@@ -499,8 +499,8 @@ async def test_new_in_one_topic_leaves_every_other_channel_alone_tg27(db_path: P
         await store.unbind(CHAT, GENERAL)
 
     async with opened(db_path) as restarted:
-        assert await restarted.bound_thread(CHAT, GENERAL) is None
-        assert await restarted.bound_thread(CHAT, COOKING_TOPIC) == "t-cooking"
+        assert await restarted.bound_session(CHAT, GENERAL) is None
+        assert await restarted.bound_session(CHAT, COOKING_TOPIC) == "t-cooking"
 
 
 @pytest.mark.asyncio
@@ -537,7 +537,7 @@ async def test_no_store_method_that_takes_a_chat_gives_the_topic_a_default_tg72(
 ) -> None:
     """A default here is the one mistake nothing downstream can catch.
 
-    ``bound_thread(chat_id)`` with ``topic_id: int = GENERAL`` compiles, type-checks and reviews
+    ``bound_session(chat_id)`` with ``topic_id: int = GENERAL`` compiles, type-checks and reviews
     clean, and it files a topic's message under the chat's General binding — answered by the
     previous topic's expert, invisible in a diff and invisible on the phone. Every call site saying
     which channel it means costs one token and is the only place this is catchable.
@@ -745,7 +745,7 @@ async def test_a_registered_topic_routes_its_messages_to_its_own_expert_tg72(
         await deliver(bot, message_update(1, topic_id=COOKING_TOPIC))
         await deliver(bot, message_update(2, topic_id=GRILLING_TOPIC))
 
-        created = [args[0] for name, args in service.calls if name == "create_thread"]
+        created = [args[0] for name, args in service.calls if name == "create_session"]
         assert created == [COOKING, GRILLING]
         assert await store.binding(CHAT, COOKING_TOPIC) is not None
         assert await store.binding(CHAT, GRILLING_TOPIC) is not None
@@ -777,9 +777,9 @@ async def test_a_topic_message_and_a_general_message_never_share_a_thread_tg73(
         await deliver(bot, message_update(1, topic_id=GENERAL))
         await deliver(bot, message_update(2, topic_id=COOKING_TOPIC))
 
-        created = [args[0] for name, args in service.calls if name == "create_thread"]
+        created = [args[0] for name, args in service.calls if name == "create_session"]
         assert created == [LIBRARIAN, COOKING]
-        assert await store.bound_thread(CHAT, GENERAL) != await store.bound_thread(
+        assert await store.bound_session(CHAT, GENERAL) != await store.bound_session(
             CHAT, COOKING_TOPIC
         )
 
@@ -838,7 +838,7 @@ async def test_a_pre_topics_database_keeps_its_binding_its_ledger_and_its_approv
     await pre_topics_database(db_path)
 
     async with opened(db_path) as store:
-        assert await store.bound_thread(CHAT, GENERAL) == LEGACY_THREAD
+        assert await store.bound_session(CHAT, GENERAL) == LEGACY_THREAD
         assert await store.binding(CHAT, GENERAL) == (LEGACY_THREAD, LIBRARIAN)
         assert await store.orphans() == [(LEGACY_UPDATE, CHAT, GENERAL)]
         assert await store.unfinished() == [(LEGACY_UNFINISHED, CHAT, GENERAL, LEGACY_THREAD)]
@@ -874,9 +874,11 @@ async def test_an_upgraded_deployment_resumes_its_conversation_rather_than_start
 
         await deliver(bot, message_update(50))
 
-        assert [name for name, _ in service.calls if name == "create_thread"] == []
-        assert [args[0] for name, args in service.calls if name == "start_run"] == [LEGACY_THREAD]
-        assert await store.bound_thread(CHAT, GENERAL) == LEGACY_THREAD
+        assert [name for name, _ in service.calls if name == "create_session"] == []
+        assert [args[0] for name, args in service.calls if name == "start_session_run"] == [
+            LEGACY_THREAD
+        ]
+        assert await store.bound_session(CHAT, GENERAL) == LEGACY_THREAD
 
 
 @pytest.mark.asyncio
@@ -1047,11 +1049,11 @@ async def test_a_rotated_thread_is_not_resurrected_by_the_next_restart_tg28(db_p
     await pre_topics_database(db_path)
 
     async with opened(db_path) as store:
-        assert await store.bound_thread(CHAT, GENERAL) == LEGACY_THREAD
+        assert await store.bound_session(CHAT, GENERAL) == LEGACY_THREAD
         await store.unbind(CHAT, GENERAL)
 
     async with opened(db_path) as restarted:
-        assert await restarted.bound_thread(CHAT, GENERAL) is None
+        assert await restarted.bound_session(CHAT, GENERAL) is None
 
 
 @pytest.mark.asyncio
@@ -1073,7 +1075,7 @@ async def test_setup_on_an_upgraded_file_is_safe_to_run_on_every_start_tg28(db_p
         await store.setup()
         await store.setup()
 
-        assert await store.bound_thread(CHAT, GENERAL) == LEGACY_THREAD
+        assert await store.bound_session(CHAT, GENERAL) == LEGACY_THREAD
         assert await store.prompt(HANDLE) is not None
 
 
@@ -1109,8 +1111,8 @@ async def test_the_upgrade_never_shares_one_binding_across_a_chats_topics_tg1(
     async with opened(db_path) as store:
         await store.bind(CHAT, COOKING_TOPIC, TOPIC_THREAD, COOKING)
 
-        assert await store.bound_thread(CHAT, GENERAL) == LEGACY_THREAD
-        assert await store.bound_thread(CHAT, COOKING_TOPIC) == TOPIC_THREAD
+        assert await store.bound_session(CHAT, GENERAL) == LEGACY_THREAD
+        assert await store.bound_session(CHAT, COOKING_TOPIC) == TOPIC_THREAD
 
 
 @pytest.mark.asyncio
@@ -1386,7 +1388,7 @@ async def test_a_repaired_channel_keeps_the_conversation_it_was_in_the_middle_of
         await store.open_channel(CHAT, COOKING_TOPIC, COOKING)
 
         await deliver(bot, message_update(1, topic_id=COOKING_TOPIC))
-        before = await store.bound_thread(CHAT, COOKING_TOPIC)
+        before = await store.bound_session(CHAT, COOKING_TOPIC)
         assert before is not None
 
         api.delete_topic(COOKING_TOPIC)
@@ -1397,8 +1399,8 @@ async def test_a_repaired_channel_keeps_the_conversation_it_was_in_the_middle_of
         service.calls.clear()
         await deliver(bot, message_update(2, topic_id=repaired))
 
-        assert [name for name, _ in service.calls if name == "create_thread"] == []
-        assert [args[0] for name, args in service.calls if name == "start_run"] == [before]
+        assert [name for name, _ in service.calls if name == "create_session"] == []
+        assert [args[0] for name, args in service.calls if name == "start_session_run"] == [before]
 
 
 @pytest.mark.asyncio

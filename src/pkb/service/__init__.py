@@ -301,6 +301,27 @@ class PkbService(Protocol):
         """Subscribe to whatever is already running on this session, or ``None`` when idle."""
         ...
 
+    # -- channels ----------------------------------------------------------------------
+    # S-4, S-6, S-7, S-13 … S-17 (Task 7). ``channel_ref`` is an opaque string a transport mints —
+    # ``pkb.server.telegram.channel_ref`` for Telegram, ``"tui:<client-id>"`` for the TUI — and this
+    # Protocol never parses one. Reached in-process by a transport that talks to the service directly
+    # (D9 — Telegram), never over HTTP: there is no ``/sessions/{id}/channels`` route, because nothing
+    # outside the daemon process needs to attach one on the API's own behalf.
+
+    async def attach_channel(self, session_id: str, channel_ref: str) -> None:
+        """Attach a channel to a session (S-6, S-14). Idempotent; a channel already holding a
+        different session is moved (S-7: "a channel holds one session at a time")."""
+        ...
+
+    async def detach_channel(self, session_id: str, channel_ref: str) -> None:
+        """Detach a channel from a session (S-17). Never an error — an unattached ref, or one
+        attached to a different session, is a no-op."""
+        ...
+
+    async def session_channels(self, session_id: str) -> list[str]:
+        """Every channel currently attached to a session (S-6)."""
+        ...
+
     # -- runs ----------------------------------------------------------------------
 
     async def start_run(

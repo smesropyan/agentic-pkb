@@ -79,8 +79,10 @@ from pkb.contracts import PkbAgentError
 from pkb.core.paths import slugify
 
 __all__ = [
+    "CHANNELS_TABLE",
     "MIGRATIONS_TABLE",
     "TABLE",
+    "ChannelRefs",
     "IllegalSessionTransitionError",
     "Session",
     "SessionList",
@@ -93,6 +95,29 @@ __all__ = [
 
 TABLE: Final = "sessions"
 """Layer 3 owns this name and anything prefixed ``pkb_`` — and nothing else (mirrors ST-7)."""
+
+CHANNELS_TABLE: Final = "session_channels"
+"""The attached-channels registry (S-4, S-6, S-7, S-13 … S-17; Task 7).
+
+Unprefixed, alongside :data:`TABLE`, because it is core session-domain data rather than incidental
+bookkeeping (mirrors this module's own choice for ``sessions`` over a ``pkb_``-prefixed name) — a
+second table in the same module, added additively (``CREATE TABLE IF NOT EXISTS``, no
+``_SCHEMA_VERSION`` bump: nothing here needs a migration guard the way an ``ALTER TABLE`` does, so
+there is nothing for a version ladder to record).
+
+``channel_ref`` is an **opaque string the transport mints** — this module never parses one. The
+formats in use today: ``"telegram:<chat_id>:<topic_id>"`` (``pkb.server.telegram.channel_ref``,
+matching :class:`~pkb.server.telegram.Channel`'s own two fields) and ``"tui:<client-id>"`` — Task 7's
+brief names both. A session's own agnosticism about the transport is the point (S-13: "there is one
+way in, the API"): this table would be identical if a third transport arrived tomorrow.
+
+``channel_ref`` is the table's own primary key, not ``(session_id, channel_ref)`` — S-7, quoted: "A
+channel holds one session at a time." :meth:`SessionStore.attach` is therefore last-write-wins on the
+channel, mirroring ``pkb.service.telegram.SqliteTelegramStore.bind``'s own
+``ON CONFLICT DO UPDATE``: attaching a channel already holding a different session **moves** it
+(``/threads``'s own effect, S-14) rather than raising or attaching twice, and the old session's
+:meth:`~SessionStore.channels` reflects the move with no separate detach call needed.
+"""
 
 MIGRATIONS_TABLE: Final = "pkb_session_migrations"
 """This module's own version table — deliberately not ``threads.py``'s ``pkb_service_migrations``.
@@ -119,6 +144,12 @@ CREATE TABLE IF NOT EXISTS {TABLE} (
 );
 CREATE INDEX IF NOT EXISTS idx_{TABLE}_agent ON {TABLE}(agent_id);
 CREATE INDEX IF NOT EXISTS idx_{TABLE}_state ON {TABLE}(state);
+CREATE TABLE IF NOT EXISTS {CHANNELS_TABLE} (
+    channel_ref  TEXT PRIMARY KEY,
+    session_id   TEXT NOT NULL,
+    attached_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_{CHANNELS_TABLE}_session ON {CHANNELS_TABLE}(session_id);
 CREATE TABLE IF NOT EXISTS {MIGRATIONS_TABLE} (version INTEGER PRIMARY KEY);
 """
 
@@ -226,6 +257,11 @@ builtin ``list`` for any annotation written *inside* the class body after that m
 a bare ``list[Session]`` there against the class's own name, not ``builtins.list``. Fixing it up front
 here, once, is simpler than routing around the shadow method by method.
 """
+
+ChannelRefs = list[str]
+"""Alias for the builtin, for the identical reason :data:`SessionList` is one: :meth:`SessionStore.
+channels` (Task 7) is defined after :meth:`SessionStore.list` in the class body, so a bare
+``list[str]`` written there would resolve against the method, not ``builtins.list``, too."""
 
 
 class SessionStore:
@@ -432,6 +468,55 @@ class SessionStore:
             f"SELECT {_COLUMNS} FROM {TABLE} WHERE state = 'closed' ORDER BY closed_at, session_id"
         )
         return [_row_to_session(row) for row in await cursor.fetchall()]
+
+    # -- attached channels — S-4, S-6, S-7, S-13 … S-17 (Task 7) ------------------------
+
+    async def attach(
+        self, session_id: str, channel_ref: str, *, now: datetime | None = None
+    ) -> None:
+        """Attach ``channel_ref`` to ``session_id`` (S-6, S-14). Idempotent; moves on a re-attach.
+
+        No existence check on ``session_id`` — mirrors this store's own documented split with
+        ``RuntimeService`` (module docstring, "What this module builds"): ``SessionStore.create``
+        never validates ``agent_id`` either, and the layer above is where a live catalog or a live
+        session actually lives. A caller that attaches a channel to a session id nobody minted gets
+        a channel entry :meth:`channels` will report and :meth:`get` will never corroborate — visible
+        and recoverable, never silently dropped.
+        """
+        stamp = _now(now)
+        await self._connection.execute(
+            f"INSERT INTO {CHANNELS_TABLE} (channel_ref, session_id, attached_at) VALUES (?,?,?) "
+            f"ON CONFLICT(channel_ref) DO UPDATE SET "
+            f"session_id = excluded.session_id, attached_at = excluded.attached_at",
+            (channel_ref, session_id, stamp),
+        )
+        await self._connection.commit()
+
+    async def detach(self, session_id: str, channel_ref: str) -> None:
+        """Detach ``channel_ref`` from ``session_id`` (S-17, S-20). Never an error.
+
+        Scoped to *this* session on purpose: a channel a ``/threads`` move already carried to a
+        different session is not this session's to detach, and a stale ``/close`` racing that move
+        must not reach across and sever a conversation it no longer owns. Both "never attached" and
+        "attached, but to someone else" are silent no-ops — mirrors the store's own error discipline
+        (``CLAUDE.md``, "Findings, not exceptions, for content defects": this is bookkeeping, not
+        content, and the caller asked for an end state that already holds).
+        """
+        await self._connection.execute(
+            f"DELETE FROM {CHANNELS_TABLE} WHERE channel_ref = ? AND session_id = ?",
+            (channel_ref, session_id),
+        )
+        await self._connection.commit()
+
+    async def channels(self, session_id: str) -> ChannelRefs:
+        """Every channel attached to ``session_id`` (S-6), ordered by attachment then ref, for a
+        deterministic fan-out (:meth:`RuntimeService.rename_session`'s retitle loop, S-16)."""
+        cursor = await self._connection.execute(
+            f"SELECT channel_ref FROM {CHANNELS_TABLE} WHERE session_id = ? "
+            f"ORDER BY attached_at, channel_ref",
+            (session_id,),
+        )
+        return [str(row[0]) for row in await cursor.fetchall()]
 
     # -- internals ---------------------------------------------------------------------
 

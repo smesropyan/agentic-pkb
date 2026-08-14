@@ -98,6 +98,8 @@ class StubService:
         self.proposals: list[PendingProposal] = []
         self.sessions: dict[str, Session] = {}
         self._session_names: set[str] = set()
+        self._channels: dict[str, set[str]] = {}
+        """Task 7's attach/detach/channels, mirrored in memory — see the methods below."""
         self._session_clock = 0
         """A tick per state transition (create/close/end), so ``closed_at``/``ended_at`` order is
         actually distinguishable from insertion order in a test — real time never advances inside a
@@ -277,6 +279,7 @@ class StubService:
         stamp = self._tick()
         updated = dataclasses.replace(session, state="closed", closed_at=stamp, updated_at=stamp)
         self.sessions[session_id] = updated
+        self._channels.pop(session_id, None)  # S-17: /close brings every attached channel away
         return updated
 
     async def end_session(self, session_id: str) -> Session:
@@ -375,6 +378,25 @@ class StubService:
     async def attach_session(self, session_id: str) -> RunSubscription | None:
         self.calls.append(("attach_session", (session_id,)))
         return self.runs.attach(session_id)
+
+    # -- channels (Task 7) -------------------------------------------------------------
+    # A pure in-memory mirror of `SessionStore`'s own attach/detach/channels — see that module's
+    # docstring for why `channel_ref` is the unique key (S-7: one session per channel at a time).
+
+    async def attach_channel(self, session_id: str, channel_ref: str) -> None:
+        self.calls.append(("attach_channel", (session_id, channel_ref)))
+        await self.get_session(session_id)
+        for refs in self._channels.values():
+            refs.discard(channel_ref)
+        self._channels.setdefault(session_id, set()).add(channel_ref)
+
+    async def detach_channel(self, session_id: str, channel_ref: str) -> None:
+        self.calls.append(("detach_channel", (session_id, channel_ref)))
+        self._channels.get(session_id, set()).discard(channel_ref)
+
+    async def session_channels(self, session_id: str) -> list[str]:
+        self.calls.append(("session_channels", (session_id,)))
+        return sorted(self._channels.get(session_id, set()))
 
     async def cancel(self, run_id: str) -> None:
         self.calls.append(("cancel", (run_id,)))

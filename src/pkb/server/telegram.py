@@ -60,8 +60,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Final
 
 from pkb.contracts import (
-    ApprovalPendingError,
     MessageComplete,
+    PkbAgentError,
     RunEnd,
     RunError,
     SubagentEnd,
@@ -79,6 +79,7 @@ from pkb.server.telegram_api import (
     landed_topic_id,
     with_retry,
 )
+from pkb.service.sessions import IllegalSessionTransitionError, UnknownSessionError
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from pkb.service import PkbService
@@ -94,7 +95,9 @@ __all__ = [
     "PICKER_ROWS",
     "Channel",
     "TelegramAdapter",
+    "TelegramChannelNotifier",
     "TelegramConfig",
+    "channel_ref",
     "counter",
     "parse_picker",
     "picker_callback",
@@ -105,8 +108,11 @@ __all__ = [
 
 _log = logging.getLogger(__name__)
 
-COMMANDS: Final = ("/new", "/threads", "/agents", "/cancel", "/channels")
-"""The whole command surface, five of them, **each acting on the channel it was typed in** (TG-86).
+COMMANDS: Final = ("/channels", "/threads", "/agents", "/cancel", "/name", "/close", "/end")
+"""The seven commands DESIGN.md §2.5/§2.6 fixes (S-15), quoted: "the set settles at seven commands:
+``/channels``, ``/threads``, ``/agents``, ``/cancel``, ``/name``, ``/close`` and ``/end``." The first
+four move a channel around or stop a turn; ``/name``, ``/close`` and ``/end`` (Task 7) act on the
+session itself.
 
 **No ``/connect`` and no ``/talk``** (decision AF). A channel is bound to its agent by the topic the
 human is typing in — visible above the keyboard at the moment they hit send — and the ambiguity
@@ -116,6 +122,15 @@ would restore that hidden mode under a new name; a topic title cannot be invisib
 **No ``/pending`` any more.** It listed every thread with a parked approval and re-posted its
 keyboard — both gone along with the gates themselves (DESIGN.md §2.10): no thread can hold a pending
 decision, so the command had nothing left to list.
+
+**No ``/new`` any more** (S-15, quoted: "The set holds no ``/new``... because attaching already
+changes what a channel holds, and a rotation inside a channel splits one line of work in half and
+leaves both halves named for the same objective. A new objective opens a new session, and the
+channel attaches to it."). ``/close`` (this channel's own session, right here) followed by a fresh
+message — which opens a session of its own, per :meth:`TelegramAdapter._open_session` — is the
+successor: it is still recognized by :meth:`TelegramAdapter._command`, one level down, so a human
+typing the old muscle-memory command is told what replaced it rather than met with a bare "I know
+...".
 """
 
 _OUTBOX_WARN: Final = 64
@@ -213,6 +228,42 @@ class Channel:
     @property
     def is_general(self) -> bool:
         return self.topic_id == GENERAL
+
+
+_CHANNEL_REF_PREFIX: Final = "telegram"
+"""This transport's namespace inside a session's attached-channels registry (S-4, S-6, Task 7).
+
+``pkb.service.sessions.SessionStore.CHANNELS_TABLE`` documents the format directly:
+``"telegram:<chat_id>:<topic_id>"``, matching :class:`Channel`'s own two fields — the TUI's own
+namespace (``"tui:<client-id>"``, Task 7's brief) is a sibling prefix Phase 5 mints, not this one.
+"""
+
+
+def channel_ref(channel: Channel) -> str:
+    """The opaque string this channel attaches to a session with (S-6, S-14).
+
+    ``pkb.service.sessions.SessionStore`` never parses this — it is the transport's own address,
+    round-tripped through :func:`_parse_channel_ref` only by code inside this module (the retitle
+    fan-out's :class:`TelegramChannelNotifier`).
+    """
+    return f"{_CHANNEL_REF_PREFIX}:{channel.chat_id}:{channel.topic_id}"
+
+
+def _parse_channel_ref(ref: str) -> Channel | None:
+    """The inverse of :func:`channel_ref`, or ``None`` for a ref this transport did not mint.
+
+    ``None`` on anything else — a different transport's own namespace (``"tui:…"``), or a malformed
+    value — rather than raising: :class:`TelegramChannelNotifier` treats an unrecognized ref as a
+    no-op it records honestly (S-18), never as an error, because a session's attached channels are
+    not this module's to validate.
+    """
+    parts = ref.split(":")
+    if len(parts) != 3 or parts[0] != _CHANNEL_REF_PREFIX:
+        return None
+    try:
+        return Channel(int(parts[1]), int(parts[2]))
+    except ValueError:
+        return None
 
 
 def utf16_len(text: str) -> int:
@@ -452,6 +503,39 @@ class TelegramConfig:
     @property
     def enabled(self) -> bool:
         return bool(self.token and self.chats)
+
+
+@dataclass
+class TelegramChannelNotifier:
+    """The concrete :class:`~pkb.service.runtime.ChannelNotifier` for this transport (S-16, Task 7).
+
+    Bridges ``RuntimeService.rename_session``'s generic retitle fan-out to one ``editForumTopic``
+    call, over the same :class:`~pkb.server.telegram_api.BotApi` the adapter itself sends through —
+    the fake-transport-visible surface :class:`FakeBotApi` (tests) already exercises for every other
+    send in this module. Composed by the daemon (``pkb.daemon._telegram_task``) once ``BotApi``
+    exists and assigned onto ``RuntimeService.notifier`` after the fact — see that Protocol's own
+    docstring for why the ordering forces an assignment rather than a constructor argument.
+
+    A ref this notifier does not recognize — General (no forum topic exists for it under this Bot
+    API surface; there is no ``setChatTitle`` call here to fall back to), or a non-Telegram namespace
+    such as a future ``"tui:…"`` — is a no-op, recorded honestly by simply doing nothing rather than
+    raising (S-18: that boundary is deep client UX, Phase 5's). A live ``TelegramError`` — the topic
+    was deleted, the bot lost its admin rights — is logged and swallowed, mirroring
+    :meth:`TelegramAdapter._name_channel`'s own TG-106 rule: "a failure is a reason, never a repair."
+    """
+
+    api: BotApi
+
+    async def retitle(self, channel_ref: str, name: str) -> None:
+        channel = _parse_channel_ref(channel_ref)
+        if channel is None or channel.is_general:
+            return
+        try:
+            await with_retry(
+                lambda: self.api.edit_forum_topic(channel.chat_id, channel.topic_id, name)
+            )
+        except TelegramError as exc:
+            _log.warning("telegram: could not retitle channel %r to %r: %s", channel_ref, name, exc)
 
 
 @dataclass
@@ -1125,33 +1209,98 @@ class TelegramAdapter:
                 self.health.retired_channels = tuple(sorted({*existing, agent_id}))
 
     async def _command(self, channel: Channel, agent_id: str, text: str) -> None:
-        """Five commands, each acting on **the channel it was typed in** (TG-86).
+        """The seven commands (S-15), each acting on **the channel it was typed in** (TG-86) or the
+        session it currently holds.
 
         A ``/cancel`` that reaches the wrong turn is worse than no ``/cancel``: it stops a turn the
         human wanted and leaves the one they were trying to stop writing into a tree with no undo.
-        The same argument applies one at a time to ``/new`` and ``/threads``, which is why none of
-        them takes an agent argument — the topic is the argument, and it is on the screen.
+        The same argument is why none of the seven takes a session-id argument — the channel is the
+        argument, and it is on the screen. ``/new`` is recognized here even though it is not one of
+        the seven (:data:`COMMANDS`'s own docstring), so a human who typed the old muscle-memory
+        command is told what replaced it rather than met with the generic unknown-command reply.
         """
         parts = text.split()
         command = parts[0]
         if command == "/new":
-            await self.store.unbind(channel.chat_id, channel.topic_id)
-            await self._say(
-                channel,
-                "Started a new conversation. The previous one is still in your thread list.",
-                agent_id=agent_id,
-            )
+            await self._say(channel, _NEW_RETIRED, agent_id=agent_id)
         elif command == "/threads":
-            threads = await self.service.list_threads(agent_id)
-            await self._say(channel, _threads_text(threads), agent_id=agent_id)
+            sessions = await self.service.list_sessions(agent_id, state="open")
+            await self._say(channel, _sessions_text(sessions), agent_id=agent_id)
         elif command == "/agents":
             await self._say(channel, await self._agents_text(channel, agent_id), agent_id=agent_id)
         elif command == "/cancel":
             await self._cancel(channel, agent_id)
         elif command == "/channels":
             await self._channels(channel, agent_id, parts[1:])
+        elif command == "/name":
+            await self._rename(channel, agent_id, text[len("/name") :].strip())
+        elif command == "/close":
+            await self._close(channel, agent_id)
+        elif command == "/end":
+            await self._end(channel, agent_id)
         else:
             await self._say(channel, f"I know {', '.join(COMMANDS)}.", agent_id=agent_id)
+
+    async def _rename(self, channel: Channel, agent_id: str, name: str) -> None:
+        """``/name`` (S-16): renames the session this channel currently holds.
+
+        The retitle fan-out over every *other* attached channel is composed inside
+        ``RuntimeService.rename_session`` itself (:class:`~pkb.service.runtime.ChannelNotifier`,
+        Task 7) — this handler only starts that call and reports what came back; it does not repeat
+        the fan-out for the channel it was typed in, because that channel's own reply already says
+        the new name.
+        """
+        session_id = await self.store.bound_session(channel.chat_id, channel.topic_id)
+        if session_id is None:
+            await self._say(channel, "Nothing is bound here to rename.", agent_id=agent_id)
+            return
+        if not name:
+            await self._say(channel, "Usage: /name <a better name>", agent_id=agent_id)
+            return
+        try:
+            session = await self.service.rename_session(session_id, name)
+        except PkbAgentError as exc:
+            await self._say(channel, f"Could not rename: {exc}", agent_id=agent_id)
+            return
+        await self._say(channel, f"Renamed to {session.name!r}.", agent_id=agent_id)
+
+    async def _close(self, channel: Channel, agent_id: str) -> None:
+        """``/close`` (S-17, S-20): closes the session this channel holds and lets the channel go.
+
+        ``RuntimeService.close_session`` already detaches every attached channel from the session's
+        own registry (Task 7); this only clears this transport's *own* routing row
+        (:meth:`~pkb.service.telegram.SqliteTelegramStore.unbind`), the local bookkeeping that says
+        which session this chat/topic currently reaches, so the very next message here opens a fresh
+        session rather than reactively discovering the old one is closed (:meth:`_turn`'s own
+        self-heal handles that path too, for a close that happened elsewhere — the TUI, the API).
+        """
+        session_id = await self.store.bound_session(channel.chat_id, channel.topic_id)
+        if session_id is None:
+            await self._say(channel, "Nothing is bound here to close.", agent_id=agent_id)
+            return
+        try:
+            await self.service.close_session(session_id)
+        except PkbAgentError as exc:
+            await self._say(channel, f"Could not close: {exc}", agent_id=agent_id)
+            return
+        await self.store.unbind(channel.chat_id, channel.topic_id)
+        await self._say(channel, "Closed. It has entered the learning queue.", agent_id=agent_id)
+
+    async def _end(self, channel: Channel, agent_id: str) -> None:
+        """``/end`` (S-22): seals the session this channel holds — DESIGN.md §2.6's own words, "said
+        in the analysis session they established to the Learning agent," which for this transport is
+        simply whichever session the channel is bound to when the operator types it here."""
+        session_id = await self.store.bound_session(channel.chat_id, channel.topic_id)
+        if session_id is None:
+            await self._say(channel, "Nothing is bound here to end.", agent_id=agent_id)
+            return
+        try:
+            await self.service.end_session(session_id)
+        except PkbAgentError as exc:
+            await self._say(channel, f"Could not end: {exc}", agent_id=agent_id)
+            return
+        await self.store.unbind(channel.chat_id, channel.topic_id)
+        await self._say(channel, "Ended. That file is sealed now.", agent_id=agent_id)
 
     async def _agents_text(self, channel: Channel, agent_id: str | None) -> str:
         """Who answers **here**, and where the others are (TG-73, TG-86).
@@ -1571,54 +1720,79 @@ class TelegramAdapter:
     async def _turn(
         self, channel: Channel, agent_id: str, text: str, *, update_id: int | None = None
     ) -> None:
-        """One message, one turn on the **channel's** current thread (TG-26, TG-4, TG-29).
+        """One message, one turn on the **channel's** current session (S-6, S-7, TG-26, TG-4, TG-29).
 
-        Per channel rather than per chat (TG-26 amended): one thread per chat under topics would
+        Per channel rather than per chat (TG-26 amended): one session per chat under topics would
         mean every expert in a chat sharing one conversation, which is worse than the mis-file TG-1
         exists to prevent — the human would see distinct topics and reasonably assume distinct
         conversations.
 
         The binding carries the agent it was made for, and a mismatch with the *configured* agent
-        rotates the chat onto a fresh thread. Without that check, editing the mapping kept filing
+        rotates the chat onto a fresh session. Without that check, editing the mapping kept filing
         into the previous expert forever: measured, a chat bound under ``topic/cooking`` and then
-        re-mapped to ``topic/grilling`` issued **zero** ``create_thread`` calls and sent the new
-        message to the Cooking thread — a write to the wrong topic, with no undo, invisible from
+        re-mapped to ``topic/grilling`` issued **zero** ``create_session`` calls and sent the new
+        message to the Cooking session — a write to the wrong topic, with no undo, invisible from
         the phone and from ``/health``. That is the mis-file TG-1 was ruled to eliminate, so the
         rotation is announced rather than silent (TG-27's reasoning applies to a configuration
         change too: an invisible rotation is the failure class, not the rotation).
+
+        A second kind of staleness is new under sessions and has no thread-era equivalent: the
+        channel's own binding names a session that has since been closed or sealed elsewhere (the
+        TUI, the API directly), or — on a file upgraded by :meth:`~pkb.service.telegram.
+        SqliteTelegramStore._migrate` — still carries a real thread id nobody minted as a session
+        (that method's own docstring). ``start_session_run`` answers both with a named error
+        (``UnknownSessionError``, ``IllegalSessionTransitionError``), caught here exactly once: the
+        channel is rebound fresh and the turn is retried, so a stale binding heals itself on the
+        very next message rather than requiring an operator to notice and clear it by hand — and,
+        exactly like the agent-mismatch branch just above it, this is announced rather than silent
+        (TG-27's own reasoning: an invisible rotation is the failure class, not the rotation itself,
+        and a human replying into what they still believe is last week's conversation deserves to
+        know it just became a new one).
         """
         binding = await self.store.binding(channel.chat_id, channel.topic_id)
         if binding is not None and binding[1] != agent_id:
             await self._say(channel, _REMAPPED.format(agent_id=agent_id), agent_id=agent_id)
             binding = None
-        if binding is None:
-            # TG-4: stamped `telegram` exactly once, so a conversation started on the phone is
-            # recognisable in the TUI. Never read back in a conditional (TG-33).
-            thread = await self.service.create_thread(agent_id, origin_channel="telegram")
-            thread_id = thread.thread_id
-            await self.store.bind(channel.chat_id, channel.topic_id, thread_id, agent_id)
-        else:
-            thread_id = binding[0]
+        session_id = (
+            binding[0] if binding is not None else await self._open_session(channel, agent_id, text)
+        )
         try:
-            subscription = await self.service.start_run(thread_id, text)
-        except ApprovalPendingError:
-            # TG-37: neither rotate nor retry. No gate can park a *new* interrupt any more
-            # (DESIGN.md §2.10), so this is unreachable except for a thread whose checkpoint still
-            # carries one from before that change — a truthful compile-keeper (RT-39), not a live
-            # path. There is no keyboard left to re-post for it (the approval-prompt machinery this
-            # branch used to call into is gone), so the chat is simply told, once, why nothing sent.
-            await self._say(channel, _PENDING_BLOCKS.format(text=text), agent_id=agent_id)
-            return
+            subscription = await self.service.start_session_run(session_id, text)
         except ThreadBusyError:
             # TG-38: the normal case on a phone, where people send three lines as three messages.
             await self._say(channel, _BUSY.format(text=text), agent_id=agent_id)
             return
+        except (UnknownSessionError, IllegalSessionTransitionError):
+            await self._say(channel, _STALE_SESSION, agent_id=agent_id)
+            session_id = await self._open_session(channel, agent_id, text)
+            subscription = await self.service.start_session_run(session_id, text)
         if update_id is not None:
             # TG-29: admitted, so this update is no longer a loss the bot may ask the human to
-            # re-send. The thread and run ids are recorded here because this is where they first
+            # re-send. The session and run ids are recorded here because this is where they first
             # exist and TG-31's re-sync has nothing to reattach to without them.
-            await self.store.started(update_id, thread_id, subscription.handle.run_id)
+            await self.store.started(update_id, session_id, subscription.handle.run_id)
         await self._consume(channel, agent_id, subscription)
+
+    async def _open_session(self, channel: Channel, agent_id: str, text: str) -> str:
+        """A fresh session for this channel, bound and attached (S-5, S-6, S-14, TG-4 amended).
+
+        The objective is the human's own opening line, unedited — S-5: "harness code takes the
+        first one from the objective they stated." ``operator="telegram"`` records where the
+        session was established from; *which* channel is the row :meth:`~pkb.service.telegram.
+        SqliteTelegramStore.bind` writes and :func:`channel_ref` names, so the operator string does
+        not need to carry the chat as well (mirrors TG-4's old "stamped exactly once" rule, moved
+        from ``origin_channel`` to this field now that a session carries no such column).
+
+        Bind, then attach, in that order: the bind is this transport's own routing table and the
+        attach is the session's generic registry (S-16's retitle fan-out reads it), and a crash
+        between the two leaves the channel *reachable* — the more important of the two failure
+        directions, since an unattached channel only costs a missed retitle, and an unbound one
+        cannot take a turn at all.
+        """
+        session = await self.service.create_session(agent_id, objective=text, operator="telegram")
+        await self.store.bind(channel.chat_id, channel.topic_id, session.session_id, agent_id)
+        await self.service.attach_channel(session.session_id, channel_ref(channel))
+        return session.session_id
 
     # -- the run ----------------------------------------------------------------------
 
@@ -1728,22 +1902,22 @@ class TelegramAdapter:
     async def _cancel(self, channel: Channel, agent_id: str) -> None:
         """``/cancel`` — the one place ``service.cancel`` is reachable from (TG-32, TG-39).
 
-        The attached subscription is closed in a ``finally`` (TG-52). ``attach`` replays the hub
-        from ``seq 0`` and holds a subscriber slot for as long as nobody detaches, so a ``/cancel``
-        that walked away from it leaked exactly the subscriber that rule exists to prevent — in the
-        daemon whose whole value proposition is staying up for weeks. Closing is **synchronous**:
-        ``RunSubscription.close`` is a plain function despite its docstring, and awaiting it raises
-        ``TypeError`` inside a ``finally`` during teardown (C-31).
+        The attached subscription is closed in a ``finally`` (TG-52). ``attach_session`` replays the
+        hub from ``seq 0`` and holds a subscriber slot for as long as nobody detaches, so a
+        ``/cancel`` that walked away from it leaked exactly the subscriber that rule exists to
+        prevent — in the daemon whose whole value proposition is staying up for weeks. Closing is
+        **synchronous**: ``RunSubscription.close`` is a plain function despite its docstring, and
+        awaiting it raises ``TypeError`` inside a ``finally`` during teardown (C-31).
 
         It cancels **this channel's** run and no other (TG-86). A ``/cancel`` that reaches the wrong
         turn is worse than no ``/cancel``: it stops a turn the human wanted and leaves the one they
         were trying to stop writing into a tree with no undo.
         """
-        thread_id = await self.store.bound_thread(channel.chat_id, channel.topic_id)
-        if thread_id is None:
+        session_id = await self.store.bound_session(channel.chat_id, channel.topic_id)
+        if session_id is None:
             await self._say(channel, "Nothing is running here.", agent_id=agent_id)
             return
-        subscription = await self.service.attach(thread_id)
+        subscription = await self.service.attach_session(session_id)
         if subscription is None:
             await self._say(channel, "Nothing is running here.", agent_id=agent_id)
             return
@@ -2233,54 +2407,56 @@ class TelegramAdapter:
         re-post on a restart.
         """
         await self._report_orphans()
-        for update_id, chat_id, topic_id, thread_id in await self.store.unfinished():
+        for update_id, chat_id, topic_id, session_id in await self.store.unfinished():
             if chat_id is None or chat_id not in self.config.chats:
                 continue
             channel = Channel(chat_id, topic_id)
             try:
-                await self._resync(channel, thread_id)
+                await self._resync(channel, session_id)
             except Exception:
                 _log.warning(
-                    "telegram: could not re-sync %s on thread %s after a restart",
+                    "telegram: could not re-sync %s on session %s after a restart",
                     channel,
-                    thread_id,
+                    session_id,
                     exc_info=True,
                 )
             await self.store.dispatched(update_id)
 
-    async def _resync(self, channel: Channel, thread_id: str) -> None:
+    async def _resync(self, channel: Channel, session_id: str) -> None:
         """One channel's unfinished turn, re-synced (TG-31). Never a re-run, never a ``cancel``.
 
         Into the channel the update came from (TG-31 amended): a restart that re-posted a reply into
         the wrong topic was TG-80's failure without anyone having deleted anything.
         """
-        detail = await self.service.get_thread(thread_id)
-        subscription = await self.service.attach(thread_id)
+        subscription = await self.service.attach_session(session_id)
         if subscription is not None:
-            # `detail.thread.agent_id`, not `detail.agent_id`: :class:`~pkb.service.ThreadDetail`
-            # has no such attribute, so the `getattr` this replaced answered ``None`` on **every**
-            # restart. That is not cosmetic under §9 — an unattributed frame is invisible to
-            # `_route_out`'s retirement check (TG-82), carries no TG-85(b) prefix when it falls back
-            # to General, and cannot repair the channel it dies in (TG-84), which is exactly the
-            # path a restart takes: `_moved` is process memory and the ledger row still names the
-            # topic that was deleted while the daemon was down.
-            await self._consume(channel, _agent_of(detail), subscription, replay=True)  # branch (a)
+            await self._consume(
+                channel, await self._agent_of_session(session_id), subscription, replay=True
+            )  # branch (a)
             return
-        await self._post_late_reply(channel, detail)  # branch (b)
+        await self._post_late_reply(channel, session_id)  # branch (b)
 
-    async def _post_late_reply(self, channel: Channel, detail: Any) -> None:
-        """The reply the chat never got, marked as late (TG-31 branch (c)).
+    async def _post_late_reply(self, channel: Channel, session_id: str) -> None:
+        """The chat never got the outcome, and there is nothing left here to recover it from
+        (TG-31 branch (c) — a truthful narrowing of the thread era's own).
 
-        ``attach`` returns ``None`` once the hub is closed, so a late restart cannot reach the
-        reply through the supervisor at all — ``ThreadDetail.messages`` is the only place it still
-        exists. Marked, because a reply arriving hours after the question reads as a non-sequitur.
+        ``attach_session`` returns ``None`` once the hub is closed, and unlike the retired
+        ``ThreadDetail`` a :class:`~pkb.service.sessions.Session` carries no message history on this
+        Protocol — the running record Task 8 writes into the file is where that text lives now, and
+        this transport does not read files back. Guessing at the text or staying silent are both
+        worse than saying plainly that the outcome could not be recovered here.
         """
-        last = next(
-            (m.text for m in reversed(list(detail.messages)) if m.role == "assistant" and m.text),
-            None,
-        )
-        if last:
-            await self._queue(channel, _LATE + last, _agent_of(detail))
+        await self._queue(channel, _LATE_UNKNOWN, await self._agent_of_session(session_id))
+
+    async def _agent_of_session(self, session_id: str) -> str | None:
+        """Whose conversation this is, for a restart-path caller with only a session id (TG-85,
+        TG-82). Tolerant of an unknown session — both callers are on the restart path, where
+        raising would take the whole re-sync down for one row a race already invalidated."""
+        try:
+            session = await self.service.get_session(session_id)
+        except PkbAgentError:
+            return None
+        return session.agent_id
 
     async def _report_orphans(self) -> None:
         """Name what a crash lost, rather than retrying it or staying silent (decision T, TG-29).
@@ -2322,19 +2498,6 @@ def _detach(subscription: Any) -> None:
     close = getattr(subscription, "close", None)
     if callable(close):
         close()
-
-
-def _agent_of(detail: Any) -> str | None:
-    """Whose conversation this is, read off ``ThreadDetail.thread`` (TG-85, TG-82).
-
-    ``ThreadDetail`` carries the :class:`~pkb.service.Thread`, not the agent id — a ``getattr`` on
-    the detail itself answers ``None`` for every thread that has ever existed, which is how the
-    re-sync path shipped every restarted run as an unattributed frame. Tolerant of a detail that is
-    not a ``ThreadDetail`` because both callers are on the restart path, where raising would take
-    the whole re-sync down for one malformed row.
-    """
-    agent_id = getattr(getattr(detail, "thread", None), "agent_id", None)
-    return str(agent_id) if agent_id else None
 
 
 def _channel_of_message(message: Mapping[str, Any]) -> Channel:
@@ -2431,15 +2594,13 @@ def _is_empty(message: Mapping[str, Any]) -> bool:
     return not (_MEDIA_KEYS & set(message))
 
 
-def _threads_text(threads: Sequence[Any]) -> str:
-    """Server order, verbatim — pending first, then most recent (TG-40)."""
-    if not threads:
-        return "No conversations here yet."
-    rows = [
-        f"{'● ' if t.pending_interrupt_id else '· '}{t.title or 'untitled'}  [{t.thread_id}]"
-        for t in threads
-    ]
-    return "Your conversations, most in need of attention first:\n" + "\n".join(rows)
+def _sessions_text(sessions: Sequence[Any]) -> str:
+    """``/threads`` (S-14): every open session this agent holds, server order verbatim (TG-40's own
+    rule, carried over — the ordering itself is Phase 5's client-rendering call, S-18)."""
+    if not sessions:
+        return "No open sessions here yet."
+    rows = [f"· {s.name}  [{s.session_id}]" for s in sessions]
+    return "Open sessions:\n" + "\n".join(rows)
 
 
 _AGENT_LIST_CAP: Final = 40
@@ -2582,17 +2743,25 @@ _UNKNOWN: Final = (
 _BUSY: Final = (
     "Still finishing your last message — send this again in a moment. It was not sent:\n\n{text}"
 )
-_PENDING_BLOCKS: Final = (
-    "There is an approval waiting on this conversation, so this was not sent:\n\n{text}"
+_NEW_RETIRED: Final = (
+    "There is no /new any more. /close this session when the work is done, and your next message "
+    "here opens a fresh one — or /threads to switch this channel to a session already open."
 )
 _ORPHANS: Final = (
     "I restarted before {count} of your message(s) reached an expert, so nothing ran and nothing "
     "was filed. Nothing was retried — please send them again."
 )
-_LATE: Final = "This reply was finished while I was restarting, so it is arriving late:\n\n"
+_LATE_UNKNOWN: Final = (
+    "A reply finished here while I was restarting, but a session keeps no message history I can "
+    "read back from this side — check the session file, or open it in the TUI, for what it said."
+)
 _REMAPPED: Final = (
     "This chat now talks to {agent_id}, so I have started a new conversation here. The previous "
     "one is still in the thread list of the expert it belonged to."
+)
+_STALE_SESSION: Final = (
+    "That session is no longer open — closed, ended, or from before this channel understood "
+    "sessions — so I have started a new one here. The previous one is still reachable by name."
 )
 _TERMINAL: Final = {
     "interrupted": "Waiting on your decision above.",

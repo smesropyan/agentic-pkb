@@ -1321,7 +1321,7 @@ async def test_a_repair_race_does_not_strand_the_conversation_on_a_dead_topic_tg
     reachable = [
         topic_id
         for topic_id in (COOK_TOPIC, *range(101, 110))
-        if await store.bound_thread(CHAT, topic_id) == "t-cooking-1"
+        if await store.bound_session(CHAT, topic_id) == "t-cooking-1"
     ]
     assert reachable == [int(row["topic_id"])], reachable
 

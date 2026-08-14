@@ -269,7 +269,7 @@ def _telegram_task(
     """
 
     async def start(service: Any) -> None:
-        from pkb.server.telegram import TelegramAdapter
+        from pkb.server.telegram import TelegramAdapter, TelegramChannelNotifier
         from pkb.server.telegram_api import HttpBotApi
         from pkb.service.telegram import SqliteTelegramStore
 
@@ -279,6 +279,12 @@ def _telegram_task(
         store = SqliteTelegramStore(connection)
         await _seed_channel_agents(store, health)
         async with HttpBotApi(token=config.token) as api:
+            # S-16's retitle fan-out (Task 7): wired in by assignment, not the constructor, because
+            # `BotApi` — what `TelegramChannelNotifier` needs — does not exist until this `async
+            # with` opens it, and that is well after `RuntimeService` itself was already built in
+            # `opener()` above (`ChannelNotifier`'s own docstring in `pkb.service.runtime` explains
+            # why the ordering forces this rather than a constructor argument).
+            service.notifier = TelegramChannelNotifier(api)
             adapter = TelegramAdapter(
                 service=service,
                 store=store,

@@ -17,6 +17,7 @@ time by this task) rather than merely forwarding to a fake that never touches ei
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
@@ -359,6 +360,21 @@ def test_unknown_session_on_close_and_end_is_404(client: TestClient) -> None:
         assert response.json()["code"] == UNKNOWN_SESSION_CODE, route
 
 
+def test_close_detaches_every_attached_channel_s17(
+    service: StubService, client: TestClient
+) -> None:
+    """S-17: "`/close` brings every attached channel away from the session"."""
+    session = client.post(f"/agents/{COOKING}/sessions", json={}).json()["session"]
+    session_id = session["session_id"]
+    asyncio.run(service.attach_channel(session_id, "telegram:1:0"))
+    asyncio.run(service.attach_channel(session_id, "tui:client-a"))
+    assert asyncio.run(service.session_channels(session_id)) == ["telegram:1:0", "tui:client-a"]
+
+    client.post(f"/sessions/{session_id}/close")
+
+    assert asyncio.run(service.session_channels(session_id)) == []
+
+
 # --------------------------------------------------------------------------------------
 # § a turn on a session — the re-homed run/SSE machinery
 # --------------------------------------------------------------------------------------
@@ -612,6 +628,73 @@ def test_a_librarian_session_creates_its_file_cleanly_with_zero_experts_p5(tmp_p
 
     findings = validate_content(tmp_path, session["file_path"], on_disk.read_text(encoding="utf-8"))
     assert not has_errors(findings), findings
+
+
+@pytest.mark.asyncio
+async def test_rename_retitles_every_attached_channel_s16(tmp_path: Path) -> None:
+    """S-16: "Every channel attached to the session is retitled in the same move" — proven through
+    the real ``RuntimeService``, since the fan-out is composed there
+    (:class:`~pkb.service.runtime.ChannelNotifier`, Task 7) rather than in a route handler."""
+
+    class FakeNotifier:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        async def retitle(self, channel_ref: str, name: str) -> None:
+            self.calls.append((channel_ref, name))
+
+    notifier = FakeNotifier()
+    async with _real_service(tmp_path) as service:
+        service.notifier = notifier
+        session = await service.create_session(COOKING, objective="sear a steak")
+        await service.attach_channel(session.session_id, "telegram:1:0")
+        await service.attach_channel(session.session_id, "tui:client-a")
+
+        renamed = await service.rename_session(session.session_id, "Sear Timing")
+
+    assert renamed.name == "sear-timing"
+    assert set(notifier.calls) == {
+        ("telegram:1:0", "sear-timing"),
+        ("tui:client-a", "sear-timing"),
+    }
+
+
+@pytest.mark.asyncio
+async def test_rename_with_no_notifier_configured_still_commits_s16(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Fix round 1, finding 5: a TUI-only deployment reaches sessions over this API and never
+    assigns ``RuntimeService.notifier`` — it stays ``None``, the default the constructor sets (see
+    that attribute's own docstring in ``pkb.service.runtime``) — because nothing ever wires a
+    ``TelegramChannelNotifier`` into it. The rename this route backs must still succeed, over a
+    channel that is attached, with the ``if self.notifier is not None`` guard skipping the fan-out
+    outright rather than attempting it and swallowing an ``AttributeError`` — the two are
+    indistinguishable from the caller's return value alone, so the log is what actually falls over
+    if a reviewer deletes the guard and lets the loop call ``None.retitle(...)``.
+    """
+    async with _real_service(tmp_path) as service:
+        assert service.notifier is None
+        session = await service.create_session(COOKING, objective="sear a steak")
+        await service.attach_channel(session.session_id, "telegram:1:0")
+
+        with caplog.at_level("WARNING", logger="pkb.service.runtime"):
+            renamed = await service.rename_session(session.session_id, "Sear Timing")
+
+    assert renamed.name == "sear-timing"
+    assert "could not retitle" not in caplog.text, (
+        "the guard must skip the fan-out entirely, not attempt it and swallow the failure"
+    )
+
+
+@pytest.mark.asyncio
+async def test_close_detaches_every_channel_through_the_real_store_s17(tmp_path: Path) -> None:
+    async with _real_service(tmp_path) as service:
+        session = await service.create_session(COOKING, objective="sear a steak")
+        await service.attach_channel(session.session_id, "telegram:1:0")
+
+        await service.close_session(session.session_id)
+
+        assert await service.session_channels(session.session_id) == []
 
 
 def test_an_unknown_agent_never_reaches_the_store_or_the_disk_s9(tmp_path: Path) -> None:

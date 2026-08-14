@@ -19,12 +19,15 @@ gone along with the gates themselves: no tool call can raise an ``InterruptEvent
 (DESIGN.md §2.10 — the operator's instruction is the approval, so there is nothing left to park and
 nothing left to remember about it).
 
-**The channel → thread binding.** A channel is one continuous conversation; a thread is a turn-taking
-unit (Q24, ruled). Held in memory, one 502 from Telegram silently starts the human's next message in
-a brand-new conversation while the old one is forgotten — an amnesiac bot, and no error anywhere.
-Keyed per channel (TG-26 amended) because one thread per *chat* under topics would mean every expert
-in that chat sharing one conversation: the human sees distinct topics and assumes distinct threads,
-and the mis-file TG-1 exists to prevent happens with no configuration change at all.
+**The channel → session binding.** A channel is one continuous conversation; a session is DESIGN.md
+§2's durable, named unit of work (Task 7 repoints this table from the retired thread model: the
+column the row keys on is a **session id**, not a thread id — ``DESIGN.md`` §2.5, "the operator opens
+a channel and attaches it to a session"). Held in memory, one 502 from Telegram silently starts the
+human's next message in a brand-new conversation while the old one is forgotten — an amnesiac bot,
+and no error anywhere. Keyed per channel (TG-26 amended) because one session per *chat* under topics
+would mean every expert in that chat sharing one conversation: the human sees distinct topics and
+assumes distinct conversations, and the mis-file TG-1 exists to prevent happens with no configuration
+change at all.
 
 **The update ledger.** ``getUpdates`` is at-least-once: an update is confirmed only by the *next*
 poll's offset, and an unconfirmed one is redelivered for 24 hours. With a supervisor that restarts
@@ -88,7 +91,7 @@ _SCHEMA: Final = f"""
 CREATE TABLE IF NOT EXISTS {BINDINGS_TABLE} (
     chat_id    INTEGER NOT NULL,
     topic_id   INTEGER NOT NULL,
-    thread_id  TEXT NOT NULL,
+    session_id TEXT NOT NULL,
     agent_id   TEXT NOT NULL,
     bound_at   TEXT NOT NULL,
     PRIMARY KEY (chat_id, topic_id)
@@ -99,7 +102,7 @@ CREATE TABLE IF NOT EXISTS {LEDGER_TABLE} (
     kind        TEXT NOT NULL,
     seen_at     TEXT NOT NULL,
     dispatched  INTEGER NOT NULL DEFAULT 0,
-    thread_id   TEXT,
+    session_id  TEXT,
     run_id      TEXT,
     topic_id    INTEGER NOT NULL DEFAULT {GENERAL}
 );
@@ -129,11 +132,11 @@ class TelegramStore(Protocol):
 
     async def setup(self) -> None: ...
 
-    async def bound_thread(self, chat_id: int, topic_id: int) -> str | None: ...
+    async def bound_session(self, chat_id: int, topic_id: int) -> str | None: ...
 
     async def binding(self, chat_id: int, topic_id: int) -> tuple[str, str] | None: ...
 
-    async def bind(self, chat_id: int, topic_id: int, thread_id: str, agent_id: str) -> None: ...
+    async def bind(self, chat_id: int, topic_id: int, session_id: str, agent_id: str) -> None: ...
 
     async def unbind(self, chat_id: int, topic_id: int) -> None: ...
 
@@ -143,7 +146,7 @@ class TelegramStore(Protocol):
         self, update_id: int, chat_id: int | None, topic_id: int, kind: str
     ) -> bool: ...
 
-    async def started(self, update_id: int, thread_id: str, run_id: str) -> None: ...
+    async def started(self, update_id: int, session_id: str, run_id: str) -> None: ...
 
     async def dispatched(self, update_id: int) -> None: ...
 
@@ -202,16 +205,33 @@ class SqliteTelegramStore:
     # -- migration (TG-28 amended) ----------------------------------------------------
 
     async def _migrate(self) -> None:
-        """Bring a pre-topics file up to the channel schema — **additively, and only once**.
+        """Bring a pre-topics file up to the channel schema, and a pre-session one up to Task 7's
+        session-keyed binding — **additively, and only once each**.
 
-        Three statements at most, each one short and autocommitted, because ST-3 measured a long
+        Four statements at most, each one short and autocommitted, because ST-3 measured a long
         transaction on this connection killing a concurrent checkpointer run and this runs at
         startup, when the daemon is doing everything else at the same time.
 
-        The ledger takes an ``ADD COLUMN``: its primary key (``update_id``) is still correct under
-        topics, so the topic is one more column and nothing moves. ``NOT NULL DEFAULT 0`` is legal as
-        an ``ADD COLUMN`` on a populated table and needs no rewrite — every existing row becomes a
-        General row, which is exactly right.
+        **The session rename (Task 7).** ``BINDINGS_TABLE``/``LEDGER_TABLE`` each carried a
+        ``thread_id`` column under the retired channel-is-identity model; DESIGN.md §2 replaces a
+        thread with a session, so :meth:`_rename_column` renames both to ``session_id`` — a
+        metadata-only ``ALTER TABLE … RENAME COLUMN`` (SQLite ≥ 3.25), not a rebuild, so TG-28's own
+        rule holds unchanged. This is a **structural** rename only: a row a previous build wrote
+        holds a real thread id in what is now the ``session_id`` column, and that value names
+        nothing — threads and sessions are disjoint id spaces (``pkb.service.sessions.
+        mint_session_id`` mints a bare ``uuid4`` the same way ``mint_thread_id`` did, so the two
+        cannot even be told apart by shape). Clearing those rows here would need a second migration
+        flag and a judgment call about which rows are stale that this module has no way to make
+        honestly. Instead the *runtime* self-heals it: ``TelegramAdapter._turn`` (Task 7) treats
+        ``UnknownSessionError`` exactly like a stale binding — indistinguishable, deliberately — and
+        rebinds fresh on the channel's very next message, so a leftover thread id here is corrected
+        the first time anyone uses the channel again rather than requiring an operator to notice and
+        clear it by hand.
+
+        The ledger also takes an ``ADD COLUMN`` for ``topic_id``: its primary key (``update_id``) is
+        still correct under topics, so the topic is one more column and nothing moves. ``NOT NULL
+        DEFAULT 0`` is legal as an ``ADD COLUMN`` on a populated table and needs no rewrite — every
+        existing row becomes a General row, which is exactly right.
 
         **The bindings could not be migrated in place**, and this is the one place §9.6.1's
         "``ADD COLUMN`` and a unique index" is not sufficient. The shipped table declares
@@ -226,7 +246,9 @@ class SqliteTelegramStore:
         it as General bindings: one ``INSERT … SELECT`` of at most one row per chat. The old table
         is left standing with every row intact — it is the only surviving record of what the
         deployment looked like before the upgrade, and this system has no undo (D6). It is never
-        written again, because two records of one fact can disagree.
+        written again, because two records of one fact can disagree. Its own ``thread_id`` column is
+        left exactly as it was minted (a real, pre-session thread id) and carried into the new
+        table's ``session_id`` column under the identical "structural rename only" reasoning above.
 
         ``migrated_at`` is what makes the carry-over happen exactly once. Without it, a human who
         upgrades, types ``/new`` to rotate their General thread, and then restarts the daemon has
@@ -236,13 +258,15 @@ class SqliteTelegramStore:
         both on the next start, which is harmless: nothing has polled yet, so no rotation can have
         happened in between.
         """
+        await self._rename_column(BINDINGS_TABLE, "thread_id", "session_id")
+        await self._rename_column(LEDGER_TABLE, "thread_id", "session_id")
         await self._add_column(LEDGER_TABLE, "topic_id", f"INTEGER NOT NULL DEFAULT {GENERAL}")
         if not await self._table_exists(LEGACY_BINDINGS_TABLE):
             return
         await self._add_column(LEGACY_BINDINGS_TABLE, "migrated_at", "TEXT")
         await self._connection.execute(
             f"INSERT OR IGNORE INTO {BINDINGS_TABLE} "
-            f"(chat_id, topic_id, thread_id, agent_id, bound_at) "
+            f"(chat_id, topic_id, session_id, agent_id, bound_at) "
             f"SELECT chat_id, {GENERAL}, thread_id, agent_id, bound_at "
             f"FROM {LEGACY_BINDINGS_TABLE} WHERE migrated_at IS NULL"
         )
@@ -265,6 +289,22 @@ class SqliteTelegramStore:
         )
         return await cursor.fetchone() is not None
 
+    async def _rename_column(self, table: str, old: str, new: str) -> None:
+        """``ALTER TABLE … RENAME COLUMN``, guarded both ways: a no-op once ``new`` already exists
+        (the common case — every file created after Task 7 never had ``old`` at all, since
+        :data:`_SCHEMA` already declares the new name), and a no-op on a table with neither (nothing
+        to rename yet, which :meth:`setup`'s own ``executescript`` handles a moment later).
+
+        Metadata-only in SQLite ≥ 3.25 (bundled by every supported Python here) — it does not
+        rewrite the table's rows or touch the primary key, so TG-28's "never rebuild a table" holds
+        exactly as it does for :meth:`_add_column`.
+        """
+        columns = await self._columns(table)
+        if new in columns or old not in columns:
+            return
+        await self._connection.execute(f"ALTER TABLE {table} RENAME COLUMN {old} TO {new}")
+        await self._connection.commit()
+
     async def _add_column(self, table: str, column: str, ddl: str) -> None:
         """``ALTER TABLE … ADD COLUMN``, guarded by ``PRAGMA table_info`` — the same check the
         schema init already uses, and idempotent because ``setup()`` runs on every daemon start.
@@ -282,18 +322,24 @@ class SqliteTelegramStore:
         cursor = await self._connection.execute(f"PRAGMA table_info({table})")
         return frozenset(str(row[1]) for row in await cursor.fetchall())
 
-    # -- the channel's current thread (Q24, ruled; TG-26 amended) ---------------------
+    # -- the channel's current session (Q24, ruled; TG-26 amended; Task 7) ------------
 
-    async def bound_thread(self, chat_id: int, topic_id: int) -> str | None:
+    async def bound_session(self, chat_id: int, topic_id: int) -> str | None:
+        """The session id this channel currently reaches, or ``None`` (S-4, S-6, S-13).
+
+        Named for what it now holds (Task 7 repoints the whole table from thread to session — see
+        the module and :meth:`_migrate` docstrings): a row here maps a chat/topic to a **session**
+        id, never a thread id, whatever this method was called before.
+        """
         cursor = await self._connection.execute(
-            f"SELECT thread_id FROM {BINDINGS_TABLE} WHERE chat_id = ? AND topic_id = ?",
+            f"SELECT session_id FROM {BINDINGS_TABLE} WHERE chat_id = ? AND topic_id = ?",
             (chat_id, topic_id),
         )
         row = await cursor.fetchone()
         return str(row[0]) if row else None
 
     async def binding(self, chat_id: int, topic_id: int) -> tuple[str, str] | None:
-        """The channel's current thread **and the agent it was bound for** (TG-26).
+        """The channel's current session **and the agent it was bound for** (TG-26).
 
         ``agent_id`` was written from the first commit and read by nothing, so a chat re-mapped in
         the configuration kept filing into the expert it was originally bound to — silently, with
@@ -302,29 +348,33 @@ class SqliteTelegramStore:
         agent (TG-79's revival, TG-87's rebind) must rotate rather than continue.
         """
         cursor = await self._connection.execute(
-            f"SELECT thread_id, agent_id FROM {BINDINGS_TABLE} WHERE chat_id = ? AND topic_id = ?",
+            f"SELECT session_id, agent_id FROM {BINDINGS_TABLE} WHERE chat_id = ? AND topic_id = ?",
             (chat_id, topic_id),
         )
         row = await cursor.fetchone()
         return (str(row[0]), str(row[1])) if row else None
 
-    async def bind(self, chat_id: int, topic_id: int, thread_id: str, agent_id: str) -> None:
-        """Point a channel at a thread. Replaces, because ``/new`` rotates explicitly."""
+    async def bind(self, chat_id: int, topic_id: int, session_id: str, agent_id: str) -> None:
+        """Point a channel at a session. Replaces, because a rebind (``/threads``, a fresh
+        ``_turn``) moves the channel explicitly (S-7: "a channel holds one session at a time")."""
         await self._connection.execute(
-            f"INSERT INTO {BINDINGS_TABLE} (chat_id, topic_id, thread_id, agent_id, bound_at) "
+            f"INSERT INTO {BINDINGS_TABLE} (chat_id, topic_id, session_id, agent_id, bound_at) "
             f"VALUES (?,?,?,?,?) ON CONFLICT(chat_id, topic_id) DO UPDATE SET "
-            f"thread_id = excluded.thread_id, agent_id = excluded.agent_id, "
+            f"session_id = excluded.session_id, agent_id = excluded.agent_id, "
             f"bound_at = excluded.bound_at",
-            (chat_id, topic_id, thread_id, agent_id, _now()),
+            (chat_id, topic_id, session_id, agent_id, _now()),
         )
         await self._connection.commit()
 
     async def unbind(self, chat_id: int, topic_id: int) -> None:
-        """Forget this channel's current thread, so its next message starts a fresh one (``/new``).
+        """Forget this channel's current session, so its next message opens a fresh one.
 
-        Scoped to the one channel (TG-27): ``/new`` in General must leave the Cooking conversation
-        exactly where it was, because the human rotating one topic has said nothing at all about
-        the others and a thread they cannot name is a thread they cannot get back to.
+        Called on ``/close`` (S-17: the channel comes away from the session) and on a reactive
+        rebind, when the bound session turns out stale (closed, sealed, or minted by a build before
+        Task 7's session repoint — see ``TelegramAdapter._turn``). Scoped to the one channel (TG-27,
+        carried over from ``/new``'s retired rotation): unbinding General must leave the Cooking
+        conversation exactly where it was, because a channel this call says nothing about is a
+        channel nothing here should touch.
         """
         await self._connection.execute(
             f"DELETE FROM {BINDINGS_TABLE} WHERE chat_id = ? AND topic_id = ?", (chat_id, topic_id)
@@ -364,7 +414,7 @@ class SqliteTelegramStore:
         await self._connection.commit()
         return bool(cursor.rowcount)
 
-    async def started(self, update_id: int, thread_id: str, run_id: str) -> None:
+    async def started(self, update_id: int, session_id: str, run_id: str) -> None:
         """The run for this update has been **admitted** — it is no longer a loss (TG-29).
 
         Three states, not two, and the third is what makes the notice honest. ``dispatched`` used
@@ -375,15 +425,15 @@ class SqliteTelegramStore:
         written. Re-sending then produces the duplicated, divergent write into a tree with no undo
         that decision T exists to stop.
 
-        ``thread_id`` and ``run_id`` are recorded here because this is the moment they first exist,
+        ``session_id`` and ``run_id`` are recorded here because this is the moment they first exist,
         and TG-31's restart re-sync has nothing to reattach to without them. The guard on
         ``dispatched = 0`` keeps this from resurrecting a finished row. The channel is not recorded
         here because :meth:`claim` already wrote it, before anything could go wrong.
         """
         await self._connection.execute(
-            f"UPDATE {LEDGER_TABLE} SET dispatched = 1, thread_id = ?, run_id = ? "
+            f"UPDATE {LEDGER_TABLE} SET dispatched = 1, session_id = ?, run_id = ? "
             f"WHERE update_id = ? AND dispatched = 0",
-            (thread_id, run_id, update_id),
+            (session_id, run_id, update_id),
         )
         await self._connection.commit()
 
@@ -422,14 +472,14 @@ class SqliteTelegramStore:
         """Updates whose run was **started** and never finished — TG-31's re-sync input.
 
         Distinct from :meth:`orphans` in exactly the way that matters: the agent ran, so nothing
-        may be replayed, but the channel was never told how it ended. The thread id is what the
+        may be replayed, but the channel was never told how it ended. The session id is what the
         re-sync attaches to or re-reads, and the topic is where the outcome has to be posted — a
-        restart that re-posts Cooking's approval keyboard into General is TG-80's failure without
-        anyone having deleted anything.
+        restart that re-posts an outcome into General is TG-80's failure without anyone having
+        deleted anything.
         """
         cursor = await self._connection.execute(
-            f"SELECT update_id, chat_id, topic_id, thread_id FROM {LEDGER_TABLE} "
-            f"WHERE dispatched = 1 AND thread_id IS NOT NULL ORDER BY update_id"
+            f"SELECT update_id, chat_id, topic_id, session_id FROM {LEDGER_TABLE} "
+            f"WHERE dispatched = 1 AND session_id IS NOT NULL ORDER BY update_id"
         )
         return [
             (int(row[0]), None if row[1] is None else int(row[1]), int(row[2]), str(row[3]))

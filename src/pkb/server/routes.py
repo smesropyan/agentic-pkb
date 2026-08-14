@@ -183,7 +183,10 @@ def build_router(
     async def rename_session(
         request: Request, session_id: str, body: Annotated[dict[str, Any], Body()]
     ) -> dict[str, Any]:
-        """``/name`` (S-16): store rename, file move and retitle, channel fan-out stubbed for Task 7."""
+        """``/name`` (S-16): store rename, file move and retitle, then every attached channel's own
+        retitle — composed inside ``RuntimeService.rename_session`` itself (Task 7's
+        ``ChannelNotifier`` fan-out), not here: this route stays a thin forward, exactly like
+        every other one in this module."""
         name = body.get("name")
         if not isinstance(name, str) or not name.strip():
             raise InvalidDecisionError("'name' is required and must be a non-empty string")

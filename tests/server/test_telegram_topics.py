@@ -35,7 +35,7 @@ import ast
 import asyncio
 import contextlib
 import inspect
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -57,7 +57,13 @@ from pkb.contracts import (
 )
 from pkb.server import telegram as adapter_module
 from pkb.server.health import SubsystemState
-from pkb.server.telegram import COMMANDS, Channel, TelegramAdapter, TelegramConfig
+from pkb.server.telegram import (
+    COMMANDS,
+    Channel,
+    TelegramAdapter,
+    TelegramChannelNotifier,
+    TelegramConfig,
+)
 from pkb.server.telegram_api import (
     ALLOWED_UPDATES,
     GENERAL,
@@ -66,7 +72,8 @@ from pkb.server.telegram_api import (
     BotApi,
     TelegramError,
 )
-from pkb.service import RunSubscription, Thread, ThreadDetail
+from pkb.service import RunSubscription, Session, Thread, ThreadDetail
+from pkb.service.runtime import RuntimeService
 from pkb.service.telegram import CHANNELS_TABLE, SqliteTelegramStore
 from tests.server.stub import AGENTS, COOKING, GRILLING, LIBRARIAN, NOW, StubService
 
@@ -350,6 +357,22 @@ class TopicService(StubService):
         self.journal.append(("create_thread", {"agent_id": agent_id}))
         return await super().create_thread(agent_id, title=title, origin_channel=origin_channel)
 
+    async def create_session(
+        self,
+        agent_id: str,
+        *,
+        objective: str | None = None,
+        operator: str = "operator",
+        name: str | None = None,
+    ) -> Session:
+        # Task 7: `_turn` opens a session, not a thread — same journal kind as `create_thread`
+        # above, so every pre-existing `kind == "create_thread"`-shaped assertion in this file
+        # keeps meaning what it always meant: one fresh conversation opened for this agent.
+        self.journal.append(("create_thread", {"agent_id": agent_id}))
+        return await super().create_session(
+            agent_id, objective=objective, operator=operator, name=name
+        )
+
     async def start_run(
         self,
         thread_id: str,
@@ -362,6 +385,10 @@ class TopicService(StubService):
         return await super().start_run(
             thread_id, message, approval_mode=approval_mode, run_id=run_id
         )
+
+    async def start_session_run(self, session_id: str, message: str) -> RunSubscription:
+        self.journal.append(("start_run", {"thread_id": session_id, "message": message}))
+        return await super().start_session_run(session_id, message)
 
     async def get_thread(self, thread_id: str) -> ThreadDetail:
         scripted = self.details.get(thread_id)
@@ -402,6 +429,52 @@ def api(journal: Journal) -> FakeBotApi:
 @pytest.fixture
 def service(journal: Journal) -> TopicService:
     return TopicService(journal, events=reply_script())
+
+
+class FakeRuntime:
+    """Satisfies ``pkb.service.runtime.Runtime`` structurally — no harness (mirrors
+    ``test_session_routes.py``'s own fake). Fix round 1, findings 3 and 5: proving ``/name`` and
+    ``/end`` — and rename's notifier=None case — needs the **real** ``RuntimeService``, because
+    ``TopicService``/``StubService`` never compose ``SessionStore.channels`` or
+    ``ChannelNotifier`` at all, so a reviewer turning either command handler into a no-op leaves
+    every ``TopicService``-driven assertion unable to tell the difference.
+    """
+
+    db_path = Path("never-opened.sqlite")
+
+    def list_agents(self) -> Any:
+        return AGENTS
+
+    def run(self, agent_id: str, thread_id: str, message: str, **_: Any) -> Any:
+        async def stream() -> AsyncIterator[Any]:
+            yield MessageComplete(run_id="r1", agent_id=agent_id, text="Filed under Cooking.")
+            yield RunEnd(run_id="r1", final_text="Filed under Cooking.")
+
+        return stream()
+
+    async def cancel(self, run_id: str) -> None:
+        return None
+
+    async def history(self, agent_id: str, thread_id: str) -> Any:
+        return []
+
+    async def delete_thread(self, thread_id: str) -> None:
+        return None
+
+    async def request_scan(self, request: Any) -> Any:
+        raise NotImplementedError
+
+    async def regenerate(self) -> None:
+        raise NotImplementedError
+
+
+@pytest_asyncio.fixture
+async def real_service(connection: aiosqlite.Connection, tmp_path: Path) -> RuntimeService:
+    """The real service over the same connection ``store`` uses (production shares one, per
+    ``pkb.daemon``'s own composition) and a real, writable ``kb_root``."""
+    built = RuntimeService(FakeRuntime(), connection, kb_root=tmp_path / "kb")
+    await built.setup()
+    return built
 
 
 # --------------------------------------------------------------------------------------
@@ -610,8 +683,8 @@ async def test_general_and_a_topic_never_share_a_thread_tg72(
     await say(bot, "a general question")
     await say(bot, "a cooking note", topic_id=cooking)
 
-    general_thread = await store.bound_thread(CHAT, GENERAL)
-    cooking_thread = await store.bound_thread(CHAT, cooking)
+    general_thread = await store.bound_session(CHAT, GENERAL)
+    cooking_thread = await store.bound_session(CHAT, cooking)
     assert general_thread is not None and cooking_thread is not None
     assert general_thread != cooking_thread
 
@@ -1000,9 +1073,11 @@ def test_nothing_on_the_protocol_can_remove_or_silence_a_topic_tg78() -> None:
     ``finally``.
 
     ``edit_forum_topic`` is on the surface (TG-78 amended, TG-105) and it is the one exception, so
-    the assertion under it is that the adapter reaches for it from **one** place. A second call site
-    is how "name it once, at the moment of ownership" becomes "police the name", and the human's own
-    title reverts on a schedule they cannot see.
+    the assertion is that the adapter reaches for it from exactly the two places S-16 justifies
+    (Task 7): ``_name_channel``, at the moment a topic is taken as a channel, and
+    ``TelegramChannelNotifier.retitle``, the one caller of ``/name``'s fan-out. A third call site is
+    how "name it once, at the moment of ownership, or on the operator's own ``/name``" becomes
+    "police the name", and the human's own title reverts on a schedule they cannot see.
     """
     surface = {name for name in vars(BotApi) if not name.startswith("_")}
     assert surface == {
@@ -1028,8 +1103,8 @@ def test_nothing_on_the_protocol_can_remove_or_silence_a_topic_tg78() -> None:
     for name in forbidden:
         assert name not in surface
         assert not [attr for attr in reached if name in attr], f"the adapter reaches for {name}"
-    assert reached.count("edit_forum_topic") == 1, "one wire call, or the bot polices names"
-    assert reached.count("_name_channel") == 1, "and one caller of it, for the same reason"
+    assert reached.count("edit_forum_topic") == 2, "one wire call each for bind-time and /name"
+    assert reached.count("_name_channel") == 1, "and one caller of the bind-time half"
 
 
 @pytest.mark.asyncio
@@ -1180,7 +1255,7 @@ async def test_an_agent_that_left_the_catalog_keeps_its_topic_and_stops_running_
     bot = await topical(service, store, api)
     cooking = await channel_for(bot, api, COOKING)
     await say(bot, "a first note", topic_id=cooking)
-    thread = await store.bound_thread(CHAT, cooking)
+    thread = await store.bound_session(CHAT, cooking)
     bot.health = SubsystemState(name="telegram")
     service.catalog = [d for d in service.catalog if d.agent_id != COOKING]
     api.journal.clear()
@@ -1194,7 +1269,7 @@ async def test_an_agent_that_left_the_catalog_keeps_its_topic_and_stops_running_
     service.catalog = list(AGENTS)
     await say(bot, "and now it is back", update_id=10, topic_id=cooking)
 
-    assert await store.bound_thread(CHAT, cooking) == thread, "the binding survived intact"
+    assert await store.bound_session(CHAT, cooking) == thread, "the binding survived intact"
 
 
 # --------------------------------------------------------------------------------------
@@ -2031,12 +2106,33 @@ async def test_new_rotates_only_the_channel_it_was_typed_in_tg86(
     cooking = await channel_for(bot, api, COOKING)
     await say(bot, "a general note")
     await say(bot, "a cooking note", topic_id=cooking)
-    kept = await store.bound_thread(CHAT, cooking)
+    kept = await store.bound_session(CHAT, cooking)
 
     await say(bot, "/new")
 
-    assert await store.bound_thread(CHAT, GENERAL) is None
-    assert await store.bound_thread(CHAT, cooking) == kept
+    assert await store.bound_session(CHAT, GENERAL) is None
+    assert await store.bound_session(CHAT, cooking) == kept
+
+
+@pytest.mark.asyncio
+async def test_close_ends_only_the_channel_it_was_typed_in_task7(
+    service: TopicService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """Task 7 successor of ``test_new_rotates_only_the_channel_it_was_typed_in_tg86``: the same
+    "a human acting on one topic has said nothing about the others" property, now over ``/close``
+    (S-17) rather than the retired ``/new`` — General's session must survive a ``/close`` typed in
+    Cooking's own topic untouched.
+    """
+    bot = await topical(service, store, api)
+    cooking = await channel_for(bot, api, COOKING)
+    await say(bot, "a general note")
+    await say(bot, "a cooking note", topic_id=cooking)
+    kept = await store.bound_session(CHAT, GENERAL)
+
+    await say(bot, "/close", topic_id=cooking)
+
+    assert await store.bound_session(CHAT, cooking) is None
+    assert await store.bound_session(CHAT, GENERAL) == kept
 
 
 @pytest.mark.asyncio
@@ -2056,7 +2152,7 @@ async def test_cancel_reaches_only_this_channels_run_tg86(
 
     await say(bot, "/cancel", topic_id=cooking)
 
-    attached = [args[0] for name, args in service.calls if name == "attach"]
+    attached = [args[0] for name, args in service.calls if name == "attach_session"]
     assert attached == ["t-cooking"]
 
 
@@ -2102,6 +2198,35 @@ async def test_the_command_surface_is_six_and_offers_no_agent_selector_tg86(
     assert set(COMMANDS) == {"/new", "/threads", "/agents", "/pending", "/cancel", "/channels"}
     assert "/talk" not in api.texts[-1]
     assert "/connect" not in api.texts[-1]
+
+
+@pytest.mark.asyncio
+async def test_the_command_surface_is_the_seven_and_offers_no_agent_selector_task7(
+    service: TopicService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """Task 7 successor of ``test_the_command_surface_is_six_and_offers_no_agent_selector_tg86``
+    (S-15). The exact, bare tuple is pinned once in ``test_telegram.py``
+    (``test_the_command_surface_is_exactly_the_seven_s15``); this is the same "no hidden
+    agent-selector mode" property, driven through the running bot's own unknown-command fallback
+    over the new seven-command set — fix round 1, finding 2.
+    """
+    bot = await topical(service, store, api)
+
+    await say(bot, "/nope")
+
+    assert set(COMMANDS) == {
+        "/channels",
+        "/threads",
+        "/agents",
+        "/cancel",
+        "/name",
+        "/close",
+        "/end",
+    }
+    assert "/talk" not in api.texts[-1]
+    assert "/connect" not in api.texts[-1]
+    for command in COMMANDS:
+        assert command in api.texts[-1]
 
 
 @pytest.mark.asyncio
@@ -2565,6 +2690,191 @@ async def test_a_stranger_cannot_name_a_topic_tg105(
 
     assert api.renames == []
     assert dict(await store.channels(CHAT)) == {}
+
+
+# --------------------------------------------------------------------------------------
+# § TelegramChannelNotifier — S-16's retitle fan-out over the real BotApi surface (Task 7)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_notifier_sends_one_edit_forum_topic_call_s16(api: FakeBotApi) -> None:
+    """The concrete half of ``RuntimeService.rename_session``'s fan-out (S-16): one
+    ``editForumTopic`` per Telegram channel, over the same fake-transport-visible ``BotApi`` every
+    other send in this module goes through."""
+    notifier = TelegramChannelNotifier(api)
+
+    await notifier.retitle("telegram:770001:71", "Sear Timing")
+
+    assert api.renames == [{"chat_id": 770001, "topic_id": 71, "name": "Sear Timing"}]
+
+
+@pytest.mark.asyncio
+async def test_the_notifier_is_a_silent_no_op_for_general_and_other_transports_s18(
+    api: FakeBotApi,
+) -> None:
+    """General has no forum topic to retitle under this Bot API surface (no ``setChatTitle`` call
+    exists here), and a non-Telegram ref (a future TUI's ``"tui:…"``) is not this notifier's to
+    act on — both are recorded honestly by doing nothing, never by raising (S-18)."""
+    notifier = TelegramChannelNotifier(api)
+
+    await notifier.retitle("telegram:770001:0", "Sear Timing")  # General
+    await notifier.retitle("tui:client-a", "Sear Timing")  # a different transport's namespace
+
+    assert api.renames == []
+
+
+@pytest.mark.asyncio
+async def test_a_dead_topic_is_logged_and_never_raised_tg106(api: FakeBotApi) -> None:
+    """TG-106's rule one layer up, restated for the fan-out: "a failure is a reason, never a
+    repair." The caller (``RuntimeService.rename_session``) has already committed the store rename
+    and moved the file — a retitle failing here must not be allowed to look like the rename itself
+    failed, so a dead topic's ``editForumTopic`` error is swallowed rather than propagated."""
+    notifier = TelegramChannelNotifier(api)
+    api.rename_error = TelegramError("editForumTopic", 400, "message thread not found")
+
+    await notifier.retitle("telegram:770001:71", "Sear Timing")  # does not raise
+
+    assert [entry for kind, entry in api.journal if kind == "edit_forum_topic"] == [
+        {"chat_id": 770001, "topic_id": 71, "name": "Sear Timing"}
+    ]
+
+
+# --------------------------------------------------------------------------------------
+# § /name and /end as real Telegram commands (S-16, S-22; Task 7 fix round 1, finding 3)
+# --------------------------------------------------------------------------------------
+#
+# Driven through the real ``RuntimeService`` (the ``real_service`` fixture), never
+# ``TopicService``/``StubService``: the whole point is that a mutation turning ``_rename``/``_end``
+# into no-ops — as the round 1 reviewer's did — leaves the store unrenamed, the file unsealed and no
+# retitle sent, all of which only a real service can tell apart from success.
+
+
+@pytest.mark.asyncio
+async def test_name_renames_and_retitles_the_channel_it_was_typed_in_task7(
+    real_service: RuntimeService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """``/name``'s happy path, proven end to end: the store renames the session, and the retitle
+    actually reaches the Bot API for the channel ``/name`` was typed in — S-16's fan-out, composed
+    inside ``RuntimeService`` and wired through the real ``TelegramChannelNotifier``, not something
+    ``telegram.py``'s own command handler does by hand.
+    """
+    real_service.notifier = TelegramChannelNotifier(api)
+    bot = await topical(real_service, store, api)
+    cooking = await channel_for(bot, api, COOKING)
+    await say(bot, "a rub that doesn't burn", topic_id=cooking)
+
+    await say(bot, "/name Sear Timing", topic_id=cooking)
+
+    session_id = await store.bound_session(CHAT, cooking)
+    assert session_id is not None
+    session = await real_service.get_session(session_id)
+    assert session.name == "sear-timing"
+    assert api.renames == [{"chat_id": CHAT, "topic_id": cooking, "name": "sear-timing"}]
+    assert "Renamed" in api.to(cooking)[-1]
+
+
+@pytest.mark.asyncio
+async def test_name_refuses_a_collision_with_a_reply_not_a_crash_task7(
+    real_service: RuntimeService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """``/name``'s refusal path: a name collision (S-16, ``SessionNameTakenError``) must reach the
+    chat as a plain reply, not crash the turn or leave the store or the file touched."""
+    await real_service.create_session(COOKING, name="brisket")
+    bot = await topical(real_service, store, api)
+    cooking = await channel_for(bot, api, COOKING)
+    await say(bot, "a rub for the other cut", topic_id=cooking)
+    session_id = await store.bound_session(CHAT, cooking)
+    assert session_id is not None
+
+    await say(bot, "/name brisket", topic_id=cooking)
+
+    assert "Could not rename" in api.to(cooking)[-1]
+    session = await real_service.get_session(session_id)
+    assert session.name != "brisket", "the collision must not have gone through"
+    assert api.renames == [], "a refused rename sends no retitle"
+
+
+@pytest.mark.asyncio
+async def test_rename_with_no_notifier_configured_still_commits_task7(
+    real_service: RuntimeService,
+    store: SqliteTelegramStore,
+    api: FakeBotApi,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A TUI-only deployment never assigns ``RuntimeService.notifier`` (it stays ``None`` — see
+    that attribute's own docstring), and Task 7's fan-out loop is guarded by ``if self.notifier is
+    not None`` for exactly that deployment. Fix round 1, finding 5: nothing exercised the guard
+    itself, so a reviewer who deleted it and let the loop call ``None.retitle(...)`` was never
+    caught — the per-channel ``try/except`` around that call swallows the resulting
+    ``AttributeError`` either way, so the rename still commits and the chat still sees success; the
+    only externally visible difference the guard makes is that nothing is even attempted, so nothing
+    is logged. The rename committing is asserted directly; the log assertion is what actually falls
+    over without the guard (see also the route-level sibling in ``test_session_routes.py``, the more
+    literal reading of this finding — "a TUI-only deployment" reaches sessions over the API, not
+    through this transport at all).
+    """
+    assert real_service.notifier is None
+    bot = await topical(real_service, store, api)
+    cooking = await channel_for(bot, api, COOKING)
+    await say(bot, "a rub that doesn't burn", topic_id=cooking)
+    session_id = await store.bound_session(CHAT, cooking)
+    assert session_id is not None
+
+    with caplog.at_level("WARNING", logger="pkb.service.runtime"):
+        await say(bot, "/name Sear Timing", topic_id=cooking)
+
+    session = await real_service.get_session(session_id)
+    assert session.name == "sear-timing"
+    assert api.renames == [], "no notifier, no send — and no crash either"
+    assert "Renamed" in api.to(cooking)[-1]
+    assert "could not retitle" not in caplog.text, (
+        "the guard must skip the fan-out entirely, not attempt it and swallow the failure"
+    )
+
+
+@pytest.mark.asyncio
+async def test_end_seals_the_file_and_unbinds_the_channel_from_closed_task7(
+    real_service: RuntimeService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """``/end``'s happy path (S-22): legal from ``closed``, seals the file, and this transport's
+    own local binding is cleared so the very next message opens a fresh session rather than
+    reactively discovering the sealed one (:meth:`TelegramAdapter._end`'s own docstring)."""
+    bot = await topical(real_service, store, api)
+    cooking = await channel_for(bot, api, COOKING)
+    await say(bot, "a rub that doesn't burn", topic_id=cooking)
+    session_id = await store.bound_session(CHAT, cooking)
+    assert session_id is not None
+    await real_service.close_session(session_id)
+
+    await say(bot, "/end", topic_id=cooking)
+
+    session = await real_service.get_session(session_id)
+    assert session.state == "ended"
+    assert session.ended_at is not None
+    assert await store.bound_session(CHAT, cooking) is None
+    assert "sealed" in api.to(cooking)[-1]
+
+
+@pytest.mark.asyncio
+async def test_end_refuses_an_open_session_with_the_409_class_reply_task7(
+    real_service: RuntimeService, store: SqliteTelegramStore, api: FakeBotApi
+) -> None:
+    """``/end`` on a session still ``open`` is refused (S-22: legal only from ``closed``) — the
+    chat gets the same class of error ``IllegalSessionTransitionError`` maps to over HTTP (409),
+    worded as a plain reply, and nothing about the session or the binding changes."""
+    bot = await topical(real_service, store, api)
+    cooking = await channel_for(bot, api, COOKING)
+    await say(bot, "a rub that doesn't burn", topic_id=cooking)
+    session_id = await store.bound_session(CHAT, cooking)
+    assert session_id is not None
+
+    await say(bot, "/end", topic_id=cooking)
+
+    assert "Could not end" in api.to(cooking)[-1]
+    session = await real_service.get_session(session_id)
+    assert session.state == "open"
+    assert await store.bound_session(CHAT, cooking) == session_id, "an open session stays bound"
 
 
 # --------------------------------------------------------------------------------------

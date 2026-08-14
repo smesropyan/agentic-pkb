@@ -446,6 +446,84 @@ async def test_list_filters_by_agent_exactly_and_by_state(tmp_path: Path) -> Non
 
 
 # --------------------------------------------------------------------------------------
+# § attached channels — S-4, S-6, S-7, S-17 (Task 7)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_two_channels_attach_to_one_session_and_both_appear_in_channels_s6(
+    tmp_path: Path,
+) -> None:
+    """S-6: "several channels may hold one session at once... every attached channel sees the
+    same thread"."""
+    async with session_store(tmp_path / "pkb.sqlite") as store:
+        session = await store.create(COOKING, "a rub that doesn't burn", "sergiy", now=at(9))
+
+        await store.attach(session.session_id, "telegram:1:0")
+        await store.attach(session.session_id, "tui:client-a")
+
+        assert set(await store.channels(session.session_id)) == {"telegram:1:0", "tui:client-a"}
+
+
+@pytest.mark.asyncio
+async def test_attach_is_idempotent(tmp_path: Path) -> None:
+    async with session_store(tmp_path / "pkb.sqlite") as store:
+        session = await store.create(COOKING, "an objective", "sergiy", now=at(9))
+
+        await store.attach(session.session_id, "telegram:1:0")
+        await store.attach(session.session_id, "telegram:1:0")
+
+        assert await store.channels(session.session_id) == ["telegram:1:0"]
+
+
+@pytest.mark.asyncio
+async def test_a_channel_holds_one_session_at_a_time_s7(tmp_path: Path) -> None:
+    """S-7: "A channel holds one session at a time" — attaching moves it, per ``/threads``."""
+    async with session_store(tmp_path / "pkb.sqlite") as store:
+        first = await store.create(COOKING, "first", "sergiy", now=at(9))
+        second = await store.create(LIBRARIAN, "second", "sergiy", now=at(9, 5))
+
+        await store.attach(first.session_id, "telegram:1:0")
+        await store.attach(second.session_id, "telegram:1:0")
+
+        assert await store.channels(first.session_id) == []
+        assert await store.channels(second.session_id) == ["telegram:1:0"]
+
+
+@pytest.mark.asyncio
+async def test_detach_removes_one_channel_and_leaves_the_other(tmp_path: Path) -> None:
+    async with session_store(tmp_path / "pkb.sqlite") as store:
+        session = await store.create(COOKING, "an objective", "sergiy", now=at(9))
+        await store.attach(session.session_id, "telegram:1:0")
+        await store.attach(session.session_id, "tui:client-a")
+
+        await store.detach(session.session_id, "telegram:1:0")
+
+        assert await store.channels(session.session_id) == ["tui:client-a"]
+
+
+@pytest.mark.asyncio
+async def test_detach_of_an_unknown_ref_is_not_an_error(tmp_path: Path) -> None:
+    """Mirrors the store's own error discipline: an unmapped detach is a no-op, not a raise
+    (``CLAUDE.md``, "Findings, not exceptions, for content defects")."""
+    async with session_store(tmp_path / "pkb.sqlite") as store:
+        session = await store.create(COOKING, "an objective", "sergiy", now=at(9))
+
+        await store.detach(session.session_id, "telegram:99:0")  # never attached — no raise
+        await store.detach("no-such-session", "telegram:1:0")  # unknown session — no raise
+
+        assert await store.channels(session.session_id) == []
+
+
+@pytest.mark.asyncio
+async def test_channels_of_a_session_with_none_attached_is_empty(tmp_path: Path) -> None:
+    async with session_store(tmp_path / "pkb.sqlite") as store:
+        session = await store.create(COOKING, "an objective", "sergiy", now=at(9))
+
+        assert await store.channels(session.session_id) == []
+
+
+# --------------------------------------------------------------------------------------
 # § the schema
 # --------------------------------------------------------------------------------------
 

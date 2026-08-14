@@ -121,6 +121,28 @@ class Runtime(Protocol):
     async def regenerate(self) -> FlushReport: ...
 
 
+class ChannelNotifier(Protocol):
+    """Whatever can retitle an attached channel wherever it lives (S-16's fan-out; Task 7).
+
+    Written out structurally, mirroring :class:`Runtime` above, for the identical reason: I2 forbids
+    ``pkb.service`` from naming a transport module (a Telegram-backed implementation lives in
+    ``pkb.server.telegram`` — above this layer, not below it — and the layers contract enforces
+    that directly, not just for the harness). :meth:`RuntimeService.rename_session` calls this on
+    every channel :class:`~pkb.service.sessions.SessionStore.channels` returns for the session being
+    renamed; a ref the concrete implementation does not recognize (a non-Telegram one — Task 7's
+    brief names ``"tui:<client-id>"`` as an example) is a no-op it records honestly rather than
+    raises on (S-18 — that boundary is deep client UX, Phase 5's, not this file's).
+
+    ``RuntimeService`` starts with no notifier at all (``notifier=None`` — see its constructor): the
+    composition root builds the concrete Telegram one only once the bot's ``BotApi`` exists, which is
+    after the service itself (``pkb.daemon._telegram_task``'s own ordering), so it is wired in by
+    assignment rather than through the constructor. No notifier configured means the retitle fan-out
+    is a no-op everywhere, which is correct for a deployment running no chat client at all.
+    """
+
+    async def retitle(self, channel_ref: str, name: str) -> None: ...
+
+
 class RuntimeService:
     """:class:`~pkb.service.PkbService` over a real runtime and Layer 3's own SQLite tables."""
 
@@ -139,6 +161,11 @@ class RuntimeService:
         self._session_files = SessionFileWriter(kb_root)
         self._runs = supervisor or RunSupervisor()
         self._titling: set[str] = set()
+        self.notifier: ChannelNotifier | None = None
+        """S-16's retitle fan-out, wired in by assignment after construction (see
+        :class:`ChannelNotifier`'s own docstring for why it cannot be a constructor parameter).
+        ``None`` — the default — makes :meth:`rename_session`'s fan-out a no-op, which is correct
+        for a deployment with no chat client at all."""
 
     @property
     def runs(self) -> RunSupervisor:
@@ -341,6 +368,14 @@ class RuntimeService:
         Learning agent, which never had a file to begin with (S-26) — checked *before* the store is
         touched, so a Learning-agent session's row-level ``name`` cannot drift out of step with a
         file that was never there to rename.
+
+        The last step is S-16's retitle fan-out: every channel :meth:`session_channels` reports for
+        this session gets :attr:`notifier`'s ``retitle`` call, in the channels' own deterministic
+        order (:meth:`~pkb.service.sessions.SessionStore.channels`). Best-effort and *after* the
+        store and the file already hold the new name — a failed retitle is logged and never rolls
+        either of those back, matching :meth:`~pkb.server.telegram.TelegramAdapter._name_channel`'s
+        own TG-106 rule one layer up ("a failure is a reason, never a repair"); one broken channel
+        must not stop the rest of the fan-out either, so each call is isolated.
         """
         before = await self.get_session(session_id)
         if before.agent_id == LEARNING_AGENT_ID:
@@ -351,19 +386,58 @@ class RuntimeService:
         old_path = before.file_path
         after = await self._sessions.rename(session_id, name)
         self._session_files.rename(after, old_path)
+        if self.notifier is not None:
+            for channel_ref in await self._sessions.channels(session_id):
+                try:
+                    await self.notifier.retitle(channel_ref, after.name)
+                except Exception:
+                    _log.warning(
+                        "could not retitle channel %r for session %r",
+                        channel_ref,
+                        session_id,
+                        exc_info=True,
+                    )
         return after
 
     async def close_session(self, session_id: str) -> Session:
-        """``/close`` (S-17, S-20, S-21): store transition, then the file's own marker entry.
+        """``/close`` (S-17, S-20, S-21): store transition, the file's own marker entry, then every
+        attached channel let go (S-17: "brings every attached channel away from the session").
 
-        Channel detachment (S-17) is Task 7's — no channel-attachment registry exists yet for this
-        to fan out over. A Learning-agent session carries no file, so the marker write is skipped
-        for it exactly as :meth:`create_session` skips file creation.
+        The detach loop reads :meth:`session_channels` and calls
+        :meth:`~pkb.service.sessions.SessionStore.detach` per ref rather than a single bulk
+        statement, matching the three-method surface Task 7's brief fixes on
+        :class:`~pkb.service.sessions.SessionStore` (``attach``/``detach``/``channels``) — a fourth,
+        bulk-delete method would be one more thing for a test asserting the store's own shape to
+        know about, for a session that rarely holds more than a handful of channels. No retitle here
+        (contrast :meth:`rename_session`): a detached channel holds no session to be titled for.
+
+        A Learning-agent session carries no file, so the marker write is skipped for it exactly as
+        :meth:`create_session` skips file creation.
         """
         session = await self._sessions.close(session_id)
         if session.agent_id != LEARNING_AGENT_ID:
             self._session_files.mark_closed(session)
+        for channel_ref in await self._sessions.channels(session_id):
+            await self._sessions.detach(session_id, channel_ref)
         return session
+
+    async def attach_channel(self, session_id: str, channel_ref: str) -> None:
+        """``attach`` (S-6, S-14): validated against a live session first (mirrors
+        :meth:`rename_session`'s own ordering) — the store method itself stays session-agnostic, the
+        same split this module keeps for every other session write."""
+        await self.get_session(session_id)
+        await self._sessions.attach(session_id, channel_ref)
+
+    async def detach_channel(self, session_id: str, channel_ref: str) -> None:
+        """``detach`` (S-17): never an error, mirroring the store's own discipline — no existence
+        check here, unlike :meth:`attach_channel`, because refusing to detach a channel from a
+        session that turned out not to exist would be refusing the caller the very state they asked
+        for."""
+        await self._sessions.detach(session_id, channel_ref)
+
+    async def session_channels(self, session_id: str) -> list[str]:
+        """Every channel currently attached to ``session_id`` (S-6)."""
+        return await self._sessions.channels(session_id)
 
     async def end_session(self, session_id: str) -> Session:
         """``/end`` (S-22): legal only from ``closed``; seals the file (S-24/P3).
