@@ -32,7 +32,6 @@ import pytest
 from pkb.contracts import Pack
 from pkb.core.frontmatter import serialize
 from pkb.core.generators import regenerate_all
-from pkb.core.maintenance import build_scan_requests
 from pkb.core.models import KbSnapshot, Metadata
 from pkb.core.scaffold import scaffold_subtopic, scaffold_topic
 from pkb.core.scan import scan
@@ -780,6 +779,7 @@ def test_no_module_below_or_above_packs_walks_the_tree_itself_pk12() -> None:
     assert offenders == [], f"a tree walk outside pkb.core: {offenders}"
 
 
+@pytest.mark.superseded
 def test_assembly_schedules_no_conflict_scan_pk12(kb: Path) -> None:
     """A pack is not a change, so it must not schedule the work a change schedules.
 
@@ -789,6 +789,13 @@ def test_assembly_schedules_no_conflict_scan_pk12(kb: Path) -> None:
     scans over a knowledge base nobody edited, indistinguishable in the log from real editing. The
     changed set is derived from the tree itself rather than asserted on the pack object, so a future
     side effect that writes through some other path is caught too.
+
+    Superseded by T-41 (Phase 5 rebuilds this): ``pkb.core.maintenance.build_scan_requests`` — the
+    automatic, changed-set-to-requests builder this test called — is retired outright, not merely
+    left uncalled by ``flush``, so there is nothing left in Layer 1 to assert "schedules none of"
+    against. The half of this rule that still holds mechanically, "a pack does not write", is
+    covered by the ``changed == []`` assertion on its own; the scan-scheduling half is Layer 2/3's
+    to reassert once a replacement (built on the surviving ``scan_request_for``) exists.
     """
     before = tree_fingerprint(kb)
     snapshot = scan(kb)
@@ -798,7 +805,6 @@ def test_assembly_schedules_no_conflict_scan_pk12(kb: Path) -> None:
 
     after = tree_fingerprint(kb)
     changed = [path for path, stamp in after.items() if before.get(path) != stamp]
-    assert build_scan_requests(snapshot, changed, requested_at=TODAY) == []
     assert changed == []
 
 

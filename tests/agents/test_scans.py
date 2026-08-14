@@ -158,6 +158,7 @@ def test_the_schema_keeps_no_record_that_a_conflict_occurred_rt59(tmp_path: Path
     assert not (columns & forbidden)
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_a_flush_enqueues_through_the_runtimes_own_queue_rt54(kb: Path) -> None:
     """End to end: the middleware's report reaches the SQLite queue the runtime owns.
@@ -166,6 +167,12 @@ async def test_a_flush_enqueues_through_the_runtimes_own_queue_rt54(kb: Path) ->
     downgraded to ``status.draft``, because T-17 retires the whole ``status.*`` namespace and
     either value would now be UNKNOWN_TAG_NAMESPACE. This test is about the generic write-triggers-
     a-scan plumbing, not about conflict detection.
+
+    Superseded (Phase 5 rebuilds this): T-41 deletes `pkb.core.maintenance.build_scan_requests` and
+    its `MAINTENANCE_ORIGIN` — the "write triggers a scan" plumbing this test is about no longer
+    exists in Layer 1 at all, so an ordinary write enqueues nothing and ``queued[0]`` no longer
+    exists to assert against. `test_a_request_can_carry_an_empty_changed_set_ma12` in
+    `tests/core/test_maintenance.py` covers what remains: `scan_request_for`, named by the caller.
     """
     note = FLAGGED_NOTE.replace("  - status.conflict-review\n", "").replace(
         '\nreview_note: "The references summary says to sear first; this note says to sear last."',
@@ -208,6 +215,7 @@ class LockSpyQueue:
         return None
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_the_enqueue_happens_inside_the_flushs_critical_section_rt55(kb: Path) -> None:
     """A crash between the file writes and the enqueue loses the scan permanently.
@@ -218,6 +226,11 @@ async def test_the_enqueue_happens_inside_the_flushs_critical_section_rt55(kb: P
 
     Not a conflict-flagged write, for the same reason as RT-54's sibling test above: T-17 retires
     ``status.*`` outright, so the tag is stripped rather than downgraded.
+
+    Superseded (Phase 5 rebuilds this): the same T-41 removal as RT-54's sibling test — an ordinary
+    write no longer produces a `ScanRequest`, so `spy` never sees a `put` call and both `spy.depths`
+    and `spy.requests` stay empty. The critical-section ordering this pins is still true of whatever
+    a `scan_request_for`-based caller enqueues; it needs that caller to exist again to exercise it.
     """
     note = FLAGGED_NOTE.replace("  - status.conflict-review\n", "").replace(
         '\nreview_note: "The references summary says to sear first; this note says to sear last."',

@@ -23,9 +23,11 @@ a path that does not exist yet, which is what makes it usable from ``wrap_tool_c
 write lands. It returns findings; :func:`has_errors` decides whether the write is refused and
 :func:`render_findings` produces the text the agent reads.
 
-**After a turn** — :func:`flush` performs the six maintenance duties once, on both the success and
+**After a turn** — :func:`flush` performs the five maintenance duties once, on both the success and
 the failure path. It writes exactly two kinds of bytes: derived files, wholesale, and an ``updated``
-line on paths the caller explicitly names. Everything else it merely reports.
+line on paths the caller explicitly names. Everything else it merely reports. It builds no
+conflict-scan request of its own (T-41) — ``pkb.core.maintenance.scan_request_for`` is Layer 2's,
+called on the operator's or the expert's explicit word, never automatically per write.
 
 **Creating a topic** — :func:`scaffold_topic` and :func:`scaffold_subtopic` write the standard
 structure and nothing optional. They contain no approval gate: approval happens in Layer 2 before
@@ -51,7 +53,7 @@ from pkb.core.errors import (
     sort_findings,
 )
 from pkb.core.generators import regenerate_all
-from pkb.core.maintenance import build_scan_requests, find_broken_links, find_orphans, flush
+from pkb.core.maintenance import find_broken_links, find_orphans, flush
 from pkb.core.models import (
     FileClass,
     FileRecord,
@@ -99,7 +101,6 @@ __all__ = [
     "TopicDepthExceededError",
     "TopicRecord",
     "agent_id_for",
-    "build_scan_requests",
     "build_tag_tree",
     "errors_only",
     "files_with_tag",

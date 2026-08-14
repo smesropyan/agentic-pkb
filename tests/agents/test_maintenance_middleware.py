@@ -353,6 +353,7 @@ def test_the_unconditional_flush_repairs_a_hand_edit_between_turns_mw22(
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_the_flush_and_the_enqueue_share_one_critical_section_mw23(
     kb: Path, reports: list[FlushReport], queue: ListScanQueue
 ) -> None:
@@ -360,6 +361,14 @@ def test_the_flush_and_the_enqueue_share_one_critical_section_mw23(
 
     The enqueue must be inside: a crash between the file writes and the queue write loses the scan
     permanently, because the next flush only ever sees its own turn's touched paths.
+
+    Superseded (Phase 5 rebuilds this): T-41 retires `pkb.core.maintenance`'s automatic
+    changed-set-to-`ScanRequest` builder outright, so `flush` no longer populates
+    `FlushReport.scan_requests` for an ordinary note write, `_enqueue` short-circuits on the empty
+    list, and `"enqueue(held=True)"` never lands in the timeline this test pins. The ordering
+    guarantee MW-23 states is still true of whatever *does* reach `_enqueue`; it needs a caller
+    that raises a `ScanRequest` itself (`pkb.core.maintenance.scan_request_for`, which T-41 keeps)
+    to exercise again.
     """
     timeline: list[str] = []
     lock = RecordingLock(timeline)
@@ -487,6 +496,7 @@ def test_an_unexpected_flush_failure_is_reported_not_raised_mw25(
     assert "the clock is on fire" in reports[0].findings[0].message
 
 
+@pytest.mark.superseded
 def test_a_queue_that_is_down_is_reported_not_raised_mw25(
     kb: Path, reports: list[FlushReport]
 ) -> None:
@@ -500,6 +510,13 @@ def test_a_queue_that_is_down_is_reported_not_raised_mw25(
 
     The scan is genuinely lost (the next flush only sees its own turn's paths), which is why it is
     reported as an error finding rather than swallowed.
+
+    Superseded (Phase 5 rebuilds this): T-41 means an ordinary note write no longer produces a
+    `ScanRequest` at all (`pkb.core.maintenance.build_scan_requests` is gone), so `_enqueue`'s
+    `if self.queue is not None and requests:` guard never calls `ExplodingQueue.put`, it never
+    raises, and no `SCAN_ENQUEUE_FAILED` finding is produced. The failure-reporting behaviour this
+    test pins is still real for whatever calls `queue.put` with a nonempty batch; it needs a request
+    from `scan_request_for` to exercise it again.
     """
     middleware = KbMaintenanceMiddleware(
         kb, queue=ExplodingQueue(), sink=reports.append, clock=lambda: TODAY
@@ -744,10 +761,19 @@ def test_the_recovered_paths_must_be_cleared_or_they_restamp_mw27(
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_a_successful_run_enqueues_one_scan_per_topic_mw28(
     kb: Path, middleware: KbMaintenanceMiddleware, queue: ListScanQueue
 ) -> None:
-    """Two notes in one topic, one turn: one request, and the failure path adds none (MW-28)."""
+    """Two notes in one topic, one turn: one request, and the failure path adds none (MW-28).
+
+    Superseded (Phase 5 rebuilds this): T-41 retires the automatic changed-set-to-`ScanRequest`
+    coalescing (`pkb.core.maintenance.build_scan_requests`) that made two notes in `Cooking` produce
+    exactly one request; `flush` no longer builds any, so `queue.requests` stays empty after this
+    turn. MW-28's "never both flush" guard is still exercised below by
+    `test_flush_pending_refuses_an_empty_set_mw28`; only the per-topic coalescing this test pinned
+    needs a replacement once Layer 2 raises `ScanRequest`s itself.
+    """
     model = scripted(
         calls(
             write_call("/kb/Cooking/notes/searing.md", note("Searing", "Crust on a steak"), "c1"),

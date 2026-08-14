@@ -15,6 +15,11 @@ path of every agent turn, which is what shapes everything in this module:
 * **Flag, never repair.** Broken links and orphans are reported, in the returned
   :class:`~pkb.core.models.FlushReport` and in the owning topic's derived ``index.md`` (MA-10).
   Nothing is moved, deleted, or rewritten because of a finding (MA-9).
+* **No scan-trigger machinery of its own (T-41).** :func:`flush` regenerates exactly the topic
+  indexes and the root registry and builds no :class:`~pkb.core.models.ScanRequest` from what it
+  touched — that automatic per-write trigger was Tier 1 growing the task queue T-32 forbids it.
+  :func:`scan_request_for` is what remains: a single, named-by-the-caller request Layer 2 raises
+  explicitly, never one this module raises on its own.
 
 The internal order corrects arch §7 (contradiction C7): timestamps are bumped **before** anything
 is rendered, so a derived file can never describe the pre-bump state (MA-2). Link and orphan
@@ -42,13 +47,11 @@ from pkb.core import frontmatter, paths
 from pkb.core.analysis import find_broken_links, find_orphans, read_text
 from pkb.core.errors import Finding, NotATopicRootError, Severity, sort_findings
 from pkb.core.generators import regenerate_all, write_derived
-from pkb.core.models import FileClass, FileRole, FlushReport, KbSnapshot, ScanRequest
+from pkb.core.models import FileClass, FlushReport, KbSnapshot, ScanRequest
 from pkb.core.scan import scan
 
 __all__ = [
-    "MAINTENANCE_ORIGIN",
     "ON_DEMAND_ORIGIN",
-    "build_scan_requests",
     "bump_updated",
     "find_broken_links",
     "find_orphans",
@@ -56,26 +59,13 @@ __all__ = [
     "scan_request_for",
 ]
 
-MAINTENANCE_ORIGIN = "maintenance"
-"""``ScanRequest.origin`` for a request the flush raised itself (MA-12)."""
-
 ON_DEMAND_ORIGIN = "on-demand"
-"""``ScanRequest.origin`` for a request Layer 2 raises for a whole topic (MA-12)."""
-
-_SCAN_TRIGGER_ROLES: frozenset[FileRole] = frozenset(
-    {
-        FileRole.NOTE,
-        FileRole.NOTES_SUMMARY,
-        FileRole.REFERENCE,
-        FileRole.REFERENCES_SUMMARY,
-    }
-)
-"""Files under ``notes/`` and ``references/`` — the conflict-scan triggers (T-1 retires the
-extension-folder mechanism, so it contributes no trigger role of its own any more; this whole
-surface is removed outright in a later task, T-41).
-
-``topic.md``, ``expert.md``, skills, assets and derived files are excluded: a scan compares the
-knowledge a topic states, and those files either state none or are rebuilt from the ones that do.
+"""``ScanRequest.origin`` for a request Layer 2 raises for a whole topic (MA-12), the only kind
+this module still knows how to build (T-41): the automatic per-flush trigger — a scan-trigger role
+table plus an enqueue hook that read ``flush``'s own touched-paths argument — grew exactly the task
+queue T-32 forbids Tier 1 from owning, so it is gone outright rather than merely unwired.
+:func:`scan_request_for` survives because it is the opposite shape: one topic, named explicitly by
+the caller, never triggered by a write Layer 1 observed on its own.
 """
 
 
@@ -85,7 +75,7 @@ knowledge a topic states, and those files either state none or are rebuilt from 
 
 
 def flush(kb_root: Path, touched_paths: Iterable[Path | str] = (), *, today: date) -> FlushReport:
-    """Run the six duties of one maintenance turn and report what happened (MA-1).
+    """Run the five duties of one maintenance turn and report what happened (MA-1, T-41).
 
     In order, and the order is the rule (MA-2):
 
@@ -93,14 +83,21 @@ def flush(kb_root: Path, touched_paths: Iterable[Path | str] = (), *, today: dat
     2. walk the tree once (decision C);
     3. find broken links and orphans (MA-7, MA-8);
     4. regenerate every derived file, routing those findings into the owning topic's
-       ``## Maintenance flags`` section (MA-10);
-    5. build the coalesced conflict-scan requests (MA-12);
-    6. return everything as data — no queue, no database, no model call (MA-11).
+       ``## Maintenance flags`` section (MA-10) — exactly the topic indexes and the root registry,
+       nothing else (T-35, T-41);
+    5. return everything as data — no queue, no database, no model call (MA-11).
 
     ``touched_paths`` is the middleware's record of what the turn wrote; it may hold absolute paths
     or knowledge-base-relative POSIX strings, and anything outside the tree is ignored. Scanning
     the tree for recently-modified files instead is forbidden (MA-3): it would dirty every file
     the human edited by hand and destroy idempotence.
+
+    There is no sixth duty building a conflict-scan request from ``touched_paths`` any more (T-41):
+    that was Tier 1 growing scan-trigger machinery of its own — a role table plus an automatic
+    enqueue hook — which is exactly the task queue T-32 says it may not own. The returned
+    :class:`~pkb.core.models.FlushReport` still carries a ``scan_requests`` field for the caller's
+    convenience, but this function never populates it; a caller wanting a scan raises one itself,
+    explicitly, through :func:`scan_request_for`.
 
     **Sole-writer contract.** This function acquires no lock of its own (MA-15); it assumes it is
     the only writer for its duration, and Layer 2 takes the global knowledge-base write lock around
@@ -118,9 +115,6 @@ def flush(kb_root: Path, touched_paths: Iterable[Path | str] = (), *, today: dat
 
     report = regenerate_all(kb_root, snapshot=snapshot, flags=flags)
     report.stamped = stamped
-    report.scan_requests = build_scan_requests(
-        snapshot, touched, origin=MAINTENANCE_ORIGIN, requested_at=today
-    )
     # The generators deliberately do not fold in the walk's own findings so that a caller reporting
     # both does not report either twice; folding them in here is what makes the flush's report the
     # complete picture of the turn (MA-13, MA-14).
@@ -213,46 +207,8 @@ def _stamp(kb_root: Path, relative: str, today: date) -> bool:
 
 
 # --------------------------------------------------------------------------------------
-# Conflict-scan requests (MA-11, MA-12)
+# The on-demand conflict-scan request (MA-12, T-41)
 # --------------------------------------------------------------------------------------
-
-
-def build_scan_requests(
-    snapshot: KbSnapshot,
-    changed: Iterable[Path | str],
-    *,
-    origin: str = MAINTENANCE_ORIGIN,
-    requested_at: date,
-) -> list[ScanRequest]:
-    """The conflict scans this turn's changes call for, coalesced per topic (MA-12).
-
-    Data only (MA-11): Layer 1 opens no queue, no database and no model client, and writes no
-    machine state into the tree. Persisting these is Layer 2/3's job, and the semantic comparison
-    itself is a Topic Expert skill.
-
-    One request per topic, never one per file — the scan is a whole-topic comparison, so five
-    changed notes in one topic must not run the same expensive scan five times. Triggers are
-    creates *and* modifies (contradiction C20: an edited note can newly contradict a reference)
-    under ``notes/``, ``references/`` and extension folders; derived files, ``topic.md``, skills
-    and assets never trigger one. Requests come back in topic-discovery order and each request's
-    paths are sorted, so the result is a deterministic function of the changed set.
-    """
-    grouped: dict[str, list[str]] = {}
-    for relative in _normalize_all(snapshot.root, changed):
-        record = snapshot.files.get(relative)
-        if record is None or record.topic_path is None:
-            continue
-        if record.file_class is not FileClass.AUTHORED or record.role not in _SCAN_TRIGGER_ROLES:
-            continue
-        grouped.setdefault(record.topic_path, []).append(relative)
-
-    return [
-        scan_request_for(
-            snapshot, topic_path, grouped[topic_path], origin=origin, requested_at=requested_at
-        )
-        for topic_path in snapshot.topics
-        if topic_path in grouped
-    ]
 
 
 def scan_request_for(
@@ -263,7 +219,13 @@ def scan_request_for(
     origin: str = ON_DEMAND_ORIGIN,
     requested_at: date,
 ) -> ScanRequest:
-    """One request for one topic, with or without a changed set (MA-12).
+    """One request for one topic, named by the caller rather than triggered by a write (MA-12).
+
+    This is the whole of the module's conflict-scan surface (T-41): there is no counterpart that
+    walks a changed-paths set against a table of trigger roles and coalesces one request per topic
+    on its own initiative — that machinery grew a task queue Tier 1 does not own (T-32) and is
+    retired outright, not merely left uncalled. ``flush`` never calls this function; a caller
+    (Layer 2, on the operator's or the expert's word) does.
 
     An empty ``changed`` is legitimate and is how Layer 2 asks for a whole-topic re-scan that no
     file change triggered — the request addresses the topic, not the files.

@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
 
-from pkb.core import frontmatter, paths, scaffold, tags
+from pkb.core import frontmatter, maintenance, paths, scaffold, tags
 from pkb.core.errors import Severity, errors_only
 from pkb.core.generators import topic_index
 from pkb.core.generators.tags_registry import (
@@ -789,3 +789,48 @@ def test_scaffolded_tree_validates_with_zero_errors_under_the_new_rules_t39(tmp_
         assert errors_only(validate_content(kb, rel_path, text)) == [], rel_path
 
     assert validate_tree(kb) == []
+
+
+# --------------------------------------------------------------------------------------
+# Task 9 — T-41: maintenance regenerates and validates, nothing else
+# --------------------------------------------------------------------------------------
+
+
+def test_maintenance_exposes_no_scan_trigger_surface_t41() -> None:
+    """T-41: "it grows no task queue, no runner and no status field" (T-32) applies to
+    maintenance's own plumbing — no scan-trigger roles, no automatic changed-set-to-request
+    builder, and no origin constant that named the automatic trigger's own requests."""
+    assert not hasattr(maintenance, "_SCAN_TRIGGER_ROLES")
+    assert not hasattr(maintenance, "build_scan_requests")
+    assert not hasattr(maintenance, "MAINTENANCE_ORIGIN")
+
+
+def test_per_run_regeneration_touches_exactly_the_indexes_and_the_registry_t41(
+    tmp_path: Path,
+) -> None:
+    """T-41: the public API's per-run regeneration touches exactly the topic ``index.md`` files
+    and the root ``tags.md``, and nothing else — no scan request rides along, even for a topic
+    whose files were named as touched."""
+    kb = tmp_path / "KB"
+    kb.mkdir()
+    scaffold.scaffold_topic(
+        kb, "Cooking", title="Cooking", description=_COOKING_DESC, today=_TODAY, regenerate=False
+    )
+    scaffold.scaffold_subtopic(
+        kb,
+        "Cooking",
+        "Grilling",
+        title="Grilling",
+        description="Charcoal and gas grilling",
+        today=_TODAY,
+        regenerate=False,
+    )
+
+    report = maintenance.flush(kb, ["Cooking/notes/summary.md"], today=_TODAY)
+
+    assert set(report.derived) == {
+        "tags.md",
+        "Cooking/index.md",
+        "Cooking/sub-topics/Grilling/index.md",
+    }
+    assert report.scan_requests == []

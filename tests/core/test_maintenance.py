@@ -22,9 +22,7 @@ from pkb.core import generators, maintenance, paths
 from pkb.core.errors import NotATopicRootError, Severity
 from pkb.core.generators import regenerate_all
 from pkb.core.maintenance import (
-    MAINTENANCE_ORIGIN,
     ON_DEMAND_ORIGIN,
-    build_scan_requests,
     bump_updated,
     find_broken_links,
     find_orphans,
@@ -875,73 +873,30 @@ def test_scaffolding_a_topic_leaves_another_topics_index_byte_identical_ge5(tmp_
 
 
 # --------------------------------------------------------------------------------------
-# MA-11, MA-12 — conflict-scan requests
+# MA-12, T-41 — the on-demand conflict-scan request
 # --------------------------------------------------------------------------------------
+#
+# T-41 (Task 9 of the tree plan) deletes `build_scan_requests`, `_SCAN_TRIGGER_ROLES` and
+# `MAINTENANCE_ORIGIN` outright: the automatic changed-set-to-requests coalescing they implemented
+# was Tier 1 growing the task queue T-32 forbids it. The four tests that exercised that machinery
+# directly (`test_scan_requests_are_data_only_ma11`, `test_requests_are_coalesced_per_topic_ma12`,
+# `test_only_notes_references_and_extension_folders_trigger_a_scan_ma12`,
+# `test_requests_are_one_per_topic_in_discovery_order_ma12`) tested symbols this module no longer
+# defines at all — not merely superseded behaviour but code that does not exist — so Task 9 removes
+# them here rather than leaving them for Task 11's broader sweep, the same way Task 4 retired
+# `STATUS_DEFINITIONS`'s tests when it deleted the vocabulary. `flush`'s own six-duties spy above
+# still names `"build_scan_requests"` as a bare string passed to `getattr`/`monkeypatch.setattr`, so
+# it stays collectible (superseded, unexecuted) without a further edit; Task 11 retires it with the
+# rest of that marker's sweep.
 
 
-@pytest.mark.superseded
-def test_scan_requests_are_data_only_ma11(sample_kb: Path) -> None:
-    """Layer 1 returns values; the queue, the database and the comparison are Layer 2/3's."""
-    report = flush(sample_kb, ["Cooking/notes/summary.md"], today=TODAY)
-
-    (request,) = report.scan_requests
-    assert request.topic_id == "topic/cooking"
-    assert request.topic_path == "Cooking"
-    assert request.origin == MAINTENANCE_ORIGIN
-    assert request.requested_at == TODAY
-    assert "sqlite" not in SOURCE and "import socket" not in SOURCE
-
-
-@pytest.mark.superseded
-def test_requests_are_coalesced_per_topic_ma12(tmp_path: Path) -> None:
-    """Five changed notes in one topic are one whole-topic scan, not five identical ones."""
-    notes = [f"Cooking/notes/n{index}.md" for index in range(5)]
-    root = kb_with(tmp_path, {note: authored(f"Note {note}") for note in notes})
-    snapshot = scan(root)
-
-    requests = build_scan_requests(snapshot, reversed(notes), requested_at=TODAY)
-
-    assert len(requests) == 1
-    assert requests[0].changed_paths == tuple(sorted(notes))
-
-
-@pytest.mark.superseded
-def test_only_notes_references_and_extension_folders_trigger_a_scan_ma12(tmp_path: Path) -> None:
-    """``topic.md``, skills, assets and derived files state no knowledge to compare (C20)."""
-    root = kb_with(
-        tmp_path,
-        {
-            "Cooking/recipes/ribeye.md": authored("Ribeye"),
-            "skills/voice/SKILL.md": "---\nname: voice\ndescription: d\n---\n",
-            "Cooking/notes/trip/media/a.png": "binary\n",
-        },
-    )
-    snapshot = scan(root)
-    flush(root, today=TODAY)
-
-    requests = build_scan_requests(
-        scan(root),
-        [
-            "Cooking/topic.md",
-            "Cooking/index.md",
-            "index.md",
-            "skills/voice/SKILL.md",
-            "Cooking/notes/trip/media/a.png",
-            "Cooking/notes/summary.md",
-            "Cooking/recipes/ribeye.md",
-        ],
-        requested_at=TODAY,
-    )
-
-    assert snapshot.topics.keys() == {"Cooking"}
-    assert [request.changed_paths for request in requests] == [
-        ("Cooking/notes/summary.md", "Cooking/recipes/ribeye.md")
-    ]
-
-
-@pytest.mark.superseded
 def test_a_request_can_carry_an_empty_changed_set_ma12(sample_kb: Path) -> None:
-    """An on-demand scan addresses the topic, not a file change."""
+    """An on-demand scan addresses the topic, not a file change (MA-12).
+
+    Not superseded: T-41 keeps exactly this function — :func:`~pkb.core.maintenance.scan_request_for`
+    — as the module's one conflict-scan surface, because it is named by the caller rather than
+    triggered by a write Layer 1 observed on its own.
+    """
     request = scan_request_for(
         scan(sample_kb), "Cooking", origin=ON_DEMAND_ORIGIN, requested_at=TODAY
     )
@@ -950,16 +905,6 @@ def test_a_request_can_carry_an_empty_changed_set_ma12(sample_kb: Path) -> None:
     assert request.origin == ON_DEMAND_ORIGIN
     with pytest.raises(NotATopicRootError):
         scan_request_for(scan(sample_kb), "NoSuchTopic", requested_at=TODAY)
-
-
-@pytest.mark.superseded
-def test_requests_are_one_per_topic_in_discovery_order_ma12(sample_kb: Path) -> None:
-    """Two topics changed, two requests, in the tree's own deterministic order."""
-    changed = ["Cooking/sub-topics/Grilling/notes/summary.md", "BBQ/notes/summary.md"]
-
-    requests = build_scan_requests(scan(sample_kb), changed, requested_at=TODAY)
-
-    assert [request.topic_id for request in requests] == ["topic/bbq", "topic/cooking/grilling"]
 
 
 # --------------------------------------------------------------------------------------

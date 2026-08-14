@@ -1046,9 +1046,18 @@ async def test_a_flush_sink_that_is_down_cannot_take_the_run_down_mw25(kb: Path)
     assert "reverse-sear" in (kb / "Cooking" / "index.md").read_text(encoding="utf-8")
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_a_successful_run_flushes_exactly_once_mw28(kb: Path) -> None:
-    """A double flush is harmless to the tree but would enqueue every conflict scan twice."""
+    """A double flush is harmless to the tree but would enqueue every conflict scan twice.
+
+    Superseded (Phase 5 rebuilds this): T-41 retires `pkb.core.maintenance.build_scan_requests`,
+    the automatic changed-set-to-`ScanRequest` builder that made an ordinary note write enqueue
+    anything at all, so `rt.queue` stays empty after this turn. The "exactly once, never twice"
+    guarantee is Layer 2's own — `PkbRuntime`'s empty-touched-set guard is untouched by Task 9 — but
+    nothing reaches the queue any more to demonstrate it against; it needs a caller that raises a
+    `ScanRequest` itself, through the surviving `scan_request_for`.
+    """
     model = scripted(writes(NOTE_PATH, VALID_NOTE, "w1"), says("filed"))
     async with opened(kb, model) as rt:
         await drain(rt, COOKING, "T1")
