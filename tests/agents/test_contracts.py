@@ -366,7 +366,7 @@ def test_a_stub_service_compiles_and_runs_with_the_harness_banned_i2(tmp_path: P
     `langchain_core` outright. A single missing type in `pkb.contracts` shows up here as an
     ImportError rather than as an architectural argument two layers later.
 
-    Superseded (Task 3/6 rebuild this, mirroring `tests/service/test_seam.py`'s sv4 sibling):
+    Superseded (Task 6 rebuilds this — assigned by Task 2's review — mirroring `tests/service/test_seam.py`'s sv4 sibling):
     ``BANNED_DRIVER`` is entirely thread-CRUD-and-gate shaped — ``create_thread(...,
     channel="telegram")``, ``list_threads``, ``get_thread(...).origin_channel``,
     ``pending_approval``, ``delete_thread`` — all retired by the sessions model (DESIGN.md §2: a
@@ -393,7 +393,7 @@ def test_a_stub_service_compiles_and_runs_with_the_harness_banned_i2(tmp_path: P
 async def test_the_same_stub_drives_a_real_runtime_i2(kb: Path, tmp_path: Path) -> None:
     """Compiling against the seam is not enough; the surface has to be the one that exists.
 
-    Superseded (Task 3/6 rebuild this, same reasons as this file's harness-banned sibling above):
+    Superseded (Task 6 rebuilds this — assigned by Task 2's review — same reasons as this file's harness-banned sibling above):
     ``channel="telegram"``, ``pending_approval``, per-agent ``list_threads``, and ``delete_thread``
     (there is no session equivalent — "nothing deletes a session") are all thread-CRUD-and-gate
     shaped and retired by the sessions model. The catalog/run/history assertions that do not name a

@@ -383,8 +383,8 @@ def test_the_real_service_runs_against_a_fake_runtime_with_the_harness_banned_sv
     thread-CRUD-shaped — ``create_thread(..., origin_channel=...)``, ``list_threads``, ``get_thread``,
     ``delete_thread`` — entangled with the ``start_run``/events check that survives. The SV-4/SV-30
     architectural principle (the seam works end to end with the harness banned) is permanent and
-    needs a session-shaped driver script; nothing in this plan currently owns rewriting it, so
-    whoever touches the seam next should notice this gap rather than leave it silently uncovered.
+    needs a session-shaped driver script; Task 6 owns the rewrite (assigned by Task 2's review),
+    once the Protocol is session-shaped (Task 5) and gate-free (Task 6).
 
     ``RuntimeService`` is constructor-injected with a structural ``Runtime``, so the fake below —
     built from ``pkb.contracts`` and nothing else — is a complete substitute. If a single method

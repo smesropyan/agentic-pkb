@@ -169,7 +169,10 @@ No checkpoint needed.
   session is refused; the SSE events stream carries the run events for whichever channel asks.
 - [ ] **Step 2:** FAIL → implement → PASS → `make check` (TUI/clients compile-keepers: point
   `pkb/clients` + `pkb/tui` at `/sessions` minimally — same JSON shapes where possible; mark any
-  client test that asserts retired routes superseded with a Phase-5 comment).
+  client test that asserts retired routes superseded with a Phase-5 comment. `src/pkb/server/mcp.py`
+  is a third transport calling the service Protocol directly, not an HTTP client of the routes —
+  repoint its `create_thread`/`start_run` calls to sessions with the same minimal treatment; its
+  proposal resources die in Task 6 with the rest of the approval surface. — Task 2 review, finding 2).
 - [ ] **Step 3:** Commit: `feat: session routes — the API is the one way in`.
 
 ### Task 6: The gates die
@@ -189,7 +192,13 @@ they surface approvals.
   surfacing in mcp.py/telegram.py with truthful minimal replacements (a Telegram approval prompt
   becomes nothing — sends that referenced it are Phase 5's polish; keep the module compiling and
   its live non-approval tests green). Mark newly-dying tests superseded (Phase-3/Phase-5 comments
-  per subject). `make check`.
+  per subject). Rewrite the two seam acceptance drivers against the now-final Protocol —
+  `tests/service/test_seam.py`'s harness-banned sv4 test and `tests/agents/test_contracts.py`'s
+  i2/5_2 mirrors — restoring SV-4/SV-30/AP-2 coverage and removing their superseded marks. This
+  task owns the rewrite, not Task 3, because the Protocol is not session-shaped until Task 5
+  re-homes runs and not gate-free until this task; earlier, the drivers would still have to script
+  threads and gates, then be rewritten twice more (Task 2 review, finding 1 — without an owner,
+  Task 10 would delete these tests instead of rebuilding them). `make check`.
 - [ ] **Step 3:** Commit: `feat: the operator's instruction is the approval — gates and proposals removed`.
 
 ### Task 7: Channels attach to sessions
