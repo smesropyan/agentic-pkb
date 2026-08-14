@@ -416,7 +416,16 @@ async def _run_tool(
     *,
     deadline: float,
 ) -> Any:
-    """One bounded, cancellable, propose-only run, reported as one discriminated result."""
+    """One bounded, cancellable, propose-only run, reported as one discriminated result.
+
+    ``thread_id`` on the wire — the tool argument, and every field named it below — now addresses a
+    **session** (Task 5 repoints MCP's own calls from ``create_thread``/``start_run`` to
+    ``create_session``/``start_session_run``, "MCP is a third transport calling the service
+    Protocol directly," per the plan's own Task 5 note): the wire schema itself is untouched, so an
+    external caller sees the identical shape, and the id it gets back and later passes in is a
+    session id rather than a thread id. ``_is_addressable`` still holds — a session id is a bare
+    UUID and never contains ``::`` or starts with ``scan:`` either way.
+    """
     if thread_id is not None and not _is_addressable(thread_id):
         return _failure(
             "invalid_argument",
@@ -428,9 +437,16 @@ async def _run_tool(
 
     try:
         if thread_id is None:
-            thread = await service.create_thread(agent_id, origin_channel="mcp")
-            thread_id = thread.thread_id
-        subscription = await service.start_run(thread_id, message, approval_mode="propose_only")
+            # S-9's catalog check runs inside `create_session`, before any row lands. `operator`
+            # is a coarse, truthful label — MCP has no finer-grained caller identity to hand it
+            # (mirrors the old `origin_channel="mcp"`), and `objective=message` names the session
+            # from the very question or material this call is about (S-5), synchronously, rather
+            # than waiting on the thread era's async titling call.
+            session = await service.create_session(agent_id, objective=message, operator="mcp")
+            thread_id = session.session_id
+        subscription = await service.start_session_run(
+            thread_id, message, approval_mode="propose_only"
+        )
     except Exception as exc:
         return _failure_from(exc, AskResult, thread_id or "")
 

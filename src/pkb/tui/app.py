@@ -42,7 +42,6 @@ from pkb.clients.sse import Frame
 from pkb.contracts import (
     ERROR_CODES,
     ApprovalRequest,
-    StaleInterruptError,
     ThreadBusyError,
     is_scan_thread,
 )
@@ -55,13 +54,16 @@ __all__ = ["PkbApp", "main"]
 LIBRARIAN: Final = "librarian"
 
 THREAD_BUSY: Final = ERROR_CODES[ThreadBusyError]
-STALE_INTERRUPT: Final = ERROR_CODES[StaleInterruptError]
 """Read from the seam's table, never spelled here (DC-15, decision P).
 
 The table lives in ``pkb.contracts`` precisely so the daemon, the MCP adapter, this client and step
 5's Telegram adapter cannot each keep a copy. A literal here is a copy: renaming the code in the
-seam would leave these comparisons silently false, and the branch they guard is the one that tells a
+seam would leave this comparison silently false, and the branch it guards is the one that tells a
 human "the previous turn is still finishing" instead of showing them an error.
+
+``STALE_INTERRUPT`` is gone with it: the interrupt-resume route is deleted (``pkb.tui.client``'s
+module docstring) and ``approval_worker`` no longer answers one, so there is no comparison left to
+guard.
 """
 
 UNTITLED: Final = "Untitled thread"
@@ -105,10 +107,13 @@ class PkbApp(App[None]):
         ("p", "pending", "Needs you"),
         ("n", "new_thread", "New thread"),
         ("R", "rename", "Rename"),
-        ("P", "proposals", "Proposals"),
         ("c", "cancel", "Cancel run"),
         ("q", "quit", "Quit"),
     ]
+    # "P" (proposals) is retired with this binding: the parked-proposal surface it opened has no
+    # session-era analogue — S-35's outcome table has no "a write nobody can see" row at all, every
+    # write either lands unattended or waits on the operator's own word inside the session. Phase 5
+    # decides what, if anything, replaces it.
 
     def __init__(self, client: PkbClient) -> None:
         super().__init__()
@@ -301,27 +306,21 @@ class PkbApp(App[None]):
 
         A separate worker for exactly one reason: ``push_screen_wait`` blocks its own worker until a
         human decides, and a human takes minutes over a diff while a fan-out runs at model pace.
+
+        There is no route left to resolve a decision against (`pkb.tui.client`'s module docstring):
+        the interrupt-resume surface is deleted with the thread-era routes, and per S-38 "the
+        operator's instruction is the approval" — nothing in the session turn loop parks a write to
+        answer later. This worker still drains the queue an ``InterruptEvent`` would fill (Task 6 is
+        what stops one arriving at all, by removing the gate composition itself) and says so rather
+        than calling a method that no longer exists; Phase 5 decides what, if anything, replaces the
+        modal.
         """
         while True:
             request = await self.approvals.get()
             resolution = await self.push_screen_wait(ApprovalModal(request))
             if resolution is None:
-                continue  # TU-47: "later" sends nothing; the interrupt stays parked
-            try:
-                # TU-49: to the request's OWN thread. In a fan-out the gate parks on the expert's
-                # derived thread, and posting to the Librarian's is a 409 for a valid approval.
-                async for frame in self.client.resolve(resolution.thread_id, resolution.body()):
-                    self._absorb(frame)
-            except PkbHttpError as exc:
-                if exc.code == STALE_INTERRUPT:
-                    # Another channel answered it. Do not retry — retrying either spins or applies
-                    # answers the human gave to a different write.
-                    self._say("another channel answered that approval")
-                    await self._resync(resolution.thread_id)
-                else:
-                    self._say(f"{exc.code}: {exc.detail}")
-            except StreamEndedError:
-                await self._resync(resolution.thread_id)
+                continue  # TU-47: "later" sends nothing
+            self._say("this build cannot resolve an approval from here — see the session directly")
 
     def _absorb(self, frame: Frame) -> None:
         if self.view is not None:
@@ -366,40 +365,6 @@ class PkbApp(App[None]):
         composer = self.query_one("#compose", Input)
         composer.value = f"/rename {thread.get('title') or ''}"
         composer.focus()
-
-    async def action_proposals(self) -> None:
-        """Writes that needed a human and could not get one (TU-20, TU-21).
-
-        **Not** "what agents wanted to write". The gate table is the same for every channel, and it
-        leaves plain note writes and first-write reference files ungated — so an MCP or scan-
-        originated note lands with no human, no proposal and no entry here. A false belief about
-        coverage is worse than no view at all, so the copy says what this list actually is and
-        points at the thread list for the rest.
-
-        Dismiss only: applying a proposal needs a Layer 2 entry point that does not exist, and a
-        greyed-out "apply" would say "not now" when the truth is "there is nothing to resume".
-        """
-        try:
-            proposals = await self.client.proposals()
-        except PkbHttpError as exc:
-            self._say(f"{exc.code}: {exc.detail}")
-            return
-        pane = self.query_one("#transcript", VerticalScroll)
-        pane.remove_children()
-        pane.mount(
-            Static(
-                "Writes that needed your approval and could not get it.\n"
-                "Applying one is not available yet — dismiss to clear it. Everything an agent filed "
-                "without needing you is in the thread list.",
-                markup=False,
-                classes="hint",
-            )
-        )
-        for proposal in proposals:
-            pane.mount(Static(proposal_line(proposal), markup=False))
-        if not proposals:
-            pane.mount(Static("nothing is waiting on you here", markup=False, classes="hint"))
-        self._say(f"{len(proposals)} proposal(s)")
 
     def _current_row(self) -> dict[str, Any] | None:
         listing = self.query_one("#threads", ListView)
@@ -449,6 +414,11 @@ def proposal_line(proposal: dict[str, Any]) -> str:
 
     Scan threads are filtered out of every list by rule (RT-58), so a navigation affordance on one
     is a dead end — and a background maintenance write is not a conversation the human can open.
+
+    Unused now that ``action_proposals`` is gone (its own binding retired: the parked-proposal
+    surface it rendered has no session-era analogue, S-35). Kept — a pure formatter, no client call
+    of its own — because ``tests/tui/test_app.py`` still imports and exercises it directly under a
+    superseded mark; Phase 5 removes both together if nothing replaces the view.
     """
     action = dict(proposal.get("action") or {})
     path = str(action.get("args", {}).get("file_path", "")) or "(no path)"

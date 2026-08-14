@@ -279,6 +279,7 @@ def test_a_percent_encoded_agent_id_resolves_to_the_same_agent_ro2(
     )
 
 
+@pytest.mark.superseded
 def test_the_events_suffix_is_not_swallowed_by_the_greedy_route_ro3(
     service: StubService, client: TestClient
 ) -> None:
@@ -289,6 +290,12 @@ def test_the_events_suffix_is_not_swallowed_by_the_greedy_route_ro3(
     wrong order, ``GET /threads/{tid:path}`` answers ``/threads/x/events`` with a thread whose id is
     ``x/events``, the events route becomes dead code, and a reconnecting client silently gets a JSON
     document where it expected a stream (RO-17).
+
+    Superseded (Task 5 rebuilds this): ``/threads*`` is gone. The hazard itself does not survive
+    the rename either — a session id is a bare UUID (no ``/``), so ``/sessions/{session_id}`` is an
+    ordinary path parameter and the ``:path``-converter swallow this test defended against cannot
+    recur (see ``pkb.server.routes``'s module docstring). ``tests/server/test_session_routes.py``
+    covers the events route reaching ``attach_session`` directly instead.
     """
     response = client.get(f"/threads/{THREAD}/events")
 
@@ -537,6 +544,7 @@ def test_proposals_are_listed_and_dismissed_ro19(service: StubService, client: T
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_an_empty_message_is_400_ro11(service: StubService, client: TestClient) -> None:
     """A blank turn must not reach a model, and must not open a stream.
 
@@ -544,6 +552,10 @@ def test_an_empty_message_is_400_ro11(service: StubService, client: TestClient) 
     message costs a full turn — eight to twelve model calls — to produce nothing, and because the refusal has
     to be a status code rather than a frame (RO-13), a client can retry it; a 200 whose only content
     is an apologetic ``run.error`` cannot be told from a real failure.
+
+    Superseded (Task 5 rebuilds this): the route is ``POST /threads/{id}/runs``, deleted with the
+    rest of the thread-CRUD surface. The empty-message-is-400 principle is re-homed, same test
+    name, against ``POST /sessions/{id}/runs`` in ``tests/server/test_session_routes.py``.
     """
     for body in ({"message": ""}, {"message": "   "}, {}):
         response = client.post(f"/threads/{THREAD}/runs", json=body)
@@ -708,26 +720,22 @@ class UnmappedAgentError(PkbAgentError):
     """A typed error added to the seam that nobody gave a row in ``ERROR_CODES``."""
 
 
+@pytest.mark.superseded
 @pytest.mark.parametrize(
     ("error", "status", "code"),
     [
         (UnknownAgentError("no agent answers to 'topic/atlantis'"), 404, "unknown_agent"),
         (UnknownThreadError("no thread '3f0c9a1e'"), 404, "unknown_thread"),
         (ThreadBusyError("a run is already active on thread '3f0c9a1e'"), 409, "thread_busy"),
-        pytest.param(
+        (
             ApprovalPendingError("thread '3f0c9a1e' is waiting on an approval"),
             409,
             "approval_pending",
-            marks=pytest.mark.superseded,
-            # Superseded (Task 6 rebuilds this): no gate means nothing is ever "waiting on an
-            # approval" — the error type itself is retired with the interrupt-resume surface.
         ),
-        pytest.param(
+        (
             StaleInterruptError("interrupt 'i-0' is no longer the pending one"),
             409,
             "stale_interrupt",
-            marks=pytest.mark.superseded,
-            # Superseded (Task 6 rebuilds this): no interrupt exists to go stale.
         ),
         (InvalidDecisionError("expected 2 decisions, got 1"), 400, "invalid_decision"),
     ],
@@ -743,9 +751,14 @@ def test_each_typed_error_maps_to_one_status_and_code_ro20(
     reactions. A route building its own ``HTTPException`` would be a second place this mapping
     lives, and the two would drift the first time an error message was reworded.
 
-    Two of the six cases (``approval_pending``, ``stale``) are marked superseded individually —
-    see their ``pytest.param`` above — the other four are generic error-code mapping that survives
-    the route rename to ``/sessions/{id}/runs``.
+    Superseded whole (Task 5 rebuilds this): every case posts to ``/threads/{id}/runs``, deleted
+    with the rest of the thread-CRUD surface, so all six fail regardless of the error type under
+    test — not only the two (``approval_pending``, ``stale``) that were already marked
+    individually for Task 6. The four that survive as a *principle* (``unknown_agent``,
+    ``thread_busy``, ``invalid``, plus session-shaped ``illegal_session_transition`` and
+    ``session_name_taken``) are re-homed against ``POST /sessions/{id}/runs`` in
+    ``tests/server/test_session_routes.py``; ``unknown_thread`` has no session-era successor, since
+    nothing on the session surface ever raises it.
     """
     service = seed(RaisingService(events=SCRIPT))
     service.error = error
@@ -758,6 +771,7 @@ def test_each_typed_error_maps_to_one_status_and_code_ro20(
     assert response.json()["status"] == status
 
 
+@pytest.mark.superseded
 def test_an_unmapped_typed_error_is_a_500_that_leaks_nothing_ro20() -> None:
     """A new typed error with no row is loud, and its message never reaches the wire.
 
@@ -766,6 +780,9 @@ def test_an_unmapped_typed_error_is_a_500_that_leaks_nothing_ro20() -> None:
     construction that makes an unmapped error somebody's problem today. And its *detail* is a fixed
     string: an unexpected exception's message routinely carries a module path, an absolute file path
     or a fragment of a query, and this wire is also read by a Telegram bot.
+
+    Superseded (Task 5 rebuilds this): the route is ``POST /threads/{id}/runs``, deleted. Re-homed,
+    same test name, against ``POST /sessions/{id}/runs`` in ``tests/server/test_session_routes.py``.
     """
     service = seed(RaisingService(events=SCRIPT))
     service.error = UnmappedAgentError(
@@ -783,6 +800,7 @@ def test_an_unmapped_typed_error_is_a_500_that_leaks_nothing_ro20() -> None:
         assert leak not in response.text
 
 
+@pytest.mark.superseded
 def test_an_error_body_is_problem_json_carrying_the_message_verbatim_ro21() -> None:
     """RFC 9457, a stable machine ``code``, and Layer 2's own words — not Layer 3's paraphrase.
 
@@ -790,6 +808,9 @@ def test_an_error_body_is_problem_json_carrying_the_message_verbatim_ro21() -> N
     second answer to "what went wrong", which is exactly the discipline MW-13 applies to Layer 1's
     findings one layer down. The content type matters for the same reason the code does: a client —
     or a proxy, or a CLI — can parse ``application/problem+json`` without knowing this project.
+
+    Superseded (Task 5 rebuilds this): the route is ``POST /threads/{id}/runs``, deleted. Re-homed,
+    same test name, against ``POST /sessions/{id}/runs`` in ``tests/server/test_session_routes.py``.
     """
     message = "a run is already active on thread '3f0c9a1e'; cancel it or wait for it to finish"
     service = seed(RaisingService(events=SCRIPT))
@@ -882,18 +903,15 @@ def test_origin_channel_never_decides_anything_ro22() -> None:
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 @pytest.mark.parametrize(
     ("method", "path", "body"),
     [
         ("POST", f"/threads/{THREAD}/runs", {"message": "how long for brisket?"}),
-        pytest.param(
+        (
             "POST",
             f"/threads/{THREAD}/interrupt",
             {"interrupt_id": "i-1", "decisions": []},
-            marks=pytest.mark.superseded,
-            # Superseded (Task 6 rebuilds this): the /interrupt route is deleted outright, along
-            # with the interrupt-resume surface — the "runs" and "events" cases below cover the
-            # SSE-header principle for the routes that survive the rename.
         ),
         ("GET", f"/threads/{THREAD}/events", None),
     ],
@@ -909,6 +927,12 @@ def test_every_streaming_route_carries_the_sse_headers_ss2(
     buffers the whole response by default, so a working stream becomes a five-minute pause followed
     by everything at once — and it looks like a hung agent, not a proxy. ``charset=utf-8`` on the
     content type is what makes a KB full of accented ingredient names decode.
+
+    Superseded whole (Task 5 rebuilds this): all three cases target ``/threads*``, deleted; the
+    ``interrupt`` case was already marked individually for Task 6, and now ``runs``/``events`` join
+    it because the routes themselves are gone. The SSE-header principle is re-homed against
+    ``POST /sessions/{id}/runs`` and ``GET /sessions/{id}/events`` in
+    ``tests/server/test_session_routes.py``.
     """
     service = seed(AttachedService(events=SCRIPT))
 

@@ -65,9 +65,15 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Final, Literal
+from typing import TYPE_CHECKING, Final, Literal
 
-import aiosqlite
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    # `aiosqlite` names one type here (`SessionStore.__init__`'s `connection` parameter) and is
+    # otherwise unused at runtime, so it stays out of `sys.modules` for anyone importing this
+    # module for its dataclasses alone — `pkb/service/__init__.py` does exactly that, to expose
+    # `Session`/`SessionList`/`SessionState` on the harness-free `PkbService` Protocol, and the TUI
+    # imports `pkb.service` for its dataclasses without ever wanting a database driver (DC-21).
+    import aiosqlite
 
 from pkb.contracts import PkbAgentError
 from pkb.core.paths import slugify

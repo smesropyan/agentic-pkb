@@ -1,10 +1,23 @@
 """The daemon, over HTTP — the only module in Layer 4 that knows a socket exists (DC-9 … DC-17).
 
-Everything the TUI does goes through here, and everything here goes through the thirteen routes.
-The client holds no policy: it does not decide what a frame means, it does not retry, and it never
+Everything the TUI does goes through here, and everything here goes through the route table. The
+client holds no policy: it does not decide what a frame means, it does not retry, and it never
 invents a request the route table does not have.
 
-Four things are measured rather than chosen:
+**Compile-keeper note (Task 5 of the sessions plan).** The daemon's routes are session-shaped now
+(``DESIGN.md`` §2), and this module is repointed at ``/sessions`` — but ``pkb.tui`` itself is not
+redesigned here; that is Phase 5's. So the methods below keep their thread-era **names**
+(``threads``, ``thread``, ``create_thread``, ``rename``) and reshape a ``/sessions`` payload into
+the thread-shaped dict :mod:`pkb.tui.state` and :mod:`pkb.tui.app` already expect
+(:func:`_session_as_thread`), rather than renaming every call site across two modules for a shape
+Phase 5 will redraw anyway. Three call sites have **no successor** and are gone outright:
+``delete_thread`` ("nothing deletes a session," `DESIGN.md` §2.7), ``proposals``/
+``dismiss_proposal`` (the parked-proposal surface retires with the gate table), and ``resolve``
+(the interrupt-resume route is deleted; the operator's instruction is the approval, §2.10). A
+session's own history has no read-back route yet (Task 8 wires the running record), so
+:meth:`thread` returns an **empty** message list rather than inventing one.
+
+Four things are measured rather than chosen, and none of them changed with the rename:
 
 * **Two timeout budgets, not one** (DC-9, DC-10). httpx2's default read timeout is 5 s and that
   kills every real turn: the gap between ``run.started`` and the first token is a whole model call —
@@ -14,16 +27,16 @@ Four things are measured rather than chosen:
   The streaming budget is set above ``PING_SECONDS`` instead of disabled, because the server's
   ``: ping`` comment frames **do** reset httpx2's read timer even though the decoder never surfaces
   them: three missed heartbeats is a real hang, and ``read=None`` would wait for one forever.
-* **204 is checked before an EventSource is constructed** (DC-11). ``GET /threads/{id}/events``
-  answers 204 with no content type when the thread is idle — the *normal* case, since most threads a
-  human opens are not running — and handing that to a decoder raises an SSE protocol error on every
-  ordinary thread open.
+* **204 is checked before an EventSource is constructed** (DC-11). ``GET /sessions/{id}/events``
+  answers 204 with no content type when nothing is running — the *normal* case, since most sessions a
+  human opens are not mid-turn — and handing that to a decoder raises an SSE protocol error on every
+  ordinary session open.
 * **An error body is read explicitly** (DC-12). A streaming response holds nothing until it is
   read, so a 409 arriving before the stream opens has an empty body unless the client asks for it.
 * **A stream that ends without a terminal frame means *outcome unknown*** (DC-14, SS-7). Both
   endings are real and they look different: a clean close ends the iteration with **no exception at
   all**, and an aborted socket raises. Neither is a result. The client re-syncs with
-  ``GET /threads/{id}`` and renders neither success nor failure — and never re-POSTs the run, which
+  ``GET /sessions/{id}`` and renders neither success nor failure — and never re-POSTs the run, which
   would file the same material twice with no undo.
 """
 
@@ -118,33 +131,52 @@ class PkbClient:
         return list((await self._json("GET", "/agents"))["agents"])
 
     async def threads(self, agent_id: str | None = None) -> list[dict[str, Any]]:
-        """`GET /threads` — already ordered pending-first, and never re-sorted here (RO-6)."""
-        params = {"agent_id": agent_id} if agent_id else None
-        return list((await self._json("GET", "/threads", params=params))["threads"])
+        """`GET /sessions?state=open`, reshaped to the thread dict :mod:`pkb.tui` still expects.
+
+        Only **open** sessions — the closest analogue of "a thread you can still turn to"; a closed
+        or ended one is done, per the state machine (S-20, S-22), and Phase 5 owns however a
+        history view eventually renders those. Never re-sorted here (mirrors RO-6's discipline),
+        though a session list carries no pending-approval badge to sort by any more (S-38: nothing
+        parks).
+        """
+        params: dict[str, str] = {"state": "open"}
+        if agent_id:
+            params["agent_id"] = agent_id
+        sessions = (await self._json("GET", "/sessions", params=params))["sessions"]
+        return [_session_as_thread(session) for session in sessions]
 
     async def thread(self, thread_id: str) -> dict[str, Any]:
-        """`GET /threads/{id}` — **the conversation**, and the re-sync after an unknown outcome."""
-        return await self._json("GET", f"/threads/{thread_id}")
+        """`GET /sessions/{id}` — reshaped, and the re-sync after an unknown outcome.
+
+        ``messages`` is always empty: a session's running record has no read-back route yet (Task 8
+        wires the write side only), so history before this process attached is not visible. Live
+        turns from here on still render — ``open_thread`` always follows this with an attach.
+        """
+        payload = await self._json("GET", f"/sessions/{thread_id}")
+        return {
+            "thread": _session_as_thread(payload["session"]),
+            "messages": [],
+            "pending_interrupt": None,
+            "children": [],
+        }
 
     async def health(self) -> dict[str, Any]:
         return await self._json("GET", "/health")
 
-    async def proposals(self) -> list[dict[str, Any]]:
-        return list((await self._json("GET", "/proposals"))["proposals"])
-
     # -- writes ----------------------------------------------------------------------
 
     async def create_thread(self, agent_id: str, *, title: str | None = None) -> dict[str, Any]:
-        body = {"title": title, "origin_channel": "tui"}
-        payload = await self._json("POST", f"/agents/{agent_id}/threads", json=body)
-        return dict(payload["thread"])
+        """`POST /agents/{id}/sessions` — ``title`` becomes the objective (S-5): harness code names
+        the session from it immediately, rather than the thread era's async titling call."""
+        payload = await self._json(
+            "POST", f"/agents/{agent_id}/sessions", json={"objective": title}
+        )
+        return _session_as_thread(payload["session"])
 
     async def rename(self, thread_id: str, title: str) -> dict[str, Any]:
-        payload = await self._json("PATCH", f"/threads/{thread_id}", json={"title": title})
-        return dict(payload["thread"])
-
-    async def delete_thread(self, thread_id: str) -> None:
-        await self._json("DELETE", f"/threads/{thread_id}")
+        """`POST /sessions/{id}/name` (S-16)."""
+        payload = await self._json("POST", f"/sessions/{thread_id}/name", json={"name": title})
+        return _session_as_thread(payload["session"])
 
     async def cancel(self, run_id: str) -> None:
         """`DELETE /runs/{id}`. The id comes from the most recent ``run.started`` — a resume mints a
@@ -152,29 +184,19 @@ class PkbClient:
         to nobody (C-21)."""
         await self._json("DELETE", f"/runs/{run_id}")
 
-    async def dismiss_proposal(self, proposal_id: str) -> None:
-        await self._json("DELETE", f"/proposals/{proposal_id}")
-
     # -- streams ---------------------------------------------------------------------
 
     def run(self, thread_id: str, message: str) -> AsyncIterator[Frame]:
-        """`POST /threads/{id}/runs` — a turn, streamed."""
-        return self._stream("POST", f"/threads/{thread_id}/runs", json={"message": message})
-
-    def resolve(self, thread_id: str, body: Mapping[str, Any]) -> AsyncIterator[Frame]:
-        """`POST /threads/{id}/interrupt` — the decisions and the continuation are **one call**.
-
-        ``thread_id`` is the one inside the request, never the one being streamed (CL-8, LB-16).
-        """
-        return self._stream("POST", f"/threads/{thread_id}/interrupt", json=dict(body))
+        """`POST /sessions/{id}/runs` — a turn, streamed."""
+        return self._stream("POST", f"/sessions/{thread_id}/runs", json={"message": message})
 
     def attach(self, thread_id: str) -> AsyncIterator[Frame]:
-        """`GET /threads/{id}/events` — a **live tail**, not the conversation (decision L, DC-18).
+        """`GET /sessions/{id}/events` — a **live tail**, not the conversation (decision L, DC-18).
 
         The hub keeps a bounded suffix, so a long run's replay may start mid-turn. The conversation
-        comes from ``GET /threads/{id}``; this fills in what is happening now.
+        comes from ``GET /sessions/{id}``; this fills in what is happening now.
         """
-        return self._stream("GET", f"/threads/{thread_id}/events")
+        return self._stream("GET", f"/sessions/{thread_id}/events")
 
     async def _stream(
         self, method: str, path: str, *, json: Mapping[str, Any] | None = None
@@ -222,3 +244,28 @@ def _body(response: httpx2.Response) -> Mapping[str, Any]:
         return dict(response.json())
     except Exception:
         return {"code": "internal", "detail": response.text[:500]}
+
+
+def _session_as_thread(session: Mapping[str, Any]) -> dict[str, Any]:
+    """A ``/sessions`` payload, reshaped into the thread dict :mod:`pkb.tui` still expects.
+
+    Interim only (module docstring) — Phase 5 redesigns the TUI directly against sessions and this
+    function goes away with the rename it stands in for. ``title`` comes from ``name`` (a session's
+    own display name, S-4), never ``objective``, because a title is what a sidebar row shows and a
+    name is exactly that. ``kind``/``parent_thread_id`` have no session analogue — a session that
+    crosses topics re-opens fresh rather than forking (S-12) — and are always ``"user"``/``None``.
+    ``pending_interrupt_id`` is always ``None``: nothing parks (S-38). ``origin_channel`` is
+    reported as ``"tui"`` unconditionally; it is provenance for display only, never a permission
+    (RO-22), and a session carries no channel field yet (Task 7 attaches channels separately).
+    """
+    return {
+        "thread_id": session["session_id"],
+        "agent_id": session["agent_id"],
+        "title": session["name"],
+        "kind": "user",
+        "parent_thread_id": None,
+        "created_at": session["created_at"],
+        "updated_at": session["updated_at"],
+        "origin_channel": "tui",
+        "pending_interrupt_id": None,
+    }

@@ -50,6 +50,7 @@ from pkb.contracts import (
     ScanResult,
     SubagentStart,
     ThreadBusyError,
+    UnknownAgentError,
     UnknownThreadError,
     expert_thread_id,
     is_scan_thread,
@@ -59,6 +60,19 @@ from pkb.contracts import (
 from pkb.service import RunSubscription, Thread, ThreadDetail
 from pkb.service.proposals import ProposalStore
 from pkb.service.runs import RunSupervisor
+from pkb.service.session_file import (
+    LEARNING_AGENT_ID,
+    SessionFileNoOwnFileError,
+    SessionFileWriter,
+)
+from pkb.service.sessions import (
+    IllegalSessionTransitionError,
+    Session,
+    SessionList,
+    SessionState,
+    SessionStore,
+    UnknownSessionError,
+)
 from pkb.service.threads import ThreadStore, mint_run_id, mint_thread_id, open_connection
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -134,12 +148,15 @@ class RuntimeService:
         runtime: Runtime,
         connection: aiosqlite.Connection,
         *,
+        kb_root: Path,
         supervisor: RunSupervisor | None = None,
     ) -> None:
         self._runtime = runtime
         self._connection = connection
         self._threads = ThreadStore(connection)
         self._proposals = ProposalStore(connection)
+        self._sessions = SessionStore(connection)
+        self._session_files = SessionFileWriter(kb_root)
         self._runs = supervisor or RunSupervisor()
         self._titling: set[str] = set()
 
@@ -167,6 +184,7 @@ class RuntimeService:
     async def setup(self) -> None:
         await self._threads.setup()
         await self._proposals.setup()
+        await self._sessions.setup()
 
     # ----------------------------------------------------------------------------------
     # Catalog
@@ -192,8 +210,6 @@ class RuntimeService:
     ) -> Thread:
         """Validate the agent, then insert. In that order, and compiling nothing (SV-8)."""
         if agent_id not in self._catalog_ids():
-            from pkb.contracts import UnknownAgentError
-
             raise UnknownAgentError(f"no agent answers to the id {agent_id!r}")
         return await self._threads.create(
             mint_thread_id(), agent_id, title=title, origin_channel=origin_channel
@@ -269,6 +285,194 @@ class RuntimeService:
             )
         await self._runtime.delete_thread(thread_id)
         await self._threads.delete_cascade(thread_id)
+
+    # ----------------------------------------------------------------------------------
+    # Sessions (DESIGN.md §2; S-1 … S-39)
+    # ----------------------------------------------------------------------------------
+
+    def _session_catalog_ids(self) -> frozenset[str]:
+        """The Librarian, every topic expert, and the Learning agent (S-9).
+
+        The Learning agent has no registry entry yet — Phase 4 mints it — so it is added here by
+        its own literal placeholder id (:data:`~pkb.service.session_file.LEARNING_AGENT_ID`, the
+        same one :class:`~pkb.service.session_file.SessionFileWriter` already refuses to open a
+        file for) rather than left for the catalog check to reject a legitimate target for want of
+        a row nobody can add yet.
+        """
+        return self._catalog_ids() | {LEARNING_AGENT_ID}
+
+    async def create_session(
+        self,
+        agent_id: str,
+        *,
+        objective: str | None = None,
+        operator: str = "operator",
+        name: str | None = None,
+    ) -> Session:
+        """S-9: validate the agent, then the store row, then the file — in that order.
+
+        **Failure order and its observable state.** The row lands first because it is what makes
+        the session *discoverable and named* (mirrors ``create_thread``'s own ordering, SV-8) and
+        because the file's own path is a function of the row's disambiguated ``name`` — there is no
+        name to create a file under until the store has minted one. If the file step then refuses
+        (:class:`~pkb.service.session_file.SessionFileError`, most likely
+        :class:`~pkb.service.session_file.SessionFileInvalidError` or an ``OSError`` wrapped by one
+        of that module's typed errors), the row is **not** rolled back: :class:`SessionStore`
+        exposes no delete, by design ("nothing moves or deletes operator content", `CLAUDE.md`), so
+        there is nothing here that could remove it even if leaving a bare index row were the wrong
+        answer. It is the right one in practice, though, because the store's own ``UNIQUE``
+        constraint on ``name`` already forecloses the common cause of a collision — two sessions
+        racing for the same slug — before the file step is ever reached; what can still fail there
+        is an untracked file already sitting at the computed path, or a disk fault, and either way
+        the operator sees the raised error immediately rather than a silently-vanished session. A
+        row with no file is visible in ``GET /sessions`` and named clearly by the state of things:
+        recoverable by hand, never lost.
+
+        A session opened on the Learning agent (S-19, S-26) gets the row and **no** file — the file
+        writer refuses one by design, so this method does not call it for that agent at all, rather
+        than calling it and treating the refusal as an error it is not.
+        """
+        if agent_id not in self._session_catalog_ids():
+            raise UnknownAgentError(f"no agent answers to the id {agent_id!r}")
+        session = await self._sessions.create(agent_id, objective, operator, name=name)
+        if agent_id != LEARNING_AGENT_ID:
+            self._session_files.create(session)
+        return session
+
+    async def get_session(self, session_id: str) -> Session:
+        session = await self._sessions.get(session_id)
+        if session is None:
+            raise UnknownSessionError(f"no session {session_id!r}")
+        return session
+
+    async def list_sessions(
+        self, agent_id: str | None = None, *, state: SessionState | None = None
+    ) -> SessionList:
+        """``state='closed'`` **is** the learning queue (S-23, S-25/P4): ``closed_at`` order, not
+        creation order. ``queue()`` itself takes no ``agent_id`` — P4 fixes it as one global view
+        with no second structure — so a caller-supplied filter is applied here, in Python, over
+        that same view, never by asking the store for a second, agent-scoped query.
+        """
+        if state == "closed":
+            sessions = await self._sessions.queue()
+            return [s for s in sessions if agent_id is None or s.agent_id == agent_id]
+        return await self._sessions.list(agent_id, state=state)
+
+    async def rename_session(self, session_id: str, name: str) -> Session:
+        """``/name`` (S-16, S-19): store rename, then the file's own move and retitle.
+
+        Store-then-file, the same order and the same documented trade-off as
+        :meth:`create_session`: the store's ``UNIQUE`` constraint on ``name`` is what keeps a
+        collision at the file step rare rather than routine, and there is no store method to undo a
+        committed rename (no delete, no second name, consistent with "nothing moves or deletes
+        operator content"). A failure at the file step therefore leaves the store's ``name`` already
+        the new one while the bytes are still at the old path; the raised error is the operator's
+        signal, and a further ``/name`` call — to the same target or another — is how it is resolved
+        by hand, the same recovery :meth:`create_session` documents.
+
+        Refused with a distinct "no file to rename" error (S-19) for a session opened on the
+        Learning agent, which never had a file to begin with (S-26) — checked *before* the store is
+        touched, so a Learning-agent session's row-level ``name`` cannot drift out of step with a
+        file that was never there to rename.
+        """
+        before = await self.get_session(session_id)
+        if before.agent_id == LEARNING_AGENT_ID:
+            raise SessionFileNoOwnFileError(
+                f"session {session_id!r} opened on the Learning agent has no file of its own "
+                f"(S-19, S-26); there is nothing to rename"
+            )
+        old_path = before.file_path
+        after = await self._sessions.rename(session_id, name)
+        self._session_files.rename(after, old_path)
+        return after
+
+    async def close_session(self, session_id: str) -> Session:
+        """``/close`` (S-17, S-20, S-21): store transition, then the file's own marker entry.
+
+        Channel detachment (S-17) is Task 7's — no channel-attachment registry exists yet for this
+        to fan out over. A Learning-agent session carries no file, so the marker write is skipped
+        for it exactly as :meth:`create_session` skips file creation.
+        """
+        session = await self._sessions.close(session_id)
+        if session.agent_id != LEARNING_AGENT_ID:
+            self._session_files.mark_closed(session)
+        return session
+
+    async def end_session(self, session_id: str) -> Session:
+        """``/end`` (S-22): legal only from ``closed``; seals the file (S-24/P3).
+
+        The store's ``state`` is the single source of truth for sealed-ness (P3) — the file's own
+        ``## Ended`` marker is a human-readable echo of it, not a second authority, which is why a
+        Learning-agent session (no file) still ends cleanly with the marker step simply skipped.
+        """
+        session = await self._sessions.end(session_id)
+        if session.agent_id != LEARNING_AGENT_ID:
+            self._session_files.mark_ended(session)
+        return session
+
+    async def start_session_run(
+        self,
+        session_id: str,
+        message: str,
+        *,
+        approval_mode: ApprovalMode = "interactive",
+    ) -> RunSubscription:
+        """``POST /sessions/{id}/runs``: resolve, admit, and hand back a subscription.
+
+        Re-homed from ``start_run``'s thread-keyed admission race (AP-10) rather than sharing it:
+        a session carries no ``pending_interrupt_id`` column and forks into no derived row on a
+        fan-out (S-12 — a session that crosses topics re-opens fresh, on the Librarian, rather than
+        forking), so there is no table this needs to keep honest as the stream goes by the way
+        ``_observe`` does for a thread. The events therefore relay **untouched** (SV-5) with nothing
+        wrapped around them at all.
+
+        ``approval_mode`` survives on the Protocol for the same reason it did on ``start_run``: MCP
+        is a caller with no human on the line, so it sets ``propose_only`` in-process (RT-42,
+        SV-17) — Task 6 is what removes the gate table this exists to route around, not this
+        signature. It stays **unsettable over HTTP** (RO-11's reasoning holds unchanged): no route
+        in ``pkb.server.routes`` accepts or forwards this field.
+        """
+        session = await self.get_session(session_id)
+        if session.state != "open":
+            raise IllegalSessionTransitionError(
+                f"session {session_id!r} is {session.state!r}; a run is refused on any session "
+                f"that is not open (S-20: a closed session 'takes no more turns'; S-24/P3: a "
+                f"sealed one never reopens)"
+            )
+        minted = mint_run_id()
+        stream = self._runtime.run(
+            session.agent_id, session_id, message, approval_mode=approval_mode, run_id=minted
+        )
+        return await self._launch_session(session_id, session.agent_id, minted, stream)
+
+    async def attach_session(self, session_id: str) -> RunSubscription | None:
+        return self._runs.attach(session_id)
+
+    async def _launch_session(
+        self,
+        session_id: str,
+        agent_id: str,
+        run_id: str,
+        stream: AsyncIterator[AgentEvent],
+    ) -> RunSubscription:
+        """The admission race (AP-10) alone — mirrors ``_launch`` with no thread bookkeeping."""
+
+        async def starter() -> tuple[RunHandle, AsyncIterator[AgentEvent]]:
+            iterator = stream.__aiter__()
+            first = asyncio.ensure_future(iterator.__anext__())
+            done, _ = await asyncio.wait({first}, timeout=ADMISSION_DEADLINE)
+            if done:
+                try:
+                    admitted: AgentEvent | None = first.result()
+                except StopAsyncIteration:
+                    admitted = None
+                head = _prepend(admitted, iterator) if admitted is not None else _drain(iterator)
+            else:
+                head = _await_first(first, iterator)
+            handle = RunHandle(run_id=run_id, agent_id=agent_id, thread_id=session_id)
+            return handle, head
+
+        return await self._runs.start(session_id, starter)
 
     # ----------------------------------------------------------------------------------
     # Runs
@@ -638,7 +842,7 @@ async def open_service(
         # line away from being a bug nobody finds until a reader blocks a writer under load.
         connection = await open_connection(runtime.db_path)
         try:
-            service = RuntimeService(runtime, connection)
+            service = RuntimeService(runtime, connection, kb_root=kb_root)
             await service.setup()
             yield service
         finally:

@@ -68,6 +68,7 @@ from pkb.core.scan import scan
 from pkb.server.app import ServerConfig, create_app
 from pkb.server.mcp import TOOL_NAMES, build_mcp_server
 from pkb.service import RunSubscription
+from pkb.service.sessions import UnknownSessionError
 from tests.server.stub import AGENTS, COOKING, GRILLING, LIBRARIAN, NOW, StubService, opener_for
 
 # --------------------------------------------------------------------------------------
@@ -264,6 +265,52 @@ class ScriptedService(StubService):
             return handle, stream()
 
         return await self.runs.start(thread_id, starter)
+
+    async def start_session_run(
+        self, session_id: str, message: str, *, approval_mode: str = "interactive"
+    ) -> RunSubscription:
+        """The session-keyed mirror of :meth:`start_run` — what ``pkb.server.mcp`` actually calls
+        since Task 5 repointed it. Every scripted behavior (``raise_on_run``, ``gated``, ``hang``,
+        ``busy``, ``strict_threads`` against ``self.sessions`` rather than ``self.rows``) carries
+        over unchanged; only the id space and the call name recorded in ``self.calls`` differ."""
+        self.calls.append(("start_session_run", (session_id, message)))
+        self.modes.append(approval_mode)
+        if self.raise_on_run is not None:
+            raise self.raise_on_run
+        if self.strict_threads and session_id not in self.sessions:
+            raise UnknownSessionError(f"no session {session_id!r}")
+        if self.busy:
+            raise ThreadBusyError(f"a run is already active on session {session_id!r}")
+        if self.gated is not None:
+            path, reason = self.gated
+            self.proposals.append(
+                PendingProposal(
+                    proposal_id="proposal-1",
+                    agent_id=self.handle_agent,
+                    thread_id=session_id,
+                    action=ActionView(
+                        tool="write_file",
+                        args={"file_path": path},
+                        description=f"--- a/{path}\n+++ b/{path}",
+                        allowed_decisions=("approve", "edit", "reject"),
+                        reason=reason,
+                    ),
+                    created_at=NOW,
+                )
+            )
+
+        async def starter() -> tuple[RunHandle, AsyncIterator[AgentEvent]]:
+            handle = RunHandle(run_id=self.run_id, agent_id=self.handle_agent, thread_id=session_id)
+
+            async def stream() -> AsyncIterator[AgentEvent]:
+                if self.hang:
+                    await self.never.wait()
+                for event in self.events:
+                    yield event
+
+            return handle, stream()
+
+        return await self.runs.start(session_id, starter)
 
 
 # --------------------------------------------------------------------------------------
@@ -1141,7 +1188,7 @@ async def test_a_run_that_never_ends_times_out_and_is_cancelled_mc15(connect: Co
 
         assert body["status"] == "timeout"
         assert service.cancelled == ["run-1"]
-        assert body["thread_id"] in service.rows
+        assert body["thread_id"] in service.sessions
 
 
 @pytest.mark.asyncio
@@ -1241,8 +1288,8 @@ async def test_ingest_always_enters_at_the_librarian_with_hints_as_context_mc17(
             topic_hint="Cooking",
         )
 
-        (thread_id, message) = next(c[1] for c in service.calls if c[0] == "start_run")
-        assert service.rows[thread_id].agent_id == LIBRARIAN_AGENT_ID
+        (thread_id, message) = next(c[1] for c in service.calls if c[0] == "start_session_run")
+        assert service.sessions[thread_id].agent_id == LIBRARIAN_AGENT_ID
         assert message.startswith(content), "the item crosses unmodified"
         trailer = message[len(content) :]
         assert "advisory" in trailer
@@ -1310,7 +1357,9 @@ async def test_an_expert_menu_is_an_ordinary_success_the_caller_may_answer_mc19(
         assert result.is_error is False
         assert body["status"] == "menu"
         assert GRILLING in body["candidates"]
-        assert body["thread_id"] in service.rows, "answerable as the next turn on the same thread"
+        assert body["thread_id"] in service.sessions, (
+            "answerable as the next turn on the same thread"
+        )
 
 
 @pytest.mark.asyncio

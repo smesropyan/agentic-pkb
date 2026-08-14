@@ -28,10 +28,26 @@ from pkb.contracts import (
     UnknownAgentError,
     UnknownThreadError,
 )
+from pkb.core.paths import slugify
 from pkb.service import RunSubscription, Thread, ThreadDetail
 from pkb.service.runs import RunSupervisor
+from pkb.service.session_file import LEARNING_AGENT_ID, SessionFileNoOwnFileError
+from pkb.service.sessions import (
+    IllegalSessionTransitionError,
+    Session,
+    SessionList,
+    SessionNameTakenError,
+    SessionState,
+    UnknownSessionError,
+)
 
-__all__ = ["AGENTS", "COOKING", "LIBRARIAN", "StubService", "opener_for"]
+__all__ = ["AGENTS", "COOKING", "LEARNING", "LIBRARIAN", "StubService", "opener_for"]
+
+LEARNING = LEARNING_AGENT_ID
+"""The Learning agent's placeholder id (S-9, S-19, S-26) — not in ``AGENTS``, same as production
+until Phase 4 mints a real registry entry; the catalog check special-cases it by this literal."""
+
+_DEFAULT_SESSION_STEM = "session"
 
 LIBRARIAN = "librarian"
 COOKING = "topic/cooking"
@@ -80,6 +96,12 @@ class StubService:
     ) -> None:
         self.rows: dict[str, Thread] = {}
         self.proposals: list[PendingProposal] = []
+        self.sessions: dict[str, Session] = {}
+        self._session_names: set[str] = set()
+        self._session_clock = 0
+        """A tick per state transition (create/close/end), so ``closed_at``/``ended_at`` order is
+        actually distinguishable from insertion order in a test — real time never advances inside a
+        stub call, and `NOW` alone would tie every close in one test at the same instant."""
         self.runs = RunSupervisor()
         self.events = list(events)
         self.admission_delay = admission_delay
@@ -144,6 +166,145 @@ class StubService:
         self.calls.append(("delete_thread", (thread_id,)))
         self.rows.pop(thread_id, None)
 
+    # -- sessions (S-1 … S-39) ---------------------------------------------------------
+    # A pure in-memory fake of `SessionStore`'s state machine — no SQLite, matching this
+    # module's own rule (module docstring). It raises the identical typed errors the real
+    # store and `RuntimeService` raise, which is what lets the route-level error-mapping
+    # tests exercise the real `pkb.server.errors` table without a database.
+
+    async def create_session(
+        self,
+        agent_id: str,
+        *,
+        objective: str | None = None,
+        operator: str = "operator",
+        name: str | None = None,
+    ) -> Session:
+        self.calls.append(("create_session", (agent_id, objective, operator, name)))
+        if agent_id not in {a.agent_id for a in AGENTS} and agent_id != LEARNING:
+            raise UnknownAgentError(f"no agent answers to the id {agent_id!r}")
+        base = slugify(name) if name else (slugify(objective) if objective else "")
+        unique = self._unique_session_name(base or _DEFAULT_SESSION_STEM)
+        session = Session(
+            session_id=str(uuid.uuid4()),
+            agent_id=agent_id,
+            objective=objective,
+            name=unique,
+            operator=operator,
+            state="open",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        self.sessions[session.session_id] = session
+        return session
+
+    async def get_session(self, session_id: str) -> Session:
+        self.calls.append(("get_session", (session_id,)))
+        session = self.sessions.get(session_id) or self._session_from_row(session_id)
+        if session is None:
+            raise UnknownSessionError(f"no session {session_id!r}")
+        return session
+
+    async def list_sessions(
+        self, agent_id: str | None = None, *, state: SessionState | None = None
+    ) -> SessionList:
+        self.calls.append(("list_sessions", (agent_id, state)))
+        merged = dict(self.sessions)
+        for thread_id in self.rows:
+            merged.setdefault(thread_id, self._session_from_row(thread_id))  # type: ignore[arg-type]
+        rows = [s for s in merged.values() if agent_id in (None, s.agent_id)]
+        if state is not None:
+            rows = [s for s in rows if s.state == state]
+        if state == "closed":
+            rows.sort(key=lambda s: s.closed_at or NOW)
+        else:
+            rows.sort(key=lambda s: s.created_at)
+        return rows
+
+    def _session_from_row(self, session_id: str) -> Session | None:
+        """Compatibility shim for the many pre-existing (mostly TUI) fixtures that still build a
+        scripted conversation by assigning straight into ``self.rows`` — a ``Thread``, never a
+        ``Session`` — rather than calling ``create_session``. Rather than touch every one of those
+        call sites for a shape Phase 5 redraws anyway, a ``Thread`` row doubles as an open session
+        with the same id, agent and timestamps. Real session tests build through ``create_session``
+        and never populate ``self.rows`` at all, so the two paths do not mix."""
+        thread = self.rows.get(session_id)
+        if thread is None:
+            return None
+        return Session(
+            session_id=thread.thread_id,
+            agent_id=thread.agent_id,
+            objective=None,
+            name=thread.title or thread.thread_id,
+            operator="operator",
+            state="open",
+            created_at=thread.created_at,
+            updated_at=thread.updated_at,
+        )
+
+    async def rename_session(self, session_id: str, name: str) -> Session:
+        self.calls.append(("rename_session", (session_id, name)))
+        session = await self.get_session(session_id)
+        if session.agent_id == LEARNING:
+            raise SessionFileNoOwnFileError(
+                f"session {session_id!r} opened on the Learning agent has no file of its own; "
+                f"there is nothing to rename"
+            )
+        if session.state == "ended":
+            raise IllegalSessionTransitionError(
+                f"session {session_id!r} is sealed (state='ended'); a sealed session is never "
+                f"renamed"
+            )
+        slugged = slugify(name) or _DEFAULT_SESSION_STEM
+        if slugged != session.name:
+            if slugged in self._session_names:
+                raise SessionNameTakenError(
+                    f"a session named {slugged!r} already exists; refused rather than disambiguated"
+                )
+            self._session_names.discard(session.name)
+            self._session_names.add(slugged)
+        updated = dataclasses.replace(session, name=slugged, updated_at=NOW)
+        self.sessions[session_id] = updated
+        return updated
+
+    async def close_session(self, session_id: str) -> Session:
+        self.calls.append(("close_session", (session_id,)))
+        session = await self.get_session(session_id)
+        if session.state != "open":
+            raise IllegalSessionTransitionError(
+                f"session {session_id!r} is {session.state!r}; only an open session can be closed"
+            )
+        stamp = self._tick()
+        updated = dataclasses.replace(session, state="closed", closed_at=stamp, updated_at=stamp)
+        self.sessions[session_id] = updated
+        return updated
+
+    async def end_session(self, session_id: str) -> Session:
+        self.calls.append(("end_session", (session_id,)))
+        session = await self.get_session(session_id)
+        if session.state != "closed":
+            raise IllegalSessionTransitionError(
+                f"session {session_id!r} is {session.state!r}; only a closed session can be ended"
+            )
+        stamp = self._tick()
+        updated = dataclasses.replace(session, state="ended", ended_at=stamp, updated_at=stamp)
+        self.sessions[session_id] = updated
+        return updated
+
+    def _tick(self) -> datetime:
+        """The next distinguishable instant — see ``_session_clock``'s own docstring."""
+        self._session_clock += 1
+        return NOW.replace(microsecond=self._session_clock)
+
+    def _unique_session_name(self, base: str) -> str:
+        candidate = base
+        attempt = 1
+        while candidate in self._session_names:
+            attempt += 1
+            candidate = f"{base}-{attempt}"
+        self._session_names.add(candidate)
+        return candidate
+
     # -- runs ------------------------------------------------------------------------
 
     async def start_run(
@@ -181,6 +342,39 @@ class StubService:
     async def attach(self, thread_id: str) -> RunSubscription | None:
         self.calls.append(("attach", (thread_id,)))
         return self.runs.attach(thread_id)
+
+    # -- session runs (re-homed from thread-keyed start_run/attach, Task 5) ------------
+
+    async def start_session_run(
+        self, session_id: str, message: str, *, approval_mode: str = "interactive"
+    ) -> RunSubscription:
+        self.calls.append(("start_session_run", (session_id, message)))
+        self.modes.append(approval_mode)
+        session = await self.get_session(session_id)
+        if session.state != "open":
+            raise IllegalSessionTransitionError(
+                f"session {session_id!r} is {session.state!r}; a run is refused on any session "
+                f"that is not open"
+            )
+        if self.busy:
+            raise ThreadBusyError(f"a run is already active on session {session_id!r}")
+
+        async def starter() -> tuple[RunHandle, AsyncIterator[AgentEvent]]:
+            if self.admission_delay:
+                await asyncio.sleep(self.admission_delay)
+            handle = RunHandle(run_id=self.run_id, agent_id=session.agent_id, thread_id=session_id)
+
+            async def stream() -> AsyncIterator[AgentEvent]:
+                for event in self.events:
+                    yield event
+
+            return handle, stream()
+
+        return await self.runs.start(session_id, starter)
+
+    async def attach_session(self, session_id: str) -> RunSubscription | None:
+        self.calls.append(("attach_session", (session_id,)))
+        return self.runs.attach(session_id)
 
     async def cancel(self, run_id: str) -> None:
         self.calls.append(("cancel", (run_id,)))

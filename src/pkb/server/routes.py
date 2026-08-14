@@ -1,47 +1,64 @@
-"""The HTTP surface — thirteen routes and no more (RO-1 … RO-22).
+"""The HTTP surface — sessions, the seven commands' backing routes, and no more (RO-1 … RO-22, S-*).
 
-Arch §6's eight, plus five declared additions, plus ``/mcp``. Any route beyond those is an addition
-that must be given a rule id, and a test pins the set: a route that appears without a rule is a
-surface nobody agreed to and a client will start depending on.
+``DESIGN.md`` §2: "there is one way in, the API" (S-13). A session is a durable named thing that
+outlives any one channel, and every session-affecting operation — create, list, name, close, end, a
+turn, its live events — is a route below and nothing else. ``/threads*``, ``/threads/{id}/interrupt``
+and ``/proposals*`` are **gone**: their service-side backing survives in ``pkb.service.runtime``
+until Task 6 deletes the gates it exists for (the plan's own "leave the methods, delete the
+routes"), but nothing here serves them any longer. There is deliberately no
+``DELETE /sessions/{id}`` — "nothing deletes a session" (§2.7) — and no interrupt-resume route: the
+operator's instruction is the approval (architecture note on §2.10), so nothing here parks a write
+for later.
 
-Three things about the shape of this module are load-bearing:
+Three things about the shape of this module are still load-bearing:
 
-* **Registration order** (RO-3). A thread id is not URL-simple — a derived one contains ``::`` *and*
-  ``/`` — so every ``{thread_id}`` is a ``:path`` converter, and the routes with a literal suffix
-  (``/runs``, ``/interrupt``, ``/events``) are registered **before** the bare greedy one. Otherwise
-  ``GET /threads/{tid:path}`` swallows ``/threads/x/events`` and the events route is dead.
+* **A session id is a bare UUID** (:func:`~pkb.service.sessions.mint_session_id`) — no ``::`` and no
+  ``/``, unlike the derived thread ids this surface used to carry. Every ``/sessions/{session_id}``
+  segment is therefore an ordinary path parameter, and the old registration-order hazard (RO-3, a
+  ``:path`` converter swallowing a literal suffix) does not apply to it. An **agent** id still
+  contains ``/`` and is still opaque (RO-2), so ``POST /agents/{agent_id:path}/sessions`` keeps the
+  ``:path`` converter that route always needed.
 * **The typed-error map is a single exception handler** (RO-20), never an ``HTTPException`` built by
-  hand in a route. Three conditions share 409 and a client's reaction to each differs, so the body
+  hand in a route. Several conditions share 409 and a client's reaction to each differs, so the body
   carries a stable machine ``code`` and clients branch on that (RO-21).
-* **Nothing branches on ``origin_channel``** (RO-22). D3's whole point is that a thread started in
-  the TUI is finishable from Telegram; one authorization check against that column silently deletes
-  the guarantee in exactly the case the design is proudest of. It is provenance for display,
-  notification targeting and diagnostics only.
+* **Nothing branches on ``origin_channel``** (RO-22). D3's whole point is that a conversation started
+  in the TUI is finishable from Telegram; one authorization check silently deletes the guarantee in
+  exactly the case the design is proudest of. It is provenance for display, notification targeting
+  and diagnostics only — Task 7 wires channel attachment, and this still holds once it lands.
 
 Streaming is :class:`sse_starlette.EventSourceResponse` rather than ``StreamingResponse`` (SS-1) —
 it listens for ``http.disconnect`` itself, and it brings ping keep-alives, ``cache-control:
 no-store`` and a shutdown grace period. And a response **subscribes**; it never drives the run
-(AP-6). Closing it detaches.
+(AP-6). Closing it detaches. This machinery is salvaged whole from the thread era — re-homed to key
+on a session id, never rewritten.
 """
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import asdict
+from datetime import datetime
 from typing import TYPE_CHECKING, Annotated, Any
 
 from fastapi import APIRouter, Body, Request, Response
 from fastapi.responses import JSONResponse
 from sse_starlette import EventSourceResponse, ServerSentEvent
 
-from pkb.contracts import Decision, InvalidDecisionError
+from pkb.contracts import InvalidDecisionError
 from pkb.server.errors import PROBLEM_CONTENT_TYPE, problem_body, status_and_code
 from pkb.server.sse import SseEncoder
+from pkb.service.session_file import LEARNING_AGENT_ID
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from pkb.service import PkbService, RunSubscription, Thread, ThreadDetail
+    from pkb.service import PkbService, RunSubscription, Session, Thread, ThreadDetail
 
-__all__ = ["SSE_HEADERS", "build_router", "route_paths", "thread_payload"]
+__all__ = [
+    "SSE_HEADERS",
+    "build_router",
+    "route_paths",
+    "session_payload",
+    "thread_payload",
+]
 
 SSE_HEADERS: Mapping[str, str] = {
     "Cache-Control": "no-store",
@@ -123,151 +140,115 @@ def build_router(
         service = service_of(request)
         return {"agents": [asdict(descriptor) for descriptor in service.list_agents()]}
 
-    # -- threads -------------------------------------------------------------------
+    # -- sessions --------------------------------------------------------------------
 
-    @router.post("/agents/{agent_id:path}/threads", status_code=201)
-    async def create_thread(
+    @router.post("/agents/{agent_id:path}/sessions", status_code=201)
+    async def create_session(
         request: Request, agent_id: str, body: Annotated[dict[str, Any] | None, Body()] = None
     ) -> Response:
-        """201 with the full thread and a ``Location`` header (RO-5).
+        """201 with the full session and a ``Location`` header (S-1, S-9).
 
         ``{agent_id:path}`` because **an agent id contains ``/`` and is opaque** (RO-2): the captured
-        string goes to the service verbatim. ``%2F`` is not a workable alternative — Starlette
-        decodes it back before matching and proxies normalize it — and nothing in Layer 3 splits,
-        re-encodes, slugifies or fuzzy-matches an id.
+        string goes to the service verbatim, exactly as ``POST /agents/{id}/threads`` always took it
+        — RO-2 is unchanged by the session rename. The body is ``{"objective": str|null,
+        "name": str|null, "operator": str|null}``; ``operator`` is the caller's declared identity and
+        defaults to ``"operator"`` when absent, per S-8: "a human or an agent alike," and this route
+        has no way to tell the two apart, so it does not try.
         """
         service = service_of(request)
         fields = body or {}
-        thread = await service.create_thread(
+        session = await service.create_session(
             agent_id,
-            title=fields.get("title"),
-            origin_channel=fields.get("origin_channel") or "http",
+            objective=fields.get("objective"),
+            operator=fields.get("operator") or "operator",
+            name=fields.get("name"),
         )
         return JSONResponse(
-            {"thread": thread_payload(thread)},
+            {"session": session_payload(session)},
             status_code=201,
-            headers={"Location": f"/threads/{thread.thread_id}"},
+            headers={"Location": f"/sessions/{session.session_id}"},
         )
 
-    @router.get("/threads")
-    async def list_threads(request: Request, agent_id: str | None = None) -> dict[str, Any]:
-        """Grouped per expert, most-in-need-of-attention first (RO-6, RO-7, RO-8)."""
+    @router.get("/sessions")
+    async def list_sessions(
+        request: Request, agent_id: str | None = None, state: str | None = None
+    ) -> dict[str, Any]:
+        """``?state=`` filters; ``state=closed`` **is** the learning queue, ``closed_at``-ordered
+        rather than creation-ordered (S-23, S-25/P4)."""
         service = service_of(request)
-        threads = await service.list_threads(agent_id)
-        return {"threads": [thread_payload(thread) for thread in threads]}
+        sessions = await service.list_sessions(agent_id, state=state)  # type: ignore[arg-type]
+        return {"sessions": [session_payload(session) for session in sessions]}
 
-    # RO-3: the literal-suffix routes must be registered BEFORE the greedy `{thread_id:path}` ones,
-    # or the converter swallows `/runs`, `/interrupt` and `/events`.
+    @router.post("/sessions/{session_id}/name")
+    async def rename_session(
+        request: Request, session_id: str, body: Annotated[dict[str, Any], Body()]
+    ) -> dict[str, Any]:
+        """``/name`` (S-16): store rename, file move and retitle, channel fan-out stubbed for Task 7."""
+        name = body.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise InvalidDecisionError("'name' is required and must be a non-empty string")
+        service = service_of(request)
+        session = await service.rename_session(session_id, name.strip())
+        return {"session": session_payload(session)}
 
-    @router.post("/threads/{thread_id:path}/runs")
-    async def start_run(
-        request: Request, thread_id: str, body: Annotated[dict[str, Any], Body()]
+    @router.post("/sessions/{session_id}/close")
+    async def close_session(request: Request, session_id: str) -> dict[str, Any]:
+        """``/close`` (S-17, S-20, S-21): no body — the operator has nothing to craft, it judges
+        nothing (S-20)."""
+        service = service_of(request)
+        return {"session": session_payload(await service.close_session(session_id))}
+
+    @router.post("/sessions/{session_id}/end")
+    async def end_session(request: Request, session_id: str) -> dict[str, Any]:
+        """``/end`` (S-22): legal only from ``closed`` — refused on an open session (S-24/P3)."""
+        service = service_of(request)
+        return {"session": session_payload(await service.end_session(session_id))}
+
+    @router.post("/sessions/{session_id}/runs")
+    async def start_session_run(
+        request: Request, session_id: str, body: Annotated[dict[str, Any], Body()]
     ) -> Any:
-        """Begin a turn and stream it (RO-11).
+        """Begin a turn and stream it — the thread era's ``POST /runs`` machinery, re-homed.
 
-        The body is ``{"message": str}`` and **nothing else**. ``approval_mode`` is deliberately not
-        exposed: propose-only means Layer 2 auto-rejects every gate, which over a human channel is a
-        run that silently refuses its own approvals and files nothing — a broken agent, not a mode.
-        MCP sets it in-process, where the reason for it actually holds (RT-42, SV-17).
+        The body is ``{"message": str}`` and **nothing else** — ``approval_mode`` was never exposed
+        over HTTP (RO-11) and there is even less reason now: no gate exists for it to auto-reject.
+        A run on a session that is not ``open`` is refused (S-20, S-24/P3), by
+        ``RuntimeService.start_session_run`` before anything streams.
         """
         message = body.get("message")
         if not isinstance(message, str) or not message.strip():
             raise InvalidDecisionError("'message' is required and must be a non-empty string")
-        if "approval_mode" in body:
-            raise InvalidDecisionError(
-                "'approval_mode' is not settable over HTTP: propose-only is the MCP channel's mode"
-            )
         service = service_of(request)
-        subscription = await service.start_run(thread_id.rstrip("/"), message)
+        subscription = await service.start_session_run(session_id, message)
         return _stream(subscription, service, shutdown=shutdown_for(request))
 
-    @router.post("/threads/{thread_id:path}/interrupt")
-    async def resolve_interrupt(
-        request: Request, thread_id: str, body: Annotated[dict[str, Any], Body()]
-    ) -> Any:
-        """Answer an approval and continue **the same run** (RO-12, RO-13, SS-16).
-
-        ``interrupt_id`` is **required on the wire** even though the validator takes it optionally.
-        Two channels looking at one approval is the design rather than an edge case, and without the
-        id a second client's stale decisions apply to whatever is pending *now* — silently, with no
-        undo. Requiring it turns a lost update into a clean 409.
-
-        Validation happens before the response becomes a stream (RO-13), which is what makes 400 and
-        409 deterministic rather than smuggled into an already-committed 200.
-        """
-        interrupt_id = body.get("interrupt_id")
-        if not isinstance(interrupt_id, str) or not interrupt_id:
-            raise InvalidDecisionError(
-                "'interrupt_id' is required: without it a second client's stale decisions would "
-                "apply to whatever is pending now"
-            )
-        raw = body.get("decisions")
-        if not isinstance(raw, list):
-            raise InvalidDecisionError("'decisions' must be a list")
-        decisions = [_decision(item) for item in raw]
-        service = service_of(request)
-        subscription = await service.resume(
-            thread_id.rstrip("/"), decisions, interrupt_id=interrupt_id
-        )
-        return _stream(subscription, service, shutdown=shutdown_for(request))
-
-    @router.get("/threads/{thread_id:path}/events")
-    async def attach(request: Request, thread_id: str) -> Any:
+    @router.get("/sessions/{session_id}/events")
+    async def attach_session_events(request: Request, session_id: str) -> Any:
         """Attach to the run in flight, replaying from ``seq 0``; 204 when idle (RO-17).
 
-        How a reconnecting client rejoins without starting a second run — which ``POST /runs`` would
-        refuse with 409 anyway. No side effects: this starts nothing.
+        How a reconnecting channel rejoins without starting a second run. No side effects: this
+        starts nothing, and several channels may hold one session at once (S-6) — each attaches
+        here independently.
         """
         service = service_of(request)
-        subscription = await service.attach(thread_id.rstrip("/"))
+        subscription = await service.attach_session(session_id)
         if subscription is None:
             return Response(status_code=204)
         return _stream(subscription, service, started=False, shutdown=shutdown_for(request))
 
-    @router.patch("/threads/{thread_id:path}")
-    async def rename(
-        request: Request, thread_id: str, body: Annotated[dict[str, Any], Body()]
-    ) -> Any:
-        """A human's title, permanent (RO-19, SV-27)."""
-        title = body.get("title")
-        if not isinstance(title, str) or not title.strip():
-            raise InvalidDecisionError("'title' is required and must be a non-empty string")
+    @router.get("/sessions/{session_id}")
+    async def get_session(request: Request, session_id: str) -> dict[str, Any]:
+        """One session's row (S-4). ``UnknownSessionError`` → 404 for an id nobody minted."""
         service = service_of(request)
-        return {"thread": thread_payload(await service.set_title(thread_id, title.strip()))}
+        return {"session": session_payload(await service.get_session(session_id))}
 
-    @router.get("/threads/{thread_id:path}")
-    async def get_thread(request: Request, thread_id: str) -> dict[str, Any]:
-        """One conversation, its history, its live approval, and its children (RO-10)."""
-        service = service_of(request)
-        return detail_payload(await service.get_thread(thread_id))
-
-    @router.delete("/threads/{thread_id:path}", status_code=204)
-    async def delete_thread(request: Request, thread_id: str) -> Response:
-        """204, with the cascade (RO-16, SV-24)."""
-        service = service_of(request)
-        await service.delete_thread(thread_id)
-        return Response(status_code=204)
-
-    # -- runs, proposals -----------------------------------------------------------
+    # -- runs -------------------------------------------------------------------------
 
     @router.delete("/runs/{run_id}", status_code=204)
     async def cancel_run(request: Request, run_id: str) -> Response:
         """204, and **204 for an unknown id too** (RO-18): cancelling nothing is not an error."""
         service = service_of(request)
         await service.cancel(run_id)
-        return Response(status_code=204)
-
-    @router.get("/proposals")
-    async def list_proposals(request: Request, status: str = "pending") -> dict[str, Any]:
-        service = service_of(request)
-        return {
-            "proposals": [_proposal_payload(p) for p in await service.list_proposals(status=status)]
-        }
-
-    @router.delete("/proposals/{proposal_id}", status_code=204)
-    async def dismiss_proposal(request: Request, proposal_id: str) -> Response:
-        service = service_of(request)
-        await service.dismiss_proposal(proposal_id)
         return Response(status_code=204)
 
     return router
@@ -397,41 +378,31 @@ def _approval_payload(request: Any) -> dict[str, Any]:
     }
 
 
-def _proposal_payload(proposal: Any) -> dict[str, Any]:
+def session_payload(session: Session) -> dict[str, Any]:
+    """``Session`` on the wire (S-1 … S-7).
+
+    ``file_path`` is ``null`` for a session opened on the Learning agent (S-19, S-26): it never had
+    a file, and reporting the computed ``sessions/<name>.md`` string there would claim a path that
+    is not on disk. Every other session's ``file_path`` is always populated — one file, whole life
+    (S-26, S-27) — so a client never has to ask a second endpoint whether it exists.
+    """
     return {
-        "proposal_id": proposal.proposal_id,
-        "agent_id": proposal.agent_id,
-        "thread_id": proposal.thread_id,
-        "created_at": proposal.created_at.isoformat().replace("+00:00", "Z"),
-        "action": {
-            "tool": proposal.action.tool,
-            "args": dict(proposal.action.args),
-            "description": proposal.action.description,
-            "allowed_decisions": list(proposal.action.allowed_decisions),
-            "reason": proposal.action.reason,
-        },
+        "session_id": session.session_id,
+        "agent_id": session.agent_id,
+        "objective": session.objective,
+        "name": session.name,
+        "operator": session.operator,
+        "state": session.state,
+        "created_at": _iso(session.created_at),
+        "updated_at": _iso(session.updated_at),
+        "closed_at": _iso(session.closed_at) if session.closed_at else None,
+        "ended_at": _iso(session.ended_at) if session.ended_at else None,
+        "file_path": session.file_path if session.agent_id != LEARNING_AGENT_ID else None,
     }
 
 
-def _decision(item: Any) -> Decision:
-    """One wire decision, or a 400 (RO-15).
-
-    A client may **narrow** the decisions it offers — Telegram drops ``edit`` — and never widen
-    them. The server-side set is the truth and is re-validated on the way back in, so a hand-crafted
-    request carrying ``edit`` against an action that forbids it is a 400 regardless of channel; that
-    check is ``validate_decisions``', in the service, and this only builds the object.
-    """
-    if not isinstance(item, Mapping):
-        raise InvalidDecisionError("each decision must be an object")
-    kind = item.get("type")
-    if kind not in ("approve", "edit", "reject", "respond"):
-        raise InvalidDecisionError(f"unknown decision type {kind!r}")
-    return Decision(
-        type=kind,
-        message=item.get("message"),
-        edited_args=item.get("edited_args"),
-        edited_tool=item.get("edited_tool"),
-    )
+def _iso(moment: datetime) -> str:
+    return moment.isoformat().replace("+00:00", "Z")
 
 
 def error_response(exc: BaseException, **extra: Any) -> JSONResponse:

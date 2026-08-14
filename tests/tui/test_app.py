@@ -647,8 +647,8 @@ async def test_an_agent_id_reaches_the_wire_byte_identically_tu9() -> None:
         await pilot.press("down", "down", "down", "enter")
         await wait_until(pilot, lambda: app.selected_agent == GRILLING)
 
-    listed = [args for name, args in service.calls if name == "list_threads"]
-    assert (GRILLING,) in listed, listed
+    listed = [args for name, args in service.calls if name == "list_sessions"]
+    assert (GRILLING, "open") in listed, listed
     assert all("%2F" not in str(args) for args in listed)
 
 
@@ -743,6 +743,7 @@ def test_routedness_is_never_detected_by_searching_for_a_double_colon_tu11() -> 
             assert "::" not in text, f"{path.name} spells a derived thread id: {text!r}"
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_an_untitled_thread_and_an_empty_title_render_differently_tu15() -> None:
     """``None`` means "not titled yet"; ``""`` means a human deliberately blanked it.
@@ -751,6 +752,12 @@ async def test_an_untitled_thread_and_an_empty_title_render_differently_tu15() -
     base are ``None`` — collapsing the two states makes a brand-new thread indistinguishable from a
     blanked one, and a first-line fallback is the "I grilled a ribeye last weeke…" sidebar the
     titling ruling rejected outright.
+
+    Superseded (Phase 5 rebuilds this): a session has no "untitled" state to distinguish from a
+    blanked one — S-5 names it from the objective *synchronously*, at creation, with a deterministic
+    slug when none was given, never asynchronously and never ``None`` (``pkb.tui.client``'s
+    ``_session_as_thread``, which reports ``title`` from a session's own ``name`` for exactly this
+    reason). The distinction this test asserts does not exist in the session model to render.
     """
     service = Service()
     service.rows = {
@@ -796,7 +803,9 @@ async def test_a_degraded_daemon_banners_at_200_and_still_runs_tu6() -> None:
         app.query_one("#compose", Input).value = "where does this go?"
         app.set_focus(app.query_one("#compose", Input))
         await pilot.press("enter")
-        await wait_until(pilot, lambda: any(name == "start_run" for name, _ in service.calls))
+        await wait_until(
+            pilot, lambda: any(name == "start_session_run" for name, _ in service.calls)
+        )
 
 
 @pytest.mark.asyncio
@@ -888,11 +897,11 @@ async def test_opening_an_idle_thread_reads_the_detail_then_attaches_tu14() -> N
     async with shell(service) as (app, pilot):
         service.calls.clear()
         await app.open_thread(THREAD)
-        await wait_until(pilot, lambda: any(name == "attach" for name, _ in service.calls))
+        await wait_until(pilot, lambda: any(name == "attach_session" for name, _ in service.calls))
 
-    assert [name for name, _ in service.calls] == ["get_thread", "attach"]
-    assert ("get_thread", (THREAD,)) in service.calls
-    assert not any(name == "start_run" for name, _ in service.calls)
+    assert [name for name, _ in service.calls] == ["get_session", "attach_session"]
+    assert ("get_session", (THREAD,)) in service.calls
+    assert not any(name == "start_session_run" for name, _ in service.calls)
 
 
 @pytest.mark.superseded
@@ -1139,6 +1148,7 @@ def test_the_pump_is_a_textual_worker_and_never_a_bare_task_tu22() -> None:
         assert "ensure_future" not in names, path.name
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_a_stream_that_raises_leaves_the_app_alive_with_its_transcript_tu37() -> None:
     """An unhandled exception in a default worker **kills the app**.
@@ -1148,6 +1158,13 @@ async def test_a_stream_that_raises_leaves_the_app_alive_with_its_transcript_tu3
     context manager's ``__aexit__``, after every assertion has passed, so the traceback points at
     the ``async with`` line rather than at the stream. This test fails at that exit if the pump ever
     loses ``exit_on_error=False``.
+
+    Superseded (Task 8 rebuilds this): the crash-resilience principle (``exit_on_error=False``
+    survives a raising stream) is permanent, but its proof here leans on ``service.messages`` — a
+    session's running record has no read-back route yet, so ``client.thread()`` always returns an
+    empty history (``pkb.tui.client``'s module docstring) and the seeded first message never
+    appears in the transcript to survive the crash. A successor needs a live turn to seed that first
+    line instead of pre-loaded history.
     """
 
     class Exploding(PkbClient):
@@ -1627,6 +1644,7 @@ async def test_two_servers_in_one_process_both_stream_p14b() -> None:
                 RunEnd(run_id="run-1", final_text="filed"),
             ]
         )
+        service.rows = {THREAD: thread(THREAD)}  # a run now requires a real session to target (S-9)
         async with daemon(service) as base_url:
             client = PkbClient(base_url=base_url)
             async with client.opened():

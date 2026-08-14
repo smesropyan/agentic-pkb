@@ -23,7 +23,11 @@ rules; it never contains a second implementation of one.
 The package layout, and why it is a package rather than a module (decision C):
 
 * ``__init__`` — this file: the Protocol and the Layer-3 dataclasses, harness-free.
-* ``threads.py`` — the ``threads`` table on Layer 3's own ``aiosqlite`` connection.
+* ``threads.py`` — the ``threads`` table on Layer 3's own ``aiosqlite`` connection. Superseded by
+  ``sessions.py`` (``DESIGN.md`` §2); kept until Task 6/10 stop needing its methods and its table.
+* ``sessions.py`` — the ``sessions`` table: one durable, named state machine per `S-1 … S-39`
+  (``docs/superpowers/specs/2026-08-14-sessions-S-rules.md``).
+* ``session_file.py`` — the one write surface for ``sessions/**`` (S-11), harness-free.
 * ``proposals.py`` — ``pkb_proposals``, so a propose-only write survives a restart.
 * ``runs.py`` — the run supervisor and the per-run hub: **the daemon owns runs, the request does
   not** (decision A).
@@ -56,10 +60,14 @@ from pkb.contracts import (
     ThreadKind,
     librarian_thread_id,
 )
+from pkb.service.sessions import Session, SessionList, SessionState
 
 __all__ = [
     "PkbService",
     "RunSubscription",
+    "Session",
+    "SessionList",
+    "SessionState",
     "Thread",
     "ThreadDetail",
 ]
@@ -218,6 +226,77 @@ class PkbService(Protocol):
         Deleting a *derived* thread reaches neither sideways to siblings nor upwards to the parent,
         matching the runtime's own asymmetry.
         """
+        ...
+
+    # -- sessions --------------------------------------------------------------------
+    # DESIGN.md §2; `docs/superpowers/specs/2026-08-14-sessions-S-rules.md` (S-1 … S-39). The API
+    # is the one way in (S-13): every session-affecting operation below is what a route calls, and
+    # a route calls nothing else to reach a session.
+
+    async def create_session(
+        self,
+        agent_id: str,
+        *,
+        objective: str | None = None,
+        operator: str = "operator",
+        name: str | None = None,
+    ) -> Session:
+        """Validate the agent, then create the store row and the file, in that order (S-9).
+
+        Refuses an ``agent_id`` outside {the Librarian, a topic expert the registry knows, the
+        Learning agent} before either is touched — mirrors ``create_thread``'s own ordering. A
+        session opened on the Learning agent gets a store row and no file of its own (S-19, S-26).
+        """
+        ...
+
+    async def get_session(self, session_id: str) -> Session:
+        """One session's row. ``UnknownSessionError`` for an id nobody minted."""
+        ...
+
+    async def list_sessions(
+        self, agent_id: str | None = None, *, state: SessionState | None = None
+    ) -> SessionList:
+        """Every session, optionally filtered. ``state='closed'`` **is** the learning queue (S-25/P4),
+        ordered by ``closed_at`` rather than by creation order."""
+        ...
+
+    async def rename_session(self, session_id: str, name: str) -> Session:
+        """``/name`` (S-16): store rename, then the file's own move and retitle.
+
+        ``SessionNameTakenError`` on a collision, refused rather than disambiguated (S-16);
+        ``IllegalSessionTransitionError`` once ``/end`` has sealed the file; a distinct "no file to
+        rename" refusal for a Learning-agent session, which opens no file of its own (S-19).
+        """
+        ...
+
+    async def close_session(self, session_id: str) -> Session:
+        """``/close`` (S-17, S-20, S-21): state → ``closed``, every attached channel let go (Task 7
+        wires the fan-out), the file's own marker appended."""
+        ...
+
+    async def end_session(self, session_id: str) -> Session:
+        """``/end`` (S-22): legal only from ``closed``; seals the file (S-24/P3)."""
+        ...
+
+    async def start_session_run(
+        self,
+        session_id: str,
+        message: str,
+        *,
+        approval_mode: ApprovalMode = "interactive",
+    ) -> RunSubscription:
+        """Begin a turn on a session (re-homed from ``start_run``'s thread-keyed machinery).
+
+        Refused on any session that is not ``open`` — a closed session "takes no more turns"
+        (S-20) and a sealed one never reopens (S-24/P3).
+
+        ``approval_mode`` is not exposed over HTTP (RO-11 unchanged); it exists so MCP can request
+        ``propose_only`` in-process, the same reason ``start_run`` carries it.
+        """
+        ...
+
+    async def attach_session(self, session_id: str) -> RunSubscription | None:
+        """Subscribe to whatever is already running on this session, or ``None`` when idle."""
         ...
 
     # -- runs ----------------------------------------------------------------------

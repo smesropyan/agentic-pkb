@@ -422,10 +422,19 @@ def test_the_server_never_reaches_pkb_agents_even_transitively_ap2() -> None:
 # --------------------------------------------------------------------------------------
 
 _ALLOWED_ANNOTATION_MODULES = frozenset(
-    {"pkb.contracts", "pkb.service", "pkb.core", "collections.abc", "typing", "datetime"}
+    {
+        "pkb.contracts",
+        "pkb.service",
+        "pkb.service.sessions",
+        "pkb.core",
+        "collections.abc",
+        "typing",
+        "datetime",
+    }
 )
-"""Where a ``PkbService`` annotation may come from: the seam, Layer 3's own dataclasses, Layer 1,
-and the standard library's container and time types."""
+"""Where a ``PkbService`` annotation may come from: the seam, Layer 3's own dataclasses (including
+``pkb.service.sessions``, harness-free the same way ``pkb.service.threads`` always was — S-1 …
+S-39), Layer 1, and the standard library's container and time types."""
 
 
 def _unresolvable_annotations(source: str, protocol: str = "PkbService") -> set[str]:
@@ -759,6 +768,38 @@ _FILE_WRITERS = frozenset(
 _LAYER1_WRITERS = frozenset({"flush", "regenerate_all", "scaffold_topic", "scaffold_subtopic"})
 
 
+_SQL_OR_DELEGATE_ATTRS = frozenset({"_session_files", "_sessions"})
+"""Two of ``RuntimeService``'s own attributes whose methods coincide, in English, with
+:data:`_FILE_WRITERS`' ``Path``/``os`` vocabulary without doing a single byte of filesystem I/O:
+
+* ``self._session_files`` is the one sanctioned writer (`SessionFileWriter`,
+  :data:`_SV22_NAMED_EXCEPTION`) — a call shaped ``self._session_files.rename(...)`` is a
+  **forward** into that already-exempted module, not a second writer.
+* ``self._sessions`` is `SessionStore` — ``SessionStore.rename`` is one SQL ``UPDATE`` statement
+  (S-16's store-side rename, distinct from the file's own move), never a filesystem call.
+
+:func:`_called_name` is deliberately receiver-blind (its own docstring: a check that only
+understood dotted paths would wave through the likeliest way a stray write actually happens), so a
+call named ``rename`` reads identically whether it lands on one of these two attributes or on a
+bare ``Path`` — collision by coincidence of English (``rename`` is exactly the verb both S-16's
+store transition and ``Path.rename`` use), not by design. This is the narrow, attribute-scoped
+exception — mirroring :data:`_SV22_NAMED_EXCEPTION`'s own full-path scoping rather than a basename
+match — that keeps these two legitimate forwards legible without reopening "any local alias hides a
+write," the hole receiver-blindness exists to close.
+"""
+
+
+def _forwards_to_session_files(call: ast.Call) -> bool:
+    func = call.func
+    return (
+        isinstance(func, ast.Attribute)
+        and isinstance(func.value, ast.Attribute)
+        and func.value.attr in _SQL_OR_DELEGATE_ATTRS
+        and isinstance(func.value.value, ast.Name)
+        and func.value.value.id == "self"
+    )
+
+
 def _write_offenders(sources: dict[Path, ast.Module]) -> list[str]:
     """Every call that could put bytes on disk, and every import that exists to do so."""
     offenders: list[str] = []
@@ -771,6 +812,8 @@ def _write_offenders(sources: dict[Path, ast.Module]) -> list[str]:
         for call in _calls(tree):
             name = _called_name(call.func)
             if name in _FILE_WRITERS | _LAYER1_WRITERS:
+                if _forwards_to_session_files(call):
+                    continue
                 offenders.append(f"{path.name}: {name}()")
             elif name == "open":
                 modes = [
@@ -864,6 +907,28 @@ def test_a_same_named_module_elsewhere_is_not_exempt_sv22() -> None:
     }
     sources = {path: tree for path, tree in planted.items() if path != _SV22_NAMED_EXCEPTION}
     assert _write_offenders(sources) == ["session_file.py: write_text()"]
+
+
+def test_the_session_files_forward_is_scoped_to_those_two_attributes_sv22() -> None:
+    """:data:`_forwards_to_session_files` reads the receiver, not just the trailing name.
+
+    ``RuntimeService.rename_session`` calls ``self._sessions.rename(...)`` (a SQL ``UPDATE``) and
+    ``self._session_files.rename(...)`` (a forward into :data:`_SV22_NAMED_EXCEPTION`'s own
+    module) — both exempted by attribute rather than by re-opening receiver-blindness for every
+    ``rename`` in Layer 3. A *different* attribute named ``rename``, or a bare ``Path.rename``,
+    must stay caught — the exemption is these two names, not "rename is fine now."
+    """
+    offenders = _write_offenders(
+        _planted(
+            "class Svc:\n"
+            "    def rename_session(self, session_id, name, after, old_path):\n"
+            "        self._sessions.rename(session_id, name)\n"
+            "        self._session_files.rename(after, old_path)\n"
+            "        self._other_thing.rename(after, old_path)\n"
+            "        old_path.rename(after)\n"
+        )
+    )
+    assert offenders == ["planted.py: rename()", "planted.py: rename()"]
 
 
 _MODEL_CLIENTS = frozenset(
@@ -996,7 +1061,7 @@ _CATALOG: tuple[AgentDescriptor, ...] = (
 
 @pytest.mark.asyncio
 async def test_a_run_carries_its_id_before_its_first_event_ro11(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """RO-11: ``run_id`` is server-minted and known **before** the first token, so cancel is never
     a race — and SS-8 puts it in frame 0 of every stream.
@@ -1015,7 +1080,7 @@ async def test_a_run_carries_its_id_before_its_first_event_ro11(
     monkeypatch.setattr(service_runtime, "ADMISSION_DEADLINE", 0.01)
 
     connection = await aiosqlite.connect(":memory:", isolation_level=None)
-    service = RuntimeService(_SlowRuntime(), connection)
+    service = RuntimeService(_SlowRuntime(), connection, kb_root=tmp_path)
     try:
         await service.setup()
         cooking = await service.create_thread("topic/cooking")

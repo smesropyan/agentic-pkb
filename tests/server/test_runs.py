@@ -40,9 +40,13 @@ from tests.server.driver import Captured, drive
 from tests.server.stub import LIBRARIAN, StubService, opener_for
 
 THREAD = "t-1"
+"""A session id, in every test below — kept named ``THREAD`` because ``RunSupervisor`` (and this
+file's supervisor-level tests, which drive it directly with no HTTP at all) key on an opaque string
+and have no notion of "thread" or "session" either way; only the two route paths below changed
+(Task 5 — re-homed from ``/threads/{id}/runs`` and ``/threads/{id}/events``)."""
 RUN_ID = "run-1"
-RUNS_PATH = f"/threads/{THREAD}/runs"
-EVENTS_PATH = f"/threads/{THREAD}/events"
+RUNS_PATH = f"/sessions/{THREAD}/runs"
+EVENTS_PATH = f"/sessions/{THREAD}/events"
 JSON_HEADERS = [(b"host", b"127.0.0.1:8000"), (b"content-type", b"application/json")]
 MESSAGE = b'{"message": "file this"}'
 
@@ -90,25 +94,18 @@ class PacedService(StubService):
         self.script_exhausted = asyncio.Event()
         self.stream_cancelled = False
 
-    async def start_run(
-        self,
-        thread_id: str,
-        message: str,
-        *,
-        approval_mode: str = "interactive",
-        run_id: str | None = None,
-    ) -> RunSubscription:
-        self.calls.append(("start_run", (thread_id, message)))
-        self.modes.append(approval_mode)
+    async def start_session_run(self, session_id: str, message: str) -> RunSubscription:
+        self.calls.append(("start_session_run", (session_id, message)))
+        self.modes.append("interactive")
         if self.busy:
-            raise ThreadBusyError(f"a run is already active on thread {thread_id!r}")
+            raise ThreadBusyError(f"a run is already active on session {session_id!r}")
 
         async def starter() -> tuple[RunHandle, AsyncIterator[AgentEvent]]:
             if self.admission_delay:
                 await asyncio.sleep(self.admission_delay)
             if self.admission_error is not None:
                 raise self.admission_error
-            handle = RunHandle(run_id=self.run_id, agent_id=LIBRARIAN, thread_id=thread_id)
+            handle = RunHandle(run_id=self.run_id, agent_id=LIBRARIAN, thread_id=session_id)
 
             async def stream() -> AsyncIterator[AgentEvent]:
                 try:
@@ -122,7 +119,7 @@ class PacedService(StubService):
 
             return handle, stream()
 
-        return await self.runs.start(thread_id, starter)
+        return await self.runs.start(session_id, starter)
 
 
 def starter_for(
@@ -399,17 +396,18 @@ async def test_attaching_mid_run_replays_from_seq_zero_ap9() -> None:
 
 @pytest.mark.asyncio
 async def test_attach_over_http_replays_the_run_in_flight_ro17() -> None:
-    """``GET /threads/{id}/events`` is how a second channel rejoins without starting a second run.
+    """``GET /sessions/{id}/events`` is how a second channel rejoins without starting a second run.
 
-    ``POST /runs`` would refuse with 409 (the thread is busy), so without this route a client that
-    lost its connection has no way back to a turn it can still see running in ``list_threads`` — and
-    D3's cross-channel resume, the case the design is proudest of, would only work between turns.
-    The attach stream writes no ``run.started``: it did not start anything, and claiming otherwise
-    would let a client believe it owns a run it merely joined.
+    ``POST /sessions/{id}/runs`` would refuse with 409 (a run is already active), so without this
+    route a client that lost its connection has no way back to a turn it can still see running in
+    ``GET /sessions`` — and S-6's cross-channel resume, several channels holding one session at
+    once, would only work between turns. The attach stream writes no ``run.started``: it did not
+    start anything, and claiming otherwise would let a client believe it owns a run it merely
+    joined.
     """
     service = PacedService(events=script(6), gap=0.03)
     async with serving(service) as app:
-        await service.start_run(THREAD, "file this")
+        await service.start_session_run(THREAD, "file this")
         captured = await drive(app, EVENTS_PATH, headers=JSON_HEADERS, timeout=3.0)
 
     assert captured.status == 200
@@ -428,7 +426,7 @@ async def test_attach_is_204_when_the_thread_is_idle_ro17() -> None:
 
     A 200 with an empty ``text/event-stream`` would leave a reconnecting client hanging on a socket
     that will never produce a frame, indistinguishable from a slow model. 204 tells it, in one
-    round trip and with no side effects, to fall back to ``GET /threads/{id}`` for history.
+    round trip and with no side effects, to fall back to ``GET /sessions/{id}`` for history.
     """
     service = PacedService(events=script(4))
     async with serving(service) as app:
@@ -437,7 +435,7 @@ async def test_attach_is_204_when_the_thread_is_idle_ro17() -> None:
     assert captured.status == 204
     assert captured.body == b""
     assert "text/event-stream" not in captured.headers.get("content-type", "")
-    assert ("attach", (THREAD,)) in service.calls
+    assert ("attach_session", (THREAD,)) in service.calls
     assert service.runs.active == 0, "attaching started a run"
 
 
