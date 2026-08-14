@@ -354,6 +354,46 @@ def test_a_rejected_topic_proposal_creates_nothing_lb7(kb: Path) -> None:
     assert not (kb / "Physics").exists()
 
 
+def test_a_gated_write_lands_during_the_turn_with_no_interrupt_s38(kb: Path) -> None:
+    """S-38, S-39 (`docs/superpowers/specs/2026-08-14-sessions-S-rules.md`); DESIGN.md §2.10:
+    "the operator's instruction is the approval" — a write lands during the turn it was
+    instructed in, and nothing ever parks to wait on a later decision.
+
+    The plan's own Task 6 Step 1 failing test, made permanent, and `test_expert.py`'s
+    `test_a_gated_write_lands_during_the_turn_with_no_interrupt_s38`'s twin: the same tool
+    (`create_topic`), the same real `make_create_topic` (`pkb.core.scaffold_topic` under it, no
+    stand-in), the same composition (`build_librarian` -> the real `create_deep_agent`), pinning
+    the *other* composition site LB-7 above used to gate. `pkb.agents.gates` still carries a table
+    entry for this tool name; nothing composes it into this graph, so nothing reads it.
+
+    Watched fail first (TDD): re-adding `interrupt_on=build_interrupt_on(GateEnv(snapshot=
+    runtime.snapshot))` to `build_librarian`'s `create_deep_agent` call reproduces LB-7's own
+    assertion — one interrupt, naming `create_topic`, with `log == []` and no file on disk —
+    against this exact scripted turn, and this test's `state.interrupts == ()` fails accordingly.
+    Reverting the composition-point edit is what turns it green again.
+    """
+    log: list[ScaffoldResult] = []
+    model = scripted(
+        calls(
+            call(
+                "create_topic",
+                {"name": "Physics", "title": "Physics", "description": "Mechanics and optics"},
+                "t1",
+            )
+        ),
+        says("created it"),
+    )
+    graph = librarian(kb, model, tools=[make_create_topic(kb, log)])
+    run(graph, thread="t-lb7-lands")
+
+    state = graph.get_state(config("t-lb7-lands"))
+    assert state.interrupts == ()
+    assert len(log) == 1
+    assert len(log[0].created) == 6
+    assert (kb / "Physics" / "topic.md").is_file()
+    assert (kb / "Physics" / "notes" / "summary.md").is_file()
+
+
 # --------------------------------------------------------------------------------------
 # LB-12 — the Librarian cannot delegate, and cannot decline to route
 # --------------------------------------------------------------------------------------

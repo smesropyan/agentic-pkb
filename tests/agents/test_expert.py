@@ -50,7 +50,7 @@ from pkb.agents.middleware.maintenance import NULL_WRITE_LOCK
 from pkb.agents.paths import KB_MOUNT, SKILLS_MOUNT, to_backend_path
 from pkb.agents.permissions import DERIVED_DENY_GLOBS, kb_permissions
 from pkb.agents.skills import DEFAULT_SKILL_NAMES, adopt_skill, packaged_skills_root
-from pkb.core import FlushReport, KbSnapshot, resolve_skills
+from pkb.core import FlushReport, KbSnapshot, ScaffoldResult, resolve_skills, scaffold_subtopic
 from pkb.core.paths import rel
 from pkb.core.scan import scan
 from tests.agents.conftest import TODAY, ScriptedChatModel, call, calls, says, scripted
@@ -612,6 +612,60 @@ def test_the_experts_topic_tool_is_gated_ex12(kb: Path) -> None:
     request = state.interrupts[0].value
     assert request["action_requests"][0]["name"] == "create_subtopic"
     assert request["review_configs"][0]["allowed_decisions"] == ["approve", "edit", "reject"]
+
+
+def make_real_create_subtopic(kb: Path, log: list[ScaffoldResult]) -> BaseTool:
+    """The un-gated twin of `create_subtopic` above, wired to Layer 1 for real (S-38's own tool).
+
+    EX-12's own `create_subtopic` returns a string and touches nothing; that was enough to prove a
+    tool *named* `create_subtopic` used to interrupt. Proving the opposite — that the write actually
+    lands — needs a tool call with an effect to observe, so this one calls
+    `pkb.core.scaffold_subtopic` for real, exactly as `tests.agents.test_librarian.make_create_topic`
+    does for `create_topic` (LB-7's twin, same reasoning).
+    """
+
+    @tool
+    def create_subtopic(parent: str, name: str) -> str:
+        """Create a sub-topic under this expert's own topic root."""
+        result = scaffold_subtopic(
+            kb, parent, name, title=name, description=f"{name}, split out of {parent}", today=TODAY
+        )
+        log.append(result)
+        return f"created {result.topic_path}"
+
+    return create_subtopic
+
+
+def test_a_gated_write_lands_during_the_turn_with_no_interrupt_s38(kb: Path) -> None:
+    """S-38, S-39 (`docs/superpowers/specs/2026-08-14-sessions-S-rules.md`); DESIGN.md §2.10:
+    "the operator's instruction is the approval" — a write lands during the turn it was
+    instructed in, and nothing ever parks to wait on a later decision.
+
+    The plan's own Task 6 Step 1 failing test, made permanent. `create_subtopic` is EX-12's own
+    example of a tool the *old* gate table keyed on by name alone; running the identical scripted
+    turn through the identical composition (`build_expert` -> the real `create_deep_agent`, no
+    fake harness in between) and finding no interrupt is therefore not a weaker claim than EX-12's
+    — it is EX-12's own proof inverted, against the same tool, the same graph factory and the same
+    gate table (`pkb.agents.gates` still carries an entry for this tool name; nothing reads it).
+
+    Watched fail first (TDD): re-adding `interrupt_on=build_interrupt_on(GateEnv(snapshot=
+    runtime.snapshot))` to `build_expert`'s `create_deep_agent` call reproduces EX-12's own
+    assertion — one interrupt, naming `create_subtopic` — against this exact scripted turn, and
+    this test's `state.interrupts == ()` fails accordingly. Reverting the composition-point edit is
+    what turns it green again, which is the whole of what this test pins.
+    """
+    log: list[ScaffoldResult] = []
+    model = scripted(
+        calls(call("create_subtopic", {"parent": COOKING, "name": "Sous Vide"}, "s1")),
+        says("done"),
+    )
+    graph = build(kb, model, COOKING, tools=[make_real_create_subtopic(kb, log)])
+    run(graph, thread="t-subtopic-lands")
+
+    state = graph.get_state(config("t-subtopic-lands"))
+    assert state.interrupts == ()
+    assert len(log) == 1
+    assert (kb / COOKING / "sub-topics" / "Sous Vide" / "topic.md").exists()
 
 
 @pytest.mark.superseded
