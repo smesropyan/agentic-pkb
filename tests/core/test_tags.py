@@ -7,7 +7,7 @@ dataclass, so a fixture is a dict of `FileRecord`s (decision C).
 from __future__ import annotations
 
 import builtins
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -25,12 +25,9 @@ from pkb.core.models import (
     ParsedDocument,
 )
 from pkb.core.tags import (
-    EXTENSION_MARKER,
-    MAPPING_SEP,
     MAX_TAG_DEPTH,
     ROOT_TOPIC_ANNOTATION,
     STATIC_ANNOTATIONS,
-    TAG_DEF_SEP,
     TAG_RE,
     TAG_SEGMENT_RE,
     TYPE_DEFINITIONS,
@@ -40,7 +37,6 @@ from pkb.core.tags import (
     ancestor_closure,
     build_tag_forest,
     build_tag_tree,
-    definition_annotation,
     files_with_tag,
     render_definition_list,
     render_mapping_line,
@@ -145,11 +141,6 @@ def test_tag_is_descendant_of_matches_whole_segments_tg1() -> None:
 # --------------------------------------------------------------------------------------
 
 
-@pytest.mark.superseded
-def test_namespace_set_is_closed_tg2() -> None:
-    assert set(Namespace) == {"topic", "status", "type", "domain"}
-
-
 def test_unknown_namespace_is_an_error_tg2() -> None:
     findings = validate_tag("project.alpha", path="Cooking/notes/x.md")
     assert _codes(findings) == ["UNKNOWN_TAG_NAMESPACE"]
@@ -163,7 +154,6 @@ def test_unknown_namespace_is_an_error_tg2() -> None:
     "raw",
     [
         "topic.cooking",
-        pytest.param("status.draft", marks=pytest.mark.superseded),
         "type.note",
         "domain.legal",
     ],
@@ -287,27 +277,6 @@ def test_unknown_type_tag_is_an_error_tg6() -> None:
     assert _codes(findings) == ["UNKNOWN_TYPE_TAG"]
     assert findings[0].rule_id == "TG-6"
     assert set(TYPE_DEFINITIONS) == {"type.note", "type.reference", "type.solution", "type.summary"}
-
-
-@pytest.mark.superseded
-@pytest.mark.parametrize(
-    "raw",
-    # Retired closed vocabulary (T-17): STATUS_DEFINITIONS no longer exists, so its former keys
-    # are hardcoded here rather than imported, to keep this dead-but-not-yet-deleted test collecting.
-    sorted(["status.draft", "status.approved", "status.conflict-review"]),
-)
-def test_status_vocabulary_members_validate_tg7(raw: str) -> None:
-    assert validate_tag(raw) == []
-
-
-@pytest.mark.superseded
-def test_unknown_status_tag_is_an_error_but_transitions_are_not_checked_tg7() -> None:
-    findings = validate_tag("status.wip")
-    assert _codes(findings) == ["UNKNOWN_STATUS_TAG"]
-    assert findings[0].rule_id == "TG-7"
-    # A draft -> conflict-review jump is a Layer 2 concern: membership only, never transitions.
-    assert validate_tag("status.draft") == []
-    assert validate_tag("status.conflict-review") == []
 
 
 # --------------------------------------------------------------------------------------
@@ -444,63 +413,6 @@ def test_tags_in_namespace_filters_by_depth_tg11(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------------------
 
 
-@pytest.mark.superseded
-def test_static_definitions_are_verbatim_generator_text_tg12() -> None:
-    """Superseded by T-17: the ``status.*`` half of this test has no subject left in
-    ``pkb.core.tags`` \u2014 the vocabulary is retired outright, not merely renamed."""
-    assert list(TYPE_DEFINITIONS.items()) == [
-        ("type.note", "an observation from the operator's own practice"),
-        ("type.reference", "static source"),
-        ("type.solution", "reusable solution (a note tagged as a solution)"),
-        ("type.summary", "breadth overview"),
-    ]
-    # A bare node renders with no separator and no gloss \u2014 true for any tag STATIC_DEFINITIONS no
-    # longer carries, `status.approved` included, now that the vocabulary is gone (T-17).
-    assert definition_annotation("status.approved") == ""
-    assert definition_annotation("topic.cooking") == ""
-    assert (
-        definition_annotation("type.note")
-        == " \u2013 an observation from the operator's own practice"
-    )
-
-
-@pytest.mark.superseded
-def test_static_sections_are_the_golden_blocks_tg12(tmp_path: Path) -> None:
-    """The `type` and (formerly) `status` blocks are generator text: KB contents cannot move them.
-
-    Superseded by T-17: the ``status.*`` half of this test has nothing left in ``pkb.core.tags`` to
-    read, so its former golden lines are hardcoded rather than rendered.
-    """
-    assert render_definition_list(TYPE_DEFINITIONS) == [
-        "- `type.note` \u2013 an observation from the operator's own practice",
-        "- `type.reference` \u2013 static source",
-        "- `type.solution` \u2013 reusable solution (a note tagged as a solution)",
-        "- `type.summary` \u2013 breadth overview",
-    ]
-    # Vocabulary order, not alphabetical: `draft` leads and `approved` follows. The mapping itself
-    # is hardcoded rather than read off `pkb.core.tags` \u2014 `STATUS_DEFINITIONS` is gone (T-17) \u2014 but
-    # the renderer stays generic over any `Mapping[str, str | None]`, so it is still the real
-    # function under test here.
-    former_status_definitions: Mapping[str, str | None] = {
-        "status.draft": "proposed, awaiting human approval",
-        "status.approved": None,
-        "status.conflict-review": None,
-    }
-    assert render_definition_list(former_status_definitions) == [
-        "- `status.draft` \u2013 proposed, awaiting human approval",
-        "- `status.approved`",
-        "- `status.conflict-review`",
-    ]
-    # The block is generator text, not derived content: an unused tag still renders, and an
-    # empty KB renders the same block (C17, GE-29).
-    populated = build_tag_tree(_cooking_snapshot(tmp_path))
-    assert build_tag_tree(_snapshot(tmp_path, [])).tags == ()
-    assert "type.solution" not in populated.tags
-    assert "- `type.solution` \u2013 reusable solution (a note tagged as a solution)" in (
-        render_definition_list(TYPE_DEFINITIONS)
-    )
-
-
 def test_static_annotations_feed_the_shared_renderer_tg12() -> None:
     """`STATIC_ANNOTATIONS` lets the tree renderer emit the same suffixes where a tree is wanted."""
     nodes = [TagNode(tag) for tag in TYPE_DEFINITIONS]
@@ -512,14 +424,6 @@ def test_static_annotations_feed_the_shared_renderer_tg12() -> None:
 # --------------------------------------------------------------------------------------
 # TG-13 — separator constants, asserted at byte level
 # --------------------------------------------------------------------------------------
-
-
-@pytest.mark.superseded
-def test_separator_constants_are_the_pinned_codepoints_tg13() -> None:
-    assert TAG_DEF_SEP == " \u2013 "
-    assert MAPPING_SEP == " \u2194 "
-    assert EXTENSION_MARKER == " *(topic-specific extension)*"
-    assert ROOT_TOPIC_ANNOTATION == " \u2013 root topic"
 
 
 def test_rendered_bytes_carry_en_dash_and_arrow_tg13() -> None:
@@ -539,23 +443,6 @@ def test_rendered_bytes_carry_en_dash_and_arrow_tg13() -> None:
 # --------------------------------------------------------------------------------------
 # GE-23 / GE-17 — the shared renderer, and the shape both callers emit
 # --------------------------------------------------------------------------------------
-
-
-@pytest.mark.superseded
-def test_topic_section_matches_the_pinned_shape_ge23(tmp_path: Path) -> None:
-    tree = build_tag_tree(_cooking_snapshot(tmp_path))
-    cooking = tree.subtree("topic.cooking")
-    assert cooking is not None
-    annotations = {
-        "topic.cooking": ROOT_TOPIC_ANNOTATION,
-        "topic.cooking.recipes": EXTENSION_MARKER,
-    }
-    assert render_tag_tree([cooking], annotations=annotations) == [
-        "- `topic.cooking` \u2013 root topic",
-        "    - `topic.cooking.grilling`",
-        "    - `topic.cooking.heat-management`",
-        "    - `topic.cooking.recipes` *(topic-specific extension)*",
-    ]
 
 
 def test_domain_renders_as_a_nested_tree_ge23_c8(tmp_path: Path) -> None:

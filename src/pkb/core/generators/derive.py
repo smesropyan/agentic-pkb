@@ -17,7 +17,8 @@ implementations would silently disagree:
   drifting implementations would fail.
 
 There is no *folder*-driven tag-section annotation left (T-1): the extension-folder mechanism the
-old ``EXTENSION_MARKER`` depended on is retired outright, not merely renamed.
+old topic-specific-extension marker depended on is retired outright, not merely renamed, and Task
+11 removed the dead constant itself from ``pkb.core.tags``.
 
 Everything here is pure over the snapshot: no filesystem, no clock, no absolute path in any result.
 """

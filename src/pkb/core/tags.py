@@ -38,7 +38,6 @@ from pkb.core.models import KbSnapshot
 
 __all__ = [
     "BULLET",
-    "EXTENSION_MARKER",
     "INDENT",
     "MAPPING_SEP",
     "MAX_TAG_DEPTH",
@@ -110,9 +109,6 @@ hyphen-minus: the byte sequence is what TG-13's golden test asserts.
 
 MAPPING_SEP: Final = " \u2194 "
 """LEFT RIGHT ARROW (U+2194) with single spaces, for cross-topic mapping lines (TG-13)."""
-
-EXTENSION_MARKER: Final = " *(topic-specific extension)*"
-"""Appended after the backticked tag with **no** dash (TG-13, GE-24)."""
 
 ROOT_TOPIC_ANNOTATION: Final = f"{TAG_DEF_SEP}root topic"
 """The annotation a topic section's root node carries (GE-23)."""
@@ -533,9 +529,9 @@ def render_tag_tree(
 
     One line per node: ``- `` marker, the **full dotted tag** in backticks, then the caller's
     annotation verbatim; ``INDENT`` (4 spaces) per level below the section root. The renderer knows
-    nothing about root topics, extension folders or static definitions — ``annotations`` maps a full
-    tag to an already-formatted suffix (``ROOT_TOPIC_ANNOTATION``, :data:`EXTENSION_MARKER`,
-    :data:`STATIC_ANNOTATIONS`), which keeps this function pure and the semantics in the generators.
+    nothing about root topics or static definitions — ``annotations`` maps a full tag to an
+    already-formatted suffix (``ROOT_TOPIC_ANNOTATION``, :data:`STATIC_ANNOTATIONS`), which keeps
+    this function pure and the semantics in the generators.
 
     Siblings are re-sorted here as well as at build time, so output is invariant to input order
     (GE-32). Returns lines without terminators; the caller joins them (GE-7, GE-9).

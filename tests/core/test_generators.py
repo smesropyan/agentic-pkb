@@ -33,7 +33,6 @@ import os
 import re
 import sys
 import tempfile
-import time
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 
@@ -56,9 +55,8 @@ from pkb.core.generators import (
     topic_index_findings,
 )
 from pkb.core.generators.tags_registry import MAPPINGS_HEADING
-from pkb.core.models import FileClass
 from pkb.core.scan import scan
-from tests.core.conftest import SAMPLE_KB_FILES, reversed_directory_order, write_kb
+from tests.core.conftest import SAMPLE_KB_FILES, write_kb
 
 GOLDEN = Path(__file__).parent / "golden"
 
@@ -326,17 +324,6 @@ def test_only_the_generators_write_derived_paths_ge1() -> None:
     assert offenders == []
 
 
-@pytest.mark.superseded
-def test_exactly_three_generators_exist_ge1() -> None:
-    """Three ``render_*``/``generate_*`` pairs, one per derived artifact (GE-1)."""
-    from pkb.core import generators
-
-    rendered = {name for name in dir(generators) if name.startswith("render_")}
-    generated = {name for name in dir(generators) if name.startswith("generate_")}
-    assert rendered == {"render_root_index", "render_root_tags", "render_topic_index"}
-    assert generated == {"generate_root_index", "generate_root_tags", "generate_topic_index"}
-
-
 def test_derived_files_are_replaced_wholesale_ge2(tmp_path: Path) -> None:
     """Garbage in a derived file is never read, merged or preserved (GE-2)."""
     kb = write_kb(tmp_path / "KB", SAMPLE_KB_FILES)
@@ -386,79 +373,6 @@ def _render_all(kb: Path) -> str:
     parts = [render_root_tags(snapshot)]
     parts += [render_topic_index(snapshot, path) for path in snapshot.topics]
     return "\n".join(parts)
-
-
-@pytest.mark.superseded
-def test_generation_is_byte_deterministic_ge4(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Same tree, four hostile conditions, one identical byte string (GE-4, PA-18)."""
-    here = write_kb(tmp_path / "a" / "KB", SAMPLE_KB_FILES)
-    elsewhere = write_kb(tmp_path / "b" / "deeper" / "Knowledge Base", SAMPLE_KB_FILES)
-    baseline = _render_all(here)
-
-    assert _render_all(elsewhere) == baseline  # independent of the absolute KB root
-
-    with reversed_directory_order():
-        assert _render_all(here) == baseline  # independent of filesystem iteration order
-
-    for zone in ("UTC", "Pacific/Auckland"):
-        monkeypatch.setenv("TZ", zone)
-        time.tzset()
-        assert _render_all(here) == baseline  # independent of the timezone
-    monkeypatch.delenv("TZ", raising=False)
-    time.tzset()
-
-
-@pytest.mark.superseded
-def test_regeneration_is_idempotent_ge5(tmp_path: Path) -> None:
-    """A second consecutive flush writes zero files (GE-5, GE-8)."""
-    kb = write_kb(tmp_path / "KB", SAMPLE_KB_FILES)
-    first = regenerate_all(kb)
-    second = regenerate_all(kb)
-
-    assert len(first.written) == 5  # root index + root tags + three topic indexes
-    assert second.written == []
-    assert sorted(second.unchanged) == sorted(first.written)
-
-
-def _markdown_bytes(kb: Path) -> dict[str, bytes]:
-    """Every markdown file in the tree, keyed by its **KB-relative** path (GE-5, GE-3, CX-4).
-
-    Keyed by path and not by ``path.name``: the sample KB holds 21 markdown files under 11 distinct
-    basenames (4x ``index.md``, 6x ``summary.md``, 3x ``topic.md``), so a basename-keyed dict
-    silently compares one arbitrary survivor per collision — and ``Path.glob`` is scandir-ordered,
-    so *which* survivor is filesystem-dependent. A missing file is then a key-set difference rather
-    than an invisible one, which is what makes this a real check of CX-4's "deleting all derived
-    files and running ``regenerate_all`` restores them byte-identically".
-    """
-    return {
-        path.relative_to(kb).as_posix(): path.read_bytes() for path in sorted(kb.glob("**/*.md"))
-    }
-
-
-@pytest.mark.superseded
-def test_a_rebuild_from_nothing_equals_a_rebuild_over_the_derived_files_ge5_ge3(
-    tmp_path: Path,
-) -> None:
-    """Derived files are output, never input: deleting them changes nothing (GE-3, GE-5).
-
-    The other half of GE-5 — that a full rebuild equals an *incremental flush* — needs the flush
-    itself and lives in ``tests/core/test_maintenance.py``:
-    ``test_a_full_rebuild_equals_an_incremental_flush_ge5``. Both halves matter, because the flush
-    renders a section (``## Maintenance flags``) that a bare rebuild has to reproduce byte for byte
-    or whichever ran last silently wins.
-    """
-    kb = write_kb(tmp_path / "KB", SAMPLE_KB_FILES)
-    regenerate_all(kb)
-    intact = _markdown_bytes(kb)
-    assert len(intact) == 21  # every file is compared, not one per basename
-
-    for derived in [kb / "index.md", kb / "tags.md", *kb.glob("**/index.md")]:
-        derived.unlink(missing_ok=True)
-    regenerate_all(kb)
-
-    assert _markdown_bytes(kb) == intact
 
 
 _ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -522,25 +436,6 @@ def test_write_derived_skips_an_identical_write_ge8(tmp_path: Path) -> None:
     assert target.read_text(encoding="utf-8") == "# two\n"
 
 
-@pytest.mark.superseded
-def test_an_unnameable_extension_folder_still_gets_a_heading_ge7(tmp_path: Path) -> None:
-    """A folder name that inlines to nothing must not render a bare ``## `` (GE-7, PA-18).
-
-    Two of them, because the fallback has to keep the sections distinguishable: a generic literal
-    would collapse both into one heading and leave a reader unable to tell which bullets belong
-    where. The percent-encoded name is what the section's own bullets already link to (PA-18).
-    """
-    kb = write_kb(tmp_path / "KB", UNNAMEABLE_FOLDER_KB_FILES)
-    text = render_topic_index(scan(kb), "Physics")
-    headings = [line for line in text.split("\n") if line.startswith("##")]
-
-    assert "## " not in headings
-    assert "## %20" in headings
-    assert "## %C2%A0" in headings
-    assert "](%20/alpha.md)" in text  # the heading names the folder its links point into
-    assert "](%C2%A0/beta.md)" in text
-
-
 def test_write_derived_leaves_no_temp_files_ge8(tmp_path: Path) -> None:
     """The atomic rename cleans up after itself (GE-8)."""
     base.write_derived(tmp_path / "index.md", "# one\n")
@@ -577,30 +472,6 @@ def test_write_derived_refuses_a_case_variant_collision_pa17(tmp_path: Path) -> 
     assert sorted(path.name for path in tmp_path.iterdir()) == ["INDEX.md"]
 
 
-@pytest.mark.superseded
-def test_a_case_variant_collision_flags_without_aborting_the_flush_pa17(tmp_path: Path) -> None:
-    """The refusal costs one derived file and one finding, not the flush (PA-17, MA-9, MA-14)."""
-    if not _case_insensitive(tmp_path):
-        pytest.skip("case-sensitive filesystem: the two names cannot collide here")
-
-    kb = write_kb(tmp_path / "KB", SAMPLE_KB_FILES)
-    authored = kb / "Cooking" / "INDEX.md"
-    authored.write_bytes(b'---\ntitle: "Index cards"\n---\n\nTen years of notes.\n')
-    before = authored.read_bytes()
-
-    report = regenerate_all(kb)
-
-    assert authored.read_bytes() == before  # human content survives a flush (MA-5, §5)
-    assert "Cooking/index.md" not in report.written
-    assert "Cooking/index.md" not in report.unchanged
-    collisions = [f for f in report.findings if f.code == "DERIVED_NAME_CASE_COLLISION"]
-    assert [f.path for f in collisions] == ["Cooking/index.md"]
-    # The fix is a rename, so the finding must say so rather than blame the directory (PA-17, CX-6).
-    assert "rename" in (collisions[0].hint or "")
-    # MA-14: every other derived file is still regenerated.
-    assert {"index.md", "tags.md", "BBQ/index.md"} <= set(report.written)
-
-
 def test_renderers_perform_no_io_ge9(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Every ``render_*`` runs with the filesystem taken away (GE-9)."""
     kb = write_kb(tmp_path / "KB", SAMPLE_KB_FILES)
@@ -635,37 +506,6 @@ def _changed_lines(before: str, after: str) -> int:
 # --------------------------------------------------------------------------------------
 # GE-14 … GE-18 — the topic index
 # --------------------------------------------------------------------------------------
-
-
-@pytest.mark.superseded
-def test_every_content_file_appears_exactly_once_ge14(tmp_path: Path) -> None:
-    """Each non-excluded markdown file of the topic gets exactly one bullet (GE-14, GE-25)."""
-    kb = write_kb(tmp_path / "KB", SAMPLE_KB_FILES)
-    snapshot = scan(kb)
-    text = render_topic_index(snapshot, "Cooking")
-
-    expected = [
-        "topic.md",
-        "notes/summary.md",
-        "notes/grill-performance-in-windy-conditions.md",
-        "notes/old-idea/old-idea.md",
-        "references/summary.md",
-        "references/grill-basics/grill-basics.md",
-        "recipes/ribeye-on-gas.md",
-    ]
-    for relative in expected:
-        assert text.count(f"]({relative})") == 1, relative
-    # The conflicted note is the one deliberate exception: once as an item, once under Needs
-    # review, because an agent scanning either section must find it.
-    assert text.count("](notes/preheat-the-grill.md)") == 2
-
-    # The list above is exhaustive: nothing the snapshot calls authored markdown is missing from it.
-    indexed = {
-        record.path
-        for record in snapshot.files_in_topic("Cooking")
-        if record.is_markdown and record.file_class is FileClass.AUTHORED
-    }
-    assert indexed == {f"Cooking/{r}" for r in (*expected, "notes/preheat-the-grill.md")}
 
 
 def test_topic_index_exclusions_ge15(tmp_path: Path) -> None:
@@ -858,22 +698,6 @@ def test_root_tags_literals_ge21(tmp_path: Path) -> None:
     assert render_root_tags(scan(kb)) == text
 
 
-@pytest.mark.superseded
-def test_root_tags_section_order_ge22(tmp_path: Path) -> None:
-    """topic sections (sorted) → type → status → domain → mappings (GE-22, C15)."""
-    text = render_root_tags(scan(write_kb(tmp_path / "KB", SAMPLE_KB_FILES)))
-    headings = [line for line in text.split("\n") if line.startswith("## ")]
-    assert headings == [
-        "## Namespace: topic.bbq",
-        "## Namespace: topic.cooking",
-        "## Namespace: type",
-        "## Namespace: status",
-        "## Namespace: domain",
-        f"## {MAPPINGS_HEADING}",
-    ]
-    assert "## Namespace: topic.cooking.grilling" not in text  # sub-topics get no H2
-
-
 def test_tag_tree_renders_the_full_chain_ge23(tmp_path: Path) -> None:
     """A single four-level tag renders four nodes; removing it removes all four (GE-23)."""
     files = {
@@ -893,33 +717,6 @@ def test_tag_tree_renders_the_full_chain_ge23(tmp_path: Path) -> None:
 
     (kb / "Cooking" / "notes" / "gas.md").unlink()
     assert _block(render_root_tags(scan(kb)), "Namespace: topic.cooking") == [root_topic]
-
-
-@pytest.mark.superseded
-def test_extension_marker_follows_the_folder_ge24(tmp_path: Path) -> None:
-    """The marker is derived from the tree: delete the folder and it goes, the node stays (GE-24)."""
-    kb = write_kb(tmp_path / "KB", SAMPLE_KB_FILES)
-    marked = "- `topic.cooking.recipes`" + tags.EXTENSION_MARKER
-    assert marked in render_root_tags(scan(kb))
-
-    # Move the recipe out of recipes/ so the tag survives while the directory does not.
-    recipe = kb / "Cooking" / "recipes" / "ribeye-on-gas.md"
-    (kb / "Cooking" / "notes" / "ribeye-on-gas.md").write_bytes(recipe.read_bytes())
-    recipe.unlink()
-    (kb / "Cooking" / "recipes").rmdir()
-
-    text = render_root_tags(scan(kb))
-    assert tags.EXTENSION_MARKER not in text
-    assert "`topic.cooking.recipes`" in text
-
-
-@pytest.mark.superseded
-def test_static_definitions_are_always_rendered_ge29(tmp_path: Path) -> None:
-    """``type`` and ``status`` are generator text, identical for an empty and a full KB (C17)."""
-    empty = render_root_tags(scan(_mkdir(tmp_path / "Empty")))
-    full = render_root_tags(scan(write_kb(tmp_path / "KB", SAMPLE_KB_FILES)))
-    for namespace in ("Namespace: type", "Namespace: status"):
-        assert _block(empty, namespace) == _block(full, namespace)
 
 
 # --------------------------------------------------------------------------------------
@@ -1075,41 +872,6 @@ def test_bullet_tags_are_sorted_independently_of_frontmatter_ge27(tmp_path: Path
 # --------------------------------------------------------------------------------------
 
 
-@pytest.mark.superseded
-def test_derived_set_holds_no_conflict_history_ge28(tmp_path: Path) -> None:
-    """Resolving a conflict leaves no trace of it in any derived file (GE-28)."""
-    kb = write_kb(tmp_path / "KB", SAMPLE_KB_FILES)
-    regenerate_all(kb)
-    assert sorted(paths.rel(kb, path) for path in _derived_files(kb)) == [
-        "BBQ/index.md",
-        "Cooking/index.md",
-        "Cooking/sub-topics/Grilling/index.md",
-        "index.md",
-        "tags.md",
-    ]
-
-    note = kb / "Cooking" / "notes" / "preheat-the-grill.md"
-    note.write_text(
-        note.read_text(encoding="utf-8")
-        .replace("status.conflict-review", "status.approved")
-        .replace(
-            "review_note: \"Reference 'Grill Basics' says preheat for 10 min. Note says 15 min.\"\n",
-            "",
-        ),
-        encoding="utf-8",
-    )
-    regenerate_all(kb)
-
-    for derived in _derived_files(kb):
-        text = derived.read_text(encoding="utf-8")
-        assert "Needs review" not in text
-        assert "says preheat for 10 min" not in text  # the review note left no residue
-        if derived.name == paths.INDEX_FILE:
-            # `status.conflict-review` survives only in tags.md's static vocabulary block (TG-12),
-            # which is generator text and not a record that a conflict happened.
-            assert "conflict" not in text.lower()
-
-
 def test_empty_kb_generates_one_file_ge29(tmp_path: Path) -> None:
     """An empty KB yields the one root artifact and no topic index (GE-29, T-37)."""
     kb = _mkdir(tmp_path / "Empty")
@@ -1134,28 +896,6 @@ def test_regenerate_all_accepts_a_prepared_snapshot_ge30(tmp_path: Path) -> None
     snapshot = scan(kb)
     assert regenerate_all(kb, snapshot=snapshot).written
     assert regenerate_all(kb, snapshot=snapshot).written == []
-
-
-@pytest.mark.superseded
-def test_an_unwritable_topic_does_not_abort_the_flush_ma14(tmp_path: Path) -> None:
-    """One unwritable directory is reported; every other derived file is still regenerated."""
-    kb = write_kb(tmp_path / "KB", SAMPLE_KB_FILES)
-    locked = kb / "BBQ"
-    locked.chmod(0o555)
-    try:
-        report = regenerate_all(kb)
-    finally:
-        locked.chmod(0o755)
-
-    assert [f.code for f in report.findings if f.severity is Severity.ERROR] == [
-        "DERIVED_WRITE_FAILED"
-    ]
-    assert sorted(report.written) == [
-        "Cooking/index.md",
-        "Cooking/sub-topics/Grilling/index.md",
-        "index.md",
-        "tags.md",
-    ]
 
 
 def test_generate_topic_index_refuses_the_kb_root_pa2(tmp_path: Path) -> None:

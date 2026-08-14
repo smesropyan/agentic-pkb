@@ -98,45 +98,6 @@ def test_deleting_a_breadth_summary_is_reported_by_validate_tree_sc1(tmp_path: P
     assert [(f.rule_id, f.path) for f in findings] == [("SC-1", "Cooking/notes/summary.md")]
 
 
-@pytest.mark.superseded
-def test_scaffold_creates_no_optional_members_sc4(tmp_path: Path) -> None:
-    kb = make_kb(tmp_path)
-    cooking(kb, regenerate=True)
-    topic = kb / "Cooking"
-
-    assert not (topic / paths.EXPERT_FILE).exists()
-    assert not (topic / paths.SKILLS_DIR).exists()
-    assert not (topic / paths.SUBTOPICS_DIR).exists()
-    assert paths.extension_folders(topic) == []
-    assert validate_tree(kb) == []  # not even a warning about what is missing
-
-
-# --------------------------------------------------------------------------------------
-# SC-2 — the placeholder topic.md makes the topic addressable
-# --------------------------------------------------------------------------------------
-
-
-@pytest.mark.superseded
-def test_scaffolded_topic_is_discoverable_and_catalogued_sc2(tmp_path: Path) -> None:
-    kb = make_kb(tmp_path)
-    cooking(kb, regenerate=True)
-
-    assert paths.find_topic_roots(kb) == [kb / "Cooking"]
-    assert paths.agent_id_for(kb, kb / "Cooking") == "topic/cooking"
-
-    meta = frontmatter.parse((kb / "Cooking" / paths.TOPIC_FILE).read_text(encoding="utf-8")).meta
-    assert meta is not None
-    assert meta.title == "Cooking"
-    assert meta.description == COOKING
-    assert meta.topic == "Cooking"
-    assert meta.tags == ("topic.cooking", "type.summary", "status.draft")
-    assert meta.created == meta.updated == TODAY
-    assert meta.source_type == "summary"
-
-    catalog = (kb / paths.INDEX_FILE).read_text(encoding="utf-8")
-    assert f"- [Cooking](Cooking/{paths.TOPIC_FILE}) `topic/cooking`" in catalog
-
-
 # --------------------------------------------------------------------------------------
 # SC-3 — every placeholder validates
 # --------------------------------------------------------------------------------------
@@ -305,21 +266,6 @@ def test_a_nested_topic_must_go_through_sub_topics_pa4(tmp_path: Path, location:
 # --------------------------------------------------------------------------------------
 # SC-7 — regeneration is part of the operation
 # --------------------------------------------------------------------------------------
-
-
-@pytest.mark.superseded
-def test_scaffold_regenerates_derived_files_in_the_same_operation_sc7(tmp_path: Path) -> None:
-    kb = make_kb(tmp_path)
-    result = scaffold_topic(
-        kb, "Cooking", title="Cooking", description=COOKING, today=TODAY, regenerate=True
-    )
-
-    assert result.flush is not None
-    assert result.flush.written == ["index.md", "tags.md", "Cooking/index.md"]
-    assert (kb / "Cooking" / paths.INDEX_FILE).is_file()
-    assert "Cooking" in (kb / paths.INDEX_FILE).read_text(encoding="utf-8")
-    # None of it came from the scaffolder itself.
-    assert paths.INDEX_FILE not in {Path(p).name for p in result.created}
 
 
 def test_scaffold_without_regeneration_writes_no_derived_file_sc7(tmp_path: Path) -> None:

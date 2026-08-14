@@ -22,7 +22,6 @@ from hypothesis import strategies as st
 from pkb.core import paths
 from pkb.core.errors import NotATopicRootError
 from pkb.core.models import FileClass, FileRole
-from pkb.core.scan import scan
 
 TAG_SEGMENT_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
@@ -166,30 +165,6 @@ def test_discovery_never_descends_into_structural_dirs_pa5(kb: Path) -> None:
     )
 
 
-@pytest.mark.superseded
-def test_a_directory_symlink_is_never_a_walk_target_pa5_ge5(kb: Path) -> None:
-    """``DirEntry.is_dir()`` follows links; a followed link aliases a topic root (GE-5).
-
-    ``AAA -> Cooking`` would otherwise be listed as a directory, discovered as a *second* topic root
-    holding the same ``topic.md``, and split Cooking's files across two addresses — after which no
-    regeneration ever converges.
-    """
-    try:
-        (kb / "AAA").symlink_to(kb / "Cooking")
-        (kb / "Cooking" / "self").symlink_to(kb / "Cooking")
-    except (OSError, NotImplementedError):  # pragma: no cover - host without symlink privileges
-        pytest.skip("this host cannot create symlinks")
-
-    assert paths.find_topic_roots(kb) == [
-        kb / "BBQ",
-        kb / "Cooking",
-        kb / "Cooking" / "sub-topics" / "Grilling",
-    ]
-    assert paths.find_topic_roots(kb, include_misplaced=True) == paths.find_topic_roots(kb)
-    # A link is not an extension folder either — PA-7 is about directories the walk owns.
-    assert paths.extension_folders(kb / "Cooking") == ["recipes"]
-
-
 def test_structural_dirs_contribute_no_tag_segment_pa6(kb: Path) -> None:
     assert sorted(paths.STRUCTURAL_DIRS) == [
         "media",
@@ -215,15 +190,6 @@ def test_structural_dirs_contribute_no_tag_segment_pa6(kb: Path) -> None:
         nested = write(kb / "BBQ" / structural / "Deep" / "topic.md").parent
         assert paths.topic_tag_for(kb, nested) == "topic.bbq.deep"
         assert paths.agent_id_for(kb, nested) == "topic/bbq/deep"
-
-
-@pytest.mark.superseded
-def test_extension_folders_are_open_set_pa7(kb: Path) -> None:
-    write(kb / "Cooking" / "Recipe Archive" / "x.md")
-    write(kb / "Cooking" / ".obsidian" / "config")
-    write(kb / "Cooking" / "__pycache__" / "x.pyc")
-    assert paths.extension_folders(kb / "Cooking") == ["Recipe Archive", "recipes"]
-    assert paths.extension_folders(kb / "BBQ") == []
 
 
 # --------------------------------------------------------------------------------------
@@ -317,41 +283,6 @@ def test_agent_ids_are_bijective_with_topic_paths_pa10(kb: Path) -> None:
         paths.topic_path_for_agent_id(kb, "topic/atlantis")
 
 
-@pytest.mark.superseded
-def test_every_published_topic_round_trips_pa9_pa10_va36(kb: Path) -> None:
-    """Both inverses must resolve against the set the snapshot publishes, not a narrower one.
-
-    A topic root outside ``sub-topics/`` is a VA-36 warning, never a disappearance: the catalog
-    renders its link, its tag and its backticked agent id, so an id the shipped resolver refuses to
-    invert is a routing dead end handed straight to Layer 2. Resolving the two halves of the
-    bijection over different topic sets is exactly how that happens.
-    """
-    write(kb / "Cooking" / "notes" / "Smuggled" / "topic.md")
-    write(kb / "Cooking" / "references" / "Borrowed" / "topic.md")
-    write(kb / "Cooking" / "media" / "Framed" / "topic.md")
-    write(kb / "Cooking" / "skills" / "Hidden" / "topic.md")
-    write(kb / "Cooking" / "recipes" / "Braising" / "topic.md")
-
-    published = scan(kb).topics
-    discovered = paths.find_topic_roots(kb, include_misplaced=True)
-    assert {paths.rel(kb, topic) for topic in discovered} == set(published)
-    assert len(published) == 6
-    # PA-5 and VA-6 close media/ and skills/ to discovery on *both* sides, so a topic.md there is
-    # published by neither walk. The set equality above is the load-bearing assertion: the two walks
-    # have to narrow together, exactly as they would have to widen together.
-    assert "Cooking/media/Framed" not in published
-    assert "Cooking/skills/Hidden" not in published
-
-    for rel_path, record in published.items():
-        topic = kb / rel_path
-        assert paths.topic_tag_for(kb, topic) == record.tag
-        assert paths.agent_id_for(kb, topic) == record.agent_id
-        assert paths.path_for_topic_tag(kb, record.tag) == topic
-        assert paths.topic_path_for_agent_id(kb, record.agent_id) == topic
-        segments = record.tag.split(".")[1:]
-        assert not paths.STRUCTURAL_DIRS.intersection(segments)
-
-
 # --------------------------------------------------------------------------------------
 # PA-11 / PA-12 — derived by name vs written by a generator
 # --------------------------------------------------------------------------------------
@@ -387,7 +318,6 @@ def test_is_derived_name_matches_the_deny_globs_pa11(
 @pytest.mark.parametrize(
     ("rel_path", "expected"),
     [
-        pytest.param("index.md", True, marks=pytest.mark.superseded),
         ("tags.md", True),
         ("Cooking/index.md", True),
         ("Cooking/sub-topics/Grilling/index.md", True),
@@ -396,7 +326,6 @@ def test_is_derived_name_matches_the_deny_globs_pa11(
         ("Cooking/topic.md", False),
     ],
     ids=[
-        "pa12-root-index",
         "pa12-root-tags",
         "pa12-topic-index",
         "pa12-subtopic-index",
@@ -409,26 +338,6 @@ def test_is_generated_is_the_generator_owned_set_pa12(
     kb: Path, rel_path: str, expected: bool
 ) -> None:
     assert paths.is_generated(kb, kb / rel_path) is expected
-
-
-@pytest.mark.superseded
-def test_derived_and_generated_are_different_sets_pa11_pa12(kb: Path) -> None:
-    """C14: the deny set is wider than the generated set, in both directions."""
-    stale = write(kb / "Cooking" / "notes" / "old-idea" / "index.md")
-    assert paths.is_derived_name(kb, stale) is True
-    assert paths.is_generated(kb, stale) is False
-
-    topic_tags = write(kb / "Cooking" / "tags.md")
-    assert paths.is_derived_name(kb, topic_tags) is False
-    assert paths.is_generated(kb, topic_tags) is False
-
-    generated = [path for path in sorted(kb.rglob("*.md")) if paths.is_generated(kb, path)]
-    assert generated == [
-        kb / "Cooking" / "index.md",
-        kb / "Cooking" / "sub-topics" / "Grilling" / "index.md",
-        kb / "index.md",
-        kb / "tags.md",
-    ]
 
 
 # --------------------------------------------------------------------------------------
@@ -728,12 +637,6 @@ def test_reserved_name_as_item_is_detectable_pa19(kb: Path) -> None:
         # test_tree_rules.py), which ``classify`` alone cannot see.
         ("Cooking/recipes/summary.md", FileRole.UNKNOWN, FileClass.AUTHORED),
         ("Cooking/recipes/ribeye-on-gas.md", FileRole.UNKNOWN, FileClass.AUTHORED),
-        pytest.param(
-            "Cooking/recipes/ribeye/media/a.png",
-            FileRole.ASSET,
-            FileClass.ASSET,
-            marks=pytest.mark.superseded,
-        ),
         ("Cooking/scratch.md", FileRole.UNKNOWN, FileClass.AUTHORED),
         ("Cooking/tags.md", FileRole.UNKNOWN, FileClass.AUTHORED),
         ("Cooking/sub-topics/Grilling/topic.md", FileRole.TOPIC_OVERVIEW, FileClass.AUTHORED),
@@ -764,7 +667,6 @@ def test_reserved_name_as_item_is_detectable_pa19(kb: Path) -> None:
         "reference-source-file-va24",
         "extension-summary-va13",
         "extension-item-va13",
-        "extension-media-asset",
         "loose-topic-root-file-va38",
         "topic-tags-file-va27",
         "subtopic-overview",

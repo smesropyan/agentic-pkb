@@ -35,7 +35,6 @@ from pkb.core.scan import scan
 from tests.core.conftest import SAMPLE_KB_FILES, write_kb
 
 TODAY = date(2025, 3, 4)
-GOLDEN = Path(__file__).parent / "golden"
 SOURCE = Path(maintenance.__file__).read_text(encoding="utf-8")
 """``maintenance.py`` alone — MA-15's no-lock assertion is about this module, not the package."""
 
@@ -129,52 +128,6 @@ def changed_lines(before: bytes, after: bytes) -> list[str]:
 # --------------------------------------------------------------------------------------
 # MA-1, MA-2 — the six duties and their order
 # --------------------------------------------------------------------------------------
-
-
-@pytest.mark.superseded
-def test_flush_performs_the_six_duties_in_order_ma1(
-    sample_kb: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A spy records every sub-operation the flush is defined as (MA-1) and their order (MA-2)."""
-    calls: list[str] = []
-
-    def spy(label: str, attribute: str) -> None:
-        real = getattr(maintenance, attribute)
-
-        def wrapper(*args: object, **kwargs: object) -> object:
-            calls.append(label)
-            return real(*args, **kwargs)
-
-        monkeypatch.setattr(maintenance, attribute, wrapper)
-
-    spy("bump", "_bump_updated")
-    spy("links", "find_broken_links")
-    spy("orphans", "find_orphans")
-    spy("regenerate", "regenerate_all")
-    spy("requests", "build_scan_requests")
-
-    flush(sample_kb, ["Cooking/notes/summary.md"], today=TODAY)
-
-    assert calls == ["bump", "links", "orphans", "regenerate", "requests"]
-
-
-@pytest.mark.superseded
-def test_flush_regenerates_every_derived_file_ma1(sample_kb: Path) -> None:
-    """Duties 1-3: the topic indexes, the root registry and the root catalog all get written."""
-    report = flush(sample_kb, today=TODAY)
-
-    assert sorted(report.derived) == sorted(
-        [
-            "BBQ/index.md",
-            "Cooking/index.md",
-            "Cooking/sub-topics/Grilling/index.md",
-            "index.md",
-            "tags.md",
-        ]
-    )
-    assert (sample_kb / "Cooking/index.md").read_bytes() == (
-        GOLDEN / "cooking_index.md"
-    ).read_bytes()
 
 
 def test_timestamps_are_bumped_before_anything_is_rendered_ma2(tmp_path: Path) -> None:
@@ -437,22 +390,6 @@ def test_the_only_frontmatter_field_ever_written_is_updated_ma6() -> None:
     ]
 
     assert written == ["updated"]
-
-
-@pytest.mark.superseded
-def test_flush_leaves_a_conflicted_files_tags_byte_identical_ma6(sample_kb: Path) -> None:
-    """Conflict tagging is Layer 2's judgment; clearing it is the human's decision."""
-    conflicted = "Cooking/notes/preheat-the-grill.md"
-    before = (sample_kb / conflicted).read_text(encoding="utf-8")
-
-    flush(sample_kb, [conflicted], today=TODAY)
-
-    after = (sample_kb / conflicted).read_text(encoding="utf-8")
-    assert "status.conflict-review" in after
-    assert after.count("review_note:") == 1
-    assert [line for line in after.splitlines() if not line.startswith("updated:")] == [
-        line for line in before.splitlines() if not line.startswith("updated:")
-    ]
 
 
 # --------------------------------------------------------------------------------------
@@ -884,10 +821,9 @@ def test_scaffolding_a_topic_leaves_another_topics_index_byte_identical_ge5(tmp_
 # `test_requests_are_one_per_topic_in_discovery_order_ma12`) tested symbols this module no longer
 # defines at all — not merely superseded behaviour but code that does not exist — so Task 9 removes
 # them here rather than leaving them for Task 11's broader sweep, the same way Task 4 retired
-# `STATUS_DEFINITIONS`'s tests when it deleted the vocabulary. `flush`'s own six-duties spy above
-# still names `"build_scan_requests"` as a bare string passed to `getattr`/`monkeypatch.setattr`, so
-# it stays collectible (superseded, unexecuted) without a further edit; Task 11 retires it with the
-# rest of that marker's sweep.
+# `STATUS_DEFINITIONS`'s tests when it deleted the vocabulary. `flush`'s own six-duties spy that
+# named `"build_scan_requests"` as a bare string passed to `getattr`/`monkeypatch.setattr` was
+# itself `@pytest.mark.superseded`, and Task 11 deletes it with the rest of that marker's sweep.
 
 
 def test_a_request_can_carry_an_empty_changed_set_ma12(sample_kb: Path) -> None:
@@ -938,17 +874,6 @@ def test_flush_survives_a_broken_tree_and_reports_it_ma14(tmp_path: Path) -> Non
     assert (root / "Cooking/index.md").exists()
     assert "Half" in (root / "Cooking/index.md").read_text(encoding="utf-8")
     assert flush(root, today=TODAY).written == [], "a second flush over the same tree is a no-op"
-
-
-@pytest.mark.superseded
-def test_flush_over_an_empty_knowledge_base_ma14(empty_kb: Path) -> None:
-    """A directory with no topics is a valid knowledge base, not a failure (GE-29)."""
-    report = flush(empty_kb, ["nothing.md"], today=TODAY)
-
-    assert report.written == ["index.md", "tags.md"]
-    assert report.stamped == []
-    assert report.scan_requests == []
-    assert report.findings == []
 
 
 def test_flush_is_safe_to_run_twice_ma14(sample_kb: Path) -> None:

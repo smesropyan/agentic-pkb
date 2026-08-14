@@ -1,8 +1,9 @@
 """Rules covered: PA-1, PA-3, PA-5, PA-7, PA-9, PA-10, PA-13, PA-15, PA-16, FM-14, GE-3, GE-4,
 GE-5, GE-15, GE-25, GE-27, GE-29, VA-6, VA-36, VA-39, CX-5, MA-14.
 
-The fixture knowledge base itself lives in ``conftest.py``; the last test in this file pins it,
-because every later phase's golden output is rendered from it.
+The fixture knowledge base itself lives in ``conftest.py``. ``tests/core/test_design_example.py``
+is what pins its shape against DESIGN §1.6 now; every later phase's golden output is still rendered
+from it.
 """
 
 from __future__ import annotations
@@ -187,46 +188,6 @@ def test_record_only_dirs_is_structural_minus_the_three_topic_routes_pa5_va36() 
     }
 
 
-@pytest.mark.superseded
-def test_media_and_skills_yield_files_but_never_a_topic_root_pa5_ge15(tmp_path: Path) -> None:
-    """The walk enters ``media/`` and ``skills/`` to *record*, never to *discover* (PA-5, GE-15).
-
-    Promoting a smuggled ``topic.md`` there is not a cosmetic slip: the topic gets a ``topic.*`` tag
-    and an agent id (VA-6 forbids skills participating in tag generation at all), the root catalog
-    routes to it, and ``regenerate_all`` writes a derived ``index.md`` *into the human's media or
-    skills folder* — which GE-15 lists among the topic-index exclusions. VA-36 re-opens discovery
-    for exactly three routes, ``notes/``, ``references/`` and an extension folder, and names neither
-    of these two.
-    """
-    kb = _smuggled_topics_kb(tmp_path / "KB")
-    snapshot = scan(kb)
-
-    assert list(snapshot.topics) == [
-        "Cooking",
-        "Cooking/notes/Smoking",
-        "Cooking/recipes/Braising",
-        "Cooking/references/Borrowed",
-        "Cooking/sub-topics/Grilling",
-    ]
-    # No address may route through a directory the walk does not discover through.
-    for topic in snapshot.topics.values():
-        assert paths.STRUCTURAL_DIRS.isdisjoint(topic.tag.split(".")[1:])
-        assert paths.STRUCTURAL_DIRS.isdisjoint(topic.agent_id.split("/")[1:])
-
-    # The other concern, kept: every file under those directories is still recorded, because
-    # orphan and link analysis need them (GE-15) and a dropped file is invisible to every agent.
-    for smuggled in (
-        "skills/voice/SKILL.md",
-        "skills/voice/topic.md",
-        "Cooking/media/Framed/topic.md",
-        "Cooking/skills/voice/SKILL.md",
-        "Cooking/skills/voice/topic.md",
-        "Cooking/skills/voice/sub-topics/Deep/topic.md",
-        "Cooking/notes/trip/media/topic.md",
-    ):
-        assert smuggled in snapshot.files, smuggled
-
-
 def test_non_discovery_is_sticky_below_media_and_skills_pa5(tmp_path: Path) -> None:
     """``sub-topics/`` inside ``skills/`` is still inside ``skills/``.
 
@@ -286,14 +247,6 @@ def test_topic_record_parent_and_children_pa5(sample_kb: Path) -> None:
     assert snapshot.topic("Cooking/sub-topics/Grilling").parent == "Cooking"
     assert snapshot.topic("BBQ").children == ()
     assert [t.path for t in snapshot.top_level_topics()] == ["BBQ", "Cooking"]
-
-
-@pytest.mark.superseded
-def test_topic_record_extension_folders_pa7(sample_kb: Path) -> None:
-    snapshot = scan(sample_kb)
-
-    assert snapshot.topic("Cooking").extension_folders == ("recipes",)
-    assert snapshot.topic("BBQ").extension_folders == ()
 
 
 def test_topic_record_has_expert_pa13(sample_kb: Path) -> None:
@@ -626,67 +579,3 @@ def test_scan_is_total_over_a_degraded_tree_ma14(tmp_path: Path) -> None:
 
 def test_scan_is_repeatable(sample_kb: Path) -> None:
     assert fingerprint(scan(sample_kb)) == fingerprint(scan(sample_kb))
-
-
-# --------------------------------------------------------------------------------------
-# The shared fixture itself
-# --------------------------------------------------------------------------------------
-
-
-@pytest.mark.superseded
-def test_sample_kb_is_the_spec_fixture_ge31(sample_kb: Path) -> None:
-    """§4.1's tree, from which every later golden file is rendered."""
-    snapshot = scan(sample_kb)
-
-    assert snapshot.findings == ()
-    assert [(t.path, t.tag, t.agent_id) for t in snapshot.topics.values()] == [
-        ("BBQ", "topic.bbq", "topic/bbq"),
-        ("Cooking", "topic.cooking", "topic/cooking"),
-        ("Cooking/sub-topics/Grilling", "topic.cooking.grilling", "topic/cooking/grilling"),
-    ]
-    assert set(snapshot.files) == set(SAMPLE_KB_FILES)
-
-    cooking = snapshot.topic("Cooking")
-    assert cooking.meta is not None
-    assert cooking.meta.description == "Home cooking: technique, equipment, and recipes"
-
-    # The tags §4.4's registry renders come from these files and nowhere else.
-    used = {
-        tag
-        for record in snapshot.content_files()
-        for tag in (record.meta.tags if record.meta else ())
-    }
-    assert used == {
-        "domain.legal.compliance",
-        "status.approved",
-        "status.conflict-review",
-        "status.draft",
-        "topic.bbq",
-        "topic.bbq.equipment",
-        "topic.cooking",
-        "topic.cooking.grilling",
-        "topic.cooking.heat-management",
-        "topic.cooking.recipes",
-        "type.note",
-        "type.reference",
-        "type.summary",
-    }
-
-    # The open conflict §4.3's "Needs review" section renders.
-    preheat = snapshot.files["Cooking/notes/preheat-the-grill.md"].meta
-    assert preheat is not None
-    assert "status.conflict-review" in preheat.tags
-    assert preheat.review_note == (
-        "Reference 'Grill Basics' says preheat for 10 min. Note says 15 min."
-    )
-
-    # The two related_topics declarations §4.4's mappings aggregate.
-    declared = {
-        record.path: record.meta.related_topics
-        for record in snapshot.content_files()
-        if record.meta and record.meta.related_topics
-    }
-    assert declared == {
-        "Cooking/notes/grill-performance-in-windy-conditions.md": ("bbq.equipment",),
-        "Cooking/notes/preheat-the-grill.md": ("bbq.equipment",),
-    }

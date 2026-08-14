@@ -60,24 +60,6 @@ review_note: "Reference 'Grill Basics' says preheat for 10 min. Note says 15 min
 ---
 """
 
-REVIEWED_NOTE = """\
----
-title: "Preheat the grill"
-description: "How long to preheat the grill before cooking"
-topic: "Cooking"
-tags:
-  - topic.cooking.grilling
-  - topic.cooking.heat-management
-  - type.note
-  - status.approved
-created: 2024-10-15
-updated: 2024-12-17
-related_topics: [ bbq.equipment ]
-source_type: note
-last_reviewed: 2024-12-17
----
-"""
-
 DESIGN_BLOCKS = {
     "design_1_4": DESIGN_1_4,
 }
@@ -192,21 +174,6 @@ def test_required_fields_are_exactly_seven_fm2() -> None:
     assert len(fm.REQUIRED_FIELDS) == 7
 
 
-@pytest.mark.superseded
-def test_optional_fields_are_never_required_fm3() -> None:
-    assert sorted(fm.OPTIONAL_FIELDS) == ["last_reviewed", "related_topics", "review_note"]
-    assert not (fm.REQUIRED_FIELDS & fm.OPTIONAL_FIELDS)
-    assert fm.KNOWN_FIELDS == fm.REQUIRED_FIELDS | fm.OPTIONAL_FIELDS
-    assert set(fm.CANONICAL_ORDER) == fm.KNOWN_FIELDS
-
-    meta = _meta(MINIMAL_NOTE)
-    assert meta.related_topics == ()
-    assert meta.review_note is None
-    assert meta.last_reviewed is None
-    assert meta.bad_fields == ()
-    assert meta.unknown_fields == ()
-
-
 # --------------------------------------------------------------------------------------
 # FM-4 — field types
 # --------------------------------------------------------------------------------------
@@ -221,12 +188,6 @@ def test_optional_fields_are_never_required_fm3() -> None:
         ("tags:\n  - 12", "tags", "FIELD_TYPE"),
         ("related_topics: bbq", "related_topics", "FIELD_TYPE"),
         ("topic: true", "topic", "FIELD_TYPE"),
-        pytest.param(
-            'review_note: ""',
-            "review_note",
-            "EMPTY_FIELD",
-            marks=pytest.mark.superseded,
-        ),
         ("tags: []", "tags", "EMPTY_FIELD"),
         ('title: "   "', "title", "EMPTY_FIELD"),
     ],
@@ -237,7 +198,6 @@ def test_optional_fields_are_never_required_fm3() -> None:
         "non_string_tag_item_fm4",
         "scalar_related_topics_fm4",
         "boolean_topic_fm4",
-        "empty_review_note_fm4",
         "empty_tag_list_fm4",
         "blank_title_fm4",
     ],
@@ -252,33 +212,9 @@ def test_wrong_typed_field_becomes_a_problem_not_an_exception_fm4(
     assert field in meta.present_keys
 
 
-@pytest.mark.superseded
-def test_well_typed_fields_produce_no_problems_fm4() -> None:
-    meta = _meta(CONFLICT_TAGGED_NOTE)
-    assert meta.bad_fields == ()
-    assert meta.title == "Preheat the grill"
-    assert meta.tags == (
-        "topic.cooking.grilling",
-        "topic.cooking.heat-management",
-        "type.note",
-        "status.conflict-review",
-    )
-    assert meta.related_topics == ("bbq.equipment",)
-    assert meta.review_note == "Reference 'Grill Basics' says preheat for 10 min. Note says 15 min."
-
-
 # --------------------------------------------------------------------------------------
 # FM-5 — dates
 # --------------------------------------------------------------------------------------
-
-
-@pytest.mark.superseded
-def test_all_three_date_fields_parse_to_date_fm5() -> None:
-    meta = _meta("---\ncreated: 2024-10-15\nupdated: 2024-12-16\nlast_reviewed: 2024-12-17\n---\n")
-    assert meta.created == date(2024, 10, 15)
-    assert meta.updated == date(2024, 12, 16)
-    assert meta.last_reviewed == date(2024, 12, 17)
-    assert meta.bad_fields == ()
 
 
 def test_quoted_iso_date_string_is_accepted_fm5() -> None:
@@ -342,28 +278,6 @@ def test_unknown_source_type_survives_parsing_for_validation_fm6() -> None:
 # --------------------------------------------------------------------------------------
 # FM-7 / FM-8 — canonical serialization
 # --------------------------------------------------------------------------------------
-
-
-@pytest.mark.superseded
-def test_serialize_uses_the_canonical_key_order_fm7() -> None:
-    # Constructed in a deliberately scrambled order: the output order comes from CANONICAL_ORDER.
-    meta = Metadata(
-        review_note="Reference 'Grill Basics' says preheat for 10 min. Note says 15 min.",
-        source_type="note",
-        related_topics=("bbq.equipment",),
-        updated=date(2024, 12, 16),
-        created=date(2024, 10, 15),
-        tags=(
-            "topic.cooking.grilling",
-            "topic.cooking.heat-management",
-            "type.note",
-            "status.conflict-review",
-        ),
-        topic="Cooking",
-        description="How long to preheat the grill before cooking",
-        title="Preheat the grill",
-    )
-    assert fm.serialize(meta, "") == CONFLICT_TAGGED_NOTE
 
 
 def test_unknown_keys_serialize_after_the_known_ones_fm7() -> None:
@@ -440,49 +354,9 @@ def test_unknown_keys_are_preserved_and_listed_fm10() -> None:
     assert fm.parse(rendered).raw == doc.raw
 
 
-@pytest.mark.superseded
-def test_a_known_key_is_never_reported_as_unknown_fm10() -> None:
-    meta = _meta(REVIEWED_NOTE)
-    assert meta.unknown_fields == ()
-    assert meta.present_keys == (
-        "title",
-        "description",
-        "topic",
-        "tags",
-        "created",
-        "updated",
-        "related_topics",
-        "source_type",
-        "last_reviewed",
-    )
-
-
 # --------------------------------------------------------------------------------------
 # FM-11 — surgical writes
 # --------------------------------------------------------------------------------------
-
-
-@pytest.mark.superseded
-def test_design_resolution_edit_reproduces_the_after_block_fm11() -> None:
-    body = "The note text, untouched.\n\n- a bullet\n"
-    before = CONFLICT_TAGGED_NOTE + body
-
-    edited = fm.remove_field(before, "review_note")
-    edited = fm.set_field(edited, "updated", date(2024, 12, 17))
-    edited = fm.set_field(
-        edited,
-        "tags",
-        [
-            "topic.cooking.grilling",
-            "topic.cooking.heat-management",
-            "type.note",
-            "status.approved",
-        ],
-    )
-    edited = fm.set_field(edited, "last_reviewed", date(2024, 12, 17))
-
-    assert edited == REVIEWED_NOTE + body
-    assert fm.parse(edited).body == body
 
 
 def test_set_field_touches_exactly_one_line_fm11() -> None:
