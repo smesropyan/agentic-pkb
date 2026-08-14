@@ -41,6 +41,30 @@ than appends — "the one non-append write" the plan names it, structural-only (
 boundary: this module holds no opinion on whether the synthesis's claims are honest, only on the
 section's shape).
 
+**Section search is a raw string match over the whole body, and that is a sharp edge — fixed twice,
+flagged once more.** :func:`_insert_before_heading` and :func:`_replace_section` both locate a
+section by ``str.find``-ing the literal heading text, with no notion of "inside a turn's own
+content" versus "a real section boundary." A payload this module did not compose and does not
+control — a turn's operator message or model reply — containing a bare line that happens to read
+``## Synthesis`` or ``## Distillation`` would, unquoted, silently corrupt every later append and
+replace: the write still succeeds and validates clean, because the result is syntactically valid
+markdown with every required field intact, and nothing about the file's *shape* is wrong, only which
+words landed in which section. Fix round 1, finding 1 closes this for every source of body content
+this module itself ever receives, two layers deep: (1) :func:`append_record`'s only caller —
+``pkb.service.runtime``'s ``_turn_entry`` — blockquotes both the message and the reply line-by-line
+before ever calling this module, so a turn's payload can never contain a bare ``## `` line (see that
+function's own docstring for the reasoning and why quoting is still "verbatim"); (2)
+:func:`_replace_section`'s *start* marker is now newline-anchored (``f"\n{heading}\n"``, matching
+its own pre-existing ``end_marker`` and :func:`_insert_before_heading`), because blockquoting alone
+left a gap here — a quoted echo like ``"> ## Synthesis\n"`` still contains the *unanchored* substring
+``"## Synthesis\n"`` two characters in, which the old start marker matched just as readily as a real
+heading. **Not** fixed: :meth:`write_synthesis`'s own ``md`` argument is operator-approved content
+(S-30, S-32/S-34) nobody blockquotes, and a heading-shaped line inside *it* would corrupt the next
+call's own search over the section it just wrote — but nothing calls :meth:`write_synthesis` before
+Phase 4 wires the analysis session that drafts it, so hardening its own content now would be
+guessing at a call site and an approval flow neither of which exists yet. Flagged here for whoever
+wires that caller, rather than fixed speculatively.
+
 **Topic tags scope to participating experts (P5).** :meth:`create` derives the founding agent's
 ``topic.*`` tag from ``session.agent_id`` via :func:`pkb.core.paths.topic_path_for_agent_id` /
 :func:`~pkb.core.paths.topic_tag_for`, and writes none for the Librarian
@@ -85,6 +109,7 @@ __all__ = [
     "SessionFileSealedError",
     "SessionFileStructureError",
     "SessionFileWriter",
+    "topic_tag_for_agent",
 ]
 
 LEARNING_AGENT_ID: Final = "learning"
@@ -257,8 +282,17 @@ def _replace_section(body: str, heading: str, next_heading: str, new_content: st
     literal text — the same four-section skeleton :meth:`SessionFileWriter.create` always writes —
     and replaces the span between them wholesale, leaving every other byte, before ``heading`` and
     from ``next_heading`` onward, untouched.
+
+    Both markers are anchored on the newline that must precede a real heading
+    (``f"\\n{heading}\\n"``), matching :func:`_insert_before_heading`'s own discipline and this
+    function's own pre-existing ``end_marker`` — fix round 1, finding 1: the *start* marker used to
+    search for the bare ``f"{heading}\\n"``, so a blockquoted turn entry's own quoted echo of a fake
+    heading (``"> ## Synthesis\\n"``) still contained that unanchored substring two characters in,
+    and this call found the fake before the genuine one even once the entry layer stopped emitting
+    a bare ``## `` line. Anchoring both markers identically is what makes "verbatim, blockquoted"
+    payloads actually inert here too, not only at :func:`_insert_before_heading`'s own call site.
     """
-    start_marker = f"{heading}\n"
+    start_marker = f"\n{heading}\n"
     start = body.find(start_marker)
     if start == -1:
         raise SessionFileStructureError(f"expected {heading!r} in the session body; not found")
@@ -274,11 +308,19 @@ def _replace_section(body: str, heading: str, next_heading: str, new_content: st
     return body[:content_start] + replacement + body[end + 1 :]
 
 
-def _topic_tag_for_agent(kb_root: Path, agent_id: str) -> str | None:
-    """The founding expert's ``topic.*`` tag, or ``None`` when the agent owns no topic.
+def topic_tag_for_agent(kb_root: Path, agent_id: str) -> str | None:
+    """An agent's ``topic.*`` tag, or ``None`` when it owns no topic.
 
     ``None`` for the Librarian (:data:`~pkb.core.paths.LIBRARIAN_AGENT_ID`) and for any id the tree
-    cannot resolve — a valid, zero-topic-tag file per P5 (module docstring).
+    cannot resolve — a valid, zero-topic-tag file per P5 (module docstring). Public — not just
+    :meth:`SessionFileWriter.create`'s own helper — because :mod:`pkb.service.runtime` needs the
+    identical resolution for S-30's other half (Task 8): "one ``topic.*`` tag per expert that took
+    part" is written once at ``create`` for the founding expert and again, idempotently, by
+    :meth:`SessionFileWriter.add_expert_tag` whenever a completed run's own agent maps to a topic.
+    A second, private copy of the Librarian-is-``None``/``NotATopicRootError``-is-``None`` logic in
+    ``runtime.py`` would be the same rule expressed twice, with nothing to keep the two in step the
+    day a third case (a topic renamed out from under a live session, say) is added to just one of
+    them.
     """
     if agent_id == LIBRARIAN_AGENT_ID:
         return None
@@ -384,7 +426,7 @@ class SessionFileWriter:
         if full.exists():
             raise SessionFileExistsError(f"{rel_path} already exists (S-27)")
 
-        topic_tag = _topic_tag_for_agent(self._kb_root, session.agent_id)
+        topic_tag = topic_tag_for_agent(self._kb_root, session.agent_id)
         tags = (topic_tag, PLACEHOLDER_TYPE_TAG) if topic_tag else (PLACEHOLDER_TYPE_TAG,)
         today = session.created_at.date()
         meta = Metadata(

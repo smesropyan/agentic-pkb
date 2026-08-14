@@ -58,6 +58,7 @@ from pkb.service.session_file import (
     LEARNING_AGENT_ID,
     SessionFileNoOwnFileError,
     SessionFileWriter,
+    topic_tag_for_agent,
 )
 from pkb.service.sessions import (
     IllegalSessionTransitionError,
@@ -156,6 +157,11 @@ class RuntimeService:
     ) -> None:
         self._runtime = runtime
         self._connection = connection
+        self._kb_root = kb_root
+        """Held alongside ``self._session_files`` (rather than reached for through it) for Task 8's
+        ``topic_tag_for_agent(self._kb_root, agent_id)`` call in :meth:`_land_turn` — the same root
+        :class:`~pkb.service.session_file.SessionFileWriter` was built from, so the two can never
+        resolve a topic against two different trees."""
         self._threads = ThreadStore(connection)
         self._sessions = SessionStore(connection)
         self._session_files = SessionFileWriter(kb_root)
@@ -457,9 +463,13 @@ class RuntimeService:
         Re-homed from ``start_run``'s thread-keyed admission race (AP-10) rather than sharing it:
         a session carries no ``pending_interrupt_id`` column and forks into no derived row on a
         fan-out (S-12 — a session that crosses topics re-opens fresh, on the Librarian, rather than
-        forking), so there is no table this needs to keep honest as the stream goes by the way
-        ``_observe`` does for a thread. The events therefore relay **untouched** (SV-5) with nothing
-        wrapped around them at all.
+        forking), so there is no *table* this needs to keep honest as the stream goes by, the way
+        ``_observe`` does for a thread. The events themselves still relay untouched (SV-5) — a
+        subscriber sees exactly the objects the runtime yielded, in order, nothing added or dropped
+        — but Task 8 wraps the stream in :meth:`_observe_session`, whose only side effect is landing
+        the completed turn in the session's own *file* once ``RunEnd`` carries its ``final_text``
+        (S-28, S-30); see that method and :meth:`_land_turn` for the write itself and why it can
+        never fail the run.
 
         Carries no ``approval_mode`` (Task 6). Before the gates died, MCP set ``propose_only``
         in-process (RT-42, SV-17) so its writes auto-rejected a gate no robot could answer; no graph
@@ -478,7 +488,7 @@ class RuntimeService:
             )
         minted = mint_run_id()
         stream = self._runtime.run(session.agent_id, session_id, message, run_id=minted)
-        return await self._launch_session(session_id, session.agent_id, minted, stream)
+        return await self._launch_session(session_id, session.agent_id, minted, message, stream)
 
     async def attach_session(self, session_id: str) -> RunSubscription | None:
         return self._runs.attach(session_id)
@@ -488,9 +498,15 @@ class RuntimeService:
         session_id: str,
         agent_id: str,
         run_id: str,
+        message: str,
         stream: AsyncIterator[AgentEvent],
     ) -> RunSubscription:
-        """The admission race (AP-10) alone — mirrors ``_launch`` with no thread bookkeeping."""
+        """The admission race (AP-10) — mirrors ``_launch`` with no *thread-table* bookkeeping, plus
+        :meth:`_observe_session`'s own bookkeeping of the session's *file* (Task 8).
+
+        ``message`` is threaded through only so :meth:`_observe_session` can compose the record
+        entry once the run ends; it is never inspected before then.
+        """
 
         async def starter() -> tuple[RunHandle, AsyncIterator[AgentEvent]]:
             iterator = stream.__aiter__()
@@ -505,9 +521,83 @@ class RuntimeService:
             else:
                 head = _await_first(first, iterator)
             handle = RunHandle(run_id=run_id, agent_id=agent_id, thread_id=session_id)
-            return handle, head
+            observed = self._observe_session(head, session_id, agent_id, message)
+            return handle, observed
 
         return await self._runs.start(session_id, starter)
+
+    async def _observe_session(
+        self,
+        stream: AsyncIterator[AgentEvent],
+        session_id: str,
+        agent_id: str,
+        message: str,
+    ) -> AsyncIterator[AgentEvent]:
+        """Relay a session run's events untouched, landing the completed turn on the way past
+        (Task 8, S-28, S-30).
+
+        Mirrors ``_observe``'s own shape — a side effect keyed off the events going by, never a
+        change to one of them — but what it keeps honest is the session's *file* rather than a
+        thread row. ``RunEnd`` is the one frame :meth:`start_session_run`'s docstring promises the
+        write depends on: it is the only event carrying ``final_text``, and S-28 asks for exactly
+        that text, verbatim.
+
+        **A failed or cancelled run records nothing — deliberately, and narrower than it could be.**
+        The plan's own words are "after **each completed run**", and ``RunError`` carries no
+        ``final_text`` to satisfy S-28's "verbatim" with; inventing a different template for an
+        error nobody specified would be asserting a design choice this task was never given. It is
+        also the honest boundary rather than a chosen one on one path: a run the daemon cancels
+        (``pkb.service.runs.RunSupervisor._drive``'s own ``except asyncio.CancelledError``)
+        synthesizes its terminal ``RunError`` *after* this generator's own stream has already ended
+        — downstream of every event this method ever sees — so that frame could not be caught here
+        even if the decision above went the other way; catching it would mean teaching the
+        harness-free ``RunSupervisor`` about sessions, which is a larger redesign Task 8 does not
+        take on. A genuine in-graph failure (Layer 2 itself yielding ``RunError`` mid-stream,
+        ``pkb.agents.events``) *is* visible here and is skipped by this same rule.
+
+        The write happens **before** the event is yielded downstream, so a subscriber that
+        observes ``RunEnd`` on the wire is guaranteed the record already holds it — mirrors
+        ``_observe``'s own touch-before-``yield`` ordering for a thread's ``updated_at``.
+        """
+        async for event in stream:
+            if isinstance(event, RunEnd):
+                await self._land_turn(session_id, agent_id, message, event.final_text)
+            yield event
+
+    async def _land_turn(self, session_id: str, agent_id: str, message: str, reply: str) -> None:
+        """Append the turn to the record, verbatim, and tag the expert that answered it (S-28,
+        S-30) — best-effort, because "the run already succeeded, the record is bookkeeping."
+
+        A session founded on the Learning agent has no file at all (S-19, S-26) and is skipped
+        before either write is attempted — the same guard :meth:`close_session`/:meth:`end_session`
+        already use for the identical reason. ``session`` is re-read fresh rather than reusing the
+        row :meth:`start_session_run` already validated as ``open``: a rename during the run would
+        otherwise write the turn to a stale, already-moved path, and a race with ``/close``/``/end``
+        (neither of which refuses on an active run) is exactly the sealed-file case the ``except``
+        below turns into a log line rather than a crash.
+
+        Every failure here — a sealed session raced closed mid-run, an ``OSError``, a validation
+        refusal that should structurally never fire against this module's own output — is logged
+        and swallowed, never raised, mirroring :meth:`_title`'s identical choice a few methods below
+        (TT-2: "never the turn's failure"). The run the operator is waiting on already finished
+        successfully by the time this runs; failing it now over a bookkeeping write would make the
+        record more load-bearing than the design ever asks it to be.
+        """
+        if agent_id == LEARNING_AGENT_ID:
+            return
+        try:
+            session = await self.get_session(session_id)
+            self._session_files.append_record(session, _turn_entry(message, reply))
+            topic_tag = topic_tag_for_agent(self._kb_root, agent_id)
+            if topic_tag is not None:
+                self._session_files.add_expert_tag(session, topic_tag)
+        except Exception:
+            _log.warning(
+                "could not land the turn in session %r's record; the run itself already "
+                "completed and is unaffected",
+                session_id,
+                exc_info=True,
+            )
 
     # ----------------------------------------------------------------------------------
     # Runs
@@ -756,6 +846,61 @@ def _drain(rest: AsyncIterator[AgentEvent]) -> AsyncIterator[AgentEvent]:
             yield event
 
     return stream()
+
+
+def _blockquote(text: str) -> str:
+    """``text``, every line prefixed ``> `` (a bare ``>`` for an empty line) — markdown's own
+    quoting convention, applied line-by-line so the whole payload survives unabridged.
+
+    The one piece of machinery that makes :func:`_turn_entry` safe against its own payload (see
+    that function's docstring for the rule this exists to satisfy) — factored out because
+    ``message`` and ``reply`` both need the identical treatment and there is nothing turn-specific
+    about it.
+    """
+    return "\n".join(f"> {line}" if line else ">" for line in text.split("\n"))
+
+
+def _turn_entry(message: str, reply: str) -> str:
+    """One completed turn, verbatim (S-28): the operator's message and the run's final text, with
+    no summarization and no model call — :meth:`RuntimeService._land_turn` is the only caller.
+
+    **Both payloads are blockquoted (S-28's "verbatim" read together with S-31's fixed section
+    order).** ``message`` and ``reply`` are operator/model text this module does not control, and
+    ``pkb.service.session_file``'s own section surgery — :func:`~pkb.service.session_file.
+    _insert_before_heading` (what ``append_record`` calls) and :func:`~pkb.service.session_file.
+    _replace_section` (what ``write_synthesis`` calls) — locates the fixed sections by a raw
+    ``str.find`` for the literal heading text over the *whole* document body, with no notion of
+    "inside a turn's own content" versus "a real section boundary." A message whose text happens to
+    contain a bare line reading ``## Synthesis`` (or ``## Distillation``) would, unquoted, hand that
+    search its own fake heading before the genuine one — the write still succeeds and
+    ``validate_content`` stays clean, because the result is syntactically valid markdown with every
+    required field intact, but every later append lands inside what looks like ``## Synthesis`` (not
+    ``## Record``) and a later ``write_synthesis`` replaces the genuine section right past a fake
+    "``## Distillation``" it stops at first — silent structural corruption no schema check catches,
+    because nothing about the *shape* is wrong, only which words ended up in which section.
+    Prefixing every line with ``> `` makes a turn's payload structurally inert: markdown recognizes
+    a heading only on a line that begins with a bare ``#``, and a quoted line never does, no matter
+    what text follows the ``> ``. Quoting is lossless and mechanically reversible — every word the
+    operator or the model wrote is still there, unaltered, just inside a blockquote instead of bare
+    — so it satisfies "verbatim" exactly as literally as an unquoted copy would, while being the one
+    transformation that cannot itself introduce a bare ``## `` line. (The sibling exposure —
+    ``write_synthesis``'s own content, which the operator approves and might itself contain a
+    heading-shaped line — has no caller before Phase 4 wires one; ``pkb.service.session_file``'s
+    module docstring flags it there rather than fixing it speculatively here.)
+
+    ``###`` rather than ``##`` for the entry's own heading: the four fixed section headings
+    ``## Record`` through ``## Distillation`` (S-31) and the three command markers ``## Closed``/
+    ``## Renamed``/``## Ended`` (S-29) all sit one level up, and a turn heading at that same level
+    would risk colliding with one of them one day even quoted. No date, unlike a command marker:
+    S-29 names a date for ``/close``, a rename and ``/end`` alone ("each append an entry naming the
+    command and the date"), and S-28 asks for none on an ordinary turn — mirrors
+    ``pkb.service.session_file._marker_entry``'s own heading-then-detail shape, but for a turn
+    rather than a command.
+    """
+    return (
+        f"### Turn\n\n**Operator:**\n\n{_blockquote(message)}\n\n"
+        f"**Reply:**\n\n{_blockquote(reply)}\n"
+    )
 
 
 def _title_from(messages: Sequence[MessageView]) -> str:
