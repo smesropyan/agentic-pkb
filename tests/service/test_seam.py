@@ -783,8 +783,33 @@ def _write_offenders(sources: dict[Path, ast.Module]) -> list[str]:
     return offenders
 
 
+_SV22_NAMED_EXCEPTION = SERVICE_DIR / "session_file.py"
+"""``pkb/service/session_file.py`` — the one other sanctioned Layer 3 writer, alongside
+``runtime.regenerate()``, and for a different reason than SV-22 was written to police.
+
+Matched on the **full resolved path**, not the basename: a hypothetical same-named module
+elsewhere — ``pkb/server/session_file.py`` is the concrete case a reviewer planted and caught —
+must stay covered by the scan. ``test_a_same_named_module_elsewhere_is_not_exempt_sv22`` below is
+the counter-test proving that.
+
+SV-22 itself lives only in the superseded layer-3 spec
+(``docs/superpowers/specs/superseded/2026-08-07-pkb-service-server-layer3-rules.md``) — a rule
+`CLAUDE.md`'s "The ruling" says no longer binds this build. It is kept enforced here anyway,
+because "every other write still goes through the agent tool path, where the schema validator, the
+deny list and the gate table sit" stays true and worth guarding — for everything except the one
+module `DESIGN.md` §2.7 (S-11, S-39) deliberately pulls out of that path: "no model ever holds a
+tool that writes ``sessions/**``" (the plan's Architecture paragraph), so there is no agent tool
+call for a session file's write to ride. ``session_file.py`` carries its own validate-before-write
+discipline in place of the gate table it does not use (``pkb.core.validation.validate_content``,
+called before every byte reaches disk) — see its own module docstring. Every other module under
+``pkb/service`` and ``pkb/server`` is still held to the letter of SV-22, including every other
+check in this file (SV-1, SV-18, SV-25): this exception is scoped to the write scan alone.
+"""
+
+
 def test_no_layer3_module_writes_under_the_kb_root_sv22() -> None:
-    """I3 one layer up: **only Layer 1 writes, and only where an agent's tool path led it.**
+    """I3 one layer up: **only Layer 1 writes, and only where an agent's tool path led it —**
+    **with one named exception** (:data:`_SV22_NAMED_EXCEPTION`).
 
     A write from a route bypasses everything that makes a write safe — the schema validator, the
     deny list, the gate table, the write lock and the flush that keeps ``index.md`` and ``tags.md``
@@ -793,10 +818,18 @@ def test_no_layer3_module_writes_under_the_kb_root_sv22() -> None:
     at "no call under ``kb_root``" because the second needs a runtime check nobody can perform on a
     path assembled at runtime — the first is checkable here, today, on every module at once.
 
-    ``runtime.regenerate()`` is the one sanctioned Layer 1 call and it is the runtime's, so the
-    forbidden names are Layer 1's *own* entry points, which Layer 3 must never call directly.
+    ``runtime.regenerate()`` is the one sanctioned Layer 1 call reached *through* the agent tool
+    path and it is the runtime's, so the forbidden names are Layer 1's *own* entry points, which
+    Layer 3 must never call directly. ``session_file.py`` is sanctioned to write directly instead —
+    see :data:`_SV22_NAMED_EXCEPTION`'s own docstring for why that is a design fact, not a
+    relaxation.
     """
-    assert _write_offenders(_sources(SERVICE_DIR, SERVER_DIR)) == []
+    sources = {
+        path: tree
+        for path, tree in _sources(SERVICE_DIR, SERVER_DIR).items()
+        if path != _SV22_NAMED_EXCEPTION
+    }
+    assert _write_offenders(sources) == []
     assert set(
         _write_offenders(
             _planted(
@@ -815,6 +848,22 @@ def test_no_layer3_module_writes_under_the_kb_root_sv22() -> None:
         "planted.py: writelines()",
         "planted.py: flush()",
     }
+
+
+def test_a_same_named_module_elsewhere_is_not_exempt_sv22() -> None:
+    """The SV-22 exemption matches ``_SV22_NAMED_EXCEPTION``'s full resolved path — not just the
+    filename ``session_file.py`` — so a hypothetical ``pkb/server/session_file.py`` doing exactly
+    the write the real, sanctioned ``pkb/service/session_file.py`` does stays caught. A basename
+    match would exempt both; this plants the second one at ``SERVER_DIR`` and proves it is not."""
+    planted_path = SERVER_DIR / "session_file.py"
+    assert planted_path != _SV22_NAMED_EXCEPTION  # same basename, different directory
+    planted = {
+        planted_path: ast.parse(
+            "def save(kb_root, note):\n    (kb_root / 'x.md').write_text(note)\n"
+        )
+    }
+    sources = {path: tree for path, tree in planted.items() if path != _SV22_NAMED_EXCEPTION}
+    assert _write_offenders(sources) == ["session_file.py: write_text()"]
 
 
 _MODEL_CLIENTS = frozenset(

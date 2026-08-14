@@ -79,6 +79,13 @@ proposal's provenance from `DESIGN.md`'s own word.
 | S-11 | "The Librarian still writes nothing by its own hand, the instruction sets of its deep phase included..., and each expert still writes inside its own topic, reaching the root `sessions/` folder for its own session file through the root tool a Librarian session uses for the same file" (§2.4, quoted). | error | `SessionFileWriter` is the one write surface both a Librarian session and a Topic-Expert session use to reach `sessions/**`; no Librarian-only or expert-only session-file write path exists. |
 | S-12 | "A session that opened on one expert and turns out to cross topics re-opens on the Librarian. Nothing copies one session's file into another, so the operator names the objective again and the new session opens its own file" (§2.4, quoted). | error | No route or store method copies, forks, or merges one session's file content into a newly-created session; a "re-open on the Librarian" is, at the store/file layer, indistinguishable from any other fresh `create()`. |
 
+**Amended 2026-08-14 (Task 4 build note).** `pkb.service.session_file.SessionFileWriter` is the
+concrete module S-11 names: the one sanctioned service-layer writer of `sessions/**`.
+`tests/service/test_seam.py`'s SV-22 write scan — a rule from the superseded layer-3 spec, kept
+enforced for every other module — pins it as the single named exemption, matched on the module's
+full resolved path rather than its basename, so a same-named file anywhere else (e.g. a
+hypothetical `pkb/server/session_file.py`) stays caught.
+
 ### 2.5 Channels and commands
 
 | ID | Rule | Sev | Test assertion |

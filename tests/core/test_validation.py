@@ -80,6 +80,22 @@ def note_at(rel_path: str, **overrides: str | None) -> str:
     return md(**fields)
 
 
+SESSION_PATH = "sessions/trading-plan.md"
+
+
+def session_at(rel_path: str, **overrides: str | None) -> str:
+    """A session file (`FileRole.SESSION`): no owning topic, `topic: "(session)"`, and no
+    `topic.*` tag by default (P5) — zero experts have taken part, so there is none yet."""
+    fields: dict[str, str | None] = {
+        "title": f'"{rel_path}"',
+        "topic": '"(session)"',
+        "tags": tag_block("type.summary"),
+        "source_type": "summary",
+    }
+    fields.update(overrides)
+    return md(**fields)
+
+
 def topic_md(name: str, tag: str) -> str:
     """A `topic.md` placeholder: `source_type: summary` + `type.summary` (decision A)."""
     return md(
@@ -411,6 +427,24 @@ def test_tag_cardinality_va9(kb: Path, declared: tuple[str, ...], code: str) -> 
     finding = only(validate_content(kb, NOTE_PATH, text), code)
     assert finding.severity is Severity.ERROR
     assert finding.field == "tags"
+
+
+def test_a_session_file_needs_no_topic_tag_with_zero_experts_p5(kb: Path) -> None:
+    """P5 (`docs/superpowers/plans/2026-08-14-phase2-sessions.md`, "Three rulings"; T-19 amended):
+    the `topic.*` floor T-19/VA-9 fixes for every knowledge file does not bind `FileRole.SESSION`
+    — a session opened directly on the Librarian, before any Topic Expert has joined it, has zero
+    participating experts and so zero `topic.*` tags, and that validates clean. The `type.*` floor
+    (exactly one) stays in force, on a session file as on every other."""
+    text = session_at(SESSION_PATH)
+    assert errors(validate_content(kb, SESSION_PATH, text)) == []
+
+
+def test_a_non_session_file_still_needs_a_topic_tag_p5(kb: Path) -> None:
+    """The floor P5 scopes away from `FileRole.SESSION` stays in force for everything else — the
+    contrast case: an ordinary note with zero `topic.*` tags is still `MISSING_TOPIC_TAG`
+    (mirrors `test_tag_cardinality_va9`'s `va9-topic-zero` case, named here for the P5 boundary)."""
+    text = note_at(NOTE_PATH, tags=tag_block("type.note", "status.draft"))
+    assert "MISSING_TOPIC_TAG" in codes(validate_content(kb, NOTE_PATH, text))
 
 
 def test_duplicate_tag_is_a_warning_va10(kb: Path) -> None:

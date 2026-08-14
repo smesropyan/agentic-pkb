@@ -568,6 +568,16 @@ def _va9_tag_cardinality(ctx: _Context) -> list[Finding]:
     There is no ``status.*`` cardinality to check — T-17 retires the namespace outright, and a
     ``status.*`` tag on a file is reported once, as an unknown namespace (VA-8), not here.
 
+    **Amended 2026-08-14 (P5).** The ``topic.*`` floor does not bind ``FileRole.SESSION``: T-21
+    already ties a session file's ``topic.*`` tags to "one per expert that took part," and a
+    session opened directly on the Librarian, before any Topic Expert has joined it, has taken
+    part with zero — a valid state, not ``MISSING_TOPIC_TAG``
+    (``docs/superpowers/plans/2026-08-14-phase2-sessions.md``, "Three rulings," P5;
+    ``docs/superpowers/specs/2026-08-13-tree-T-rules.md``, T-19's own amendment). Only that one
+    finding is scoped away — the ``type.*`` floor below is unconditional, on a session file as on
+    every other, and a session file that *does* carry a ``topic.*`` tag is checked exactly like
+    any other file's.
+
     Silent when the field is missing (VA-4 said so) or unusable — ``tags: "topic.cooking"`` is one
     defect, and answering it with more cardinality errors buries the fix.
     """
@@ -576,7 +586,7 @@ def _va9_tag_cardinality(ctx: _Context) -> list[Finding]:
         return []
 
     findings = []
-    if not _in_namespace(ctx.meta, _TOPIC_NAMESPACE):
+    if ctx.role is not FileRole.SESSION and not _in_namespace(ctx.meta, _TOPIC_NAMESPACE):
         findings.append(
             ctx.finding(
                 "MISSING_TOPIC_TAG",

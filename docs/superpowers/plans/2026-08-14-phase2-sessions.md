@@ -33,7 +33,7 @@ in the service layer through `pkb.core`'s serializer — no model ever holds a t
   (`Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>` /
   `Claude-Session: https://claude.ai/code/session_013RAwz2RWewccxyv7ZqeRz3`). Never push mid-phase.
 
-## Two rulings where the design was silent
+## Three rulings where the design was silent
 
 **P3 — RULED by the operator, 2026-08-14.** `/end` seals the file and a sealed file is never
 reopened: the seal is an appended `## Ended` marker entry written by harness code (the design says
@@ -46,6 +46,19 @@ enters the learning queue... no cap and no expiry" is implemented as the set of 
 `state='closed'` ordered by `closed_at` — the queue IS the closed-not-ended sessions, no second
 structure to drift; `/close` enters a session into it and `/end` leaves it by the state change alone.
 No checkpoint needed.
+
+**P5 — RULED by the operator, 2026-08-14.** `DESIGN.md` §2.4 opens a session directly on the
+Librarian, which holds no topic, and §2.7/S-30 tie a session file's `topic.*` tags to "one per
+expert that took part" — zero, when no expert has joined yet. Phase 1's T-19/VA-9 fixes the
+opposite: "at least one `topic.*` tag" on every knowledge file, unconditionally, `MISSING_TOPIC_TAG`
+otherwise. Task 4's build hit the conflict directly — a fresh Librarian session's file has no
+expert's tag to write and Phase 1's own floor refused it — and surfaced it rather than inventing a
+placeholder tag with no basis in either document. Ruled: **scope the floor.** A session file
+(`FileRole.SESSION`) requires a `topic.*` tag only once an expert has taken part; zero experts,
+zero `topic.*` tags, is a valid file. The `type.*` floor — exactly one — is untouched, on session
+files as on every other knowledge file. `pkb.core.validation`'s VA-9/T-19 cardinality check skips
+`MISSING_TOPIC_TAG` for `FileRole.SESSION` alone; `docs/superpowers/specs/2026-08-13-tree-T-rules.md`
+carries the amendment on T-19's own row. No checkpoint needed.
 
 ## File Structure
 
@@ -167,7 +180,8 @@ No checkpoint needed.
 - [ ] **Step 1:** Failing route tests via the existing FastAPI test-client patterns in
   tests/server; every route above, plus: a run on a closed session is refused; `/end` on an open
   session is refused; the SSE events stream carries the run events for whichever channel asks; an
-  unknown `agent_id` at session creation is refused (S-9).
+  unknown `agent_id` at session creation is refused (S-9); a session created on the Librarian, zero
+  experts yet, creates its file cleanly and validates (P5).
 - [ ] **Step 2:** FAIL → implement → PASS → `make check` (TUI/clients compile-keepers: point
   `pkb/clients` + `pkb/tui` at `/sessions` minimally — same JSON shapes where possible; mark any
   client test that asserts retired routes superseded with a Phase-5 comment. `src/pkb/server/mcp.py`
