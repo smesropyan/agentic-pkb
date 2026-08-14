@@ -754,7 +754,7 @@ def test_each_typed_error_maps_to_one_status_and_code_ro20(
     Superseded whole (Task 5 rebuilds this): every case posts to ``/threads/{id}/runs``, deleted
     with the rest of the thread-CRUD surface, so all six fail regardless of the error type under
     test — not only the two (``approval_pending``, ``stale``) that were already marked
-    individually for Task 6. The four that survive as a *principle* (``unknown_agent``,
+    individually for Task 6. The five that survive as a *principle* (``unknown_agent``,
     ``thread_busy``, ``invalid``, plus session-shaped ``illegal_session_transition`` and
     ``session_name_taken``) are re-homed against ``POST /sessions/{id}/runs`` in
     ``tests/server/test_session_routes.py``; ``unknown_thread`` has no session-era successor, since

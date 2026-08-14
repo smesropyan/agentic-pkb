@@ -365,6 +365,9 @@ def test_unknown_session_on_close_and_end_is_404(client: TestClient) -> None:
 
 
 def test_a_run_streams_over_the_new_route(service: StubService, client: TestClient) -> None:
+    """SS-2: all three headers, on ``/runs`` specifically — ``test_attach_streams_the_sse_headers_ss2``
+    below pins the same three on ``/events``, so a regression dropping one from either route's own
+    call to ``_stream()``/``SSE_HEADERS`` is caught rather than only the shared machinery's."""
     session = client.post(f"/agents/{COOKING}/sessions", json={}).json()["session"]
 
     response = client.post(
@@ -373,6 +376,8 @@ def test_a_run_streams_over_the_new_route(service: StubService, client: TestClie
 
     assert response.status_code == 200
     assert response.headers["content-type"] == "text/event-stream; charset=utf-8"
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-accel-buffering"] == "no"
     assert ("start_session_run", (session["session_id"], "how long for brisket?")) in service.calls
 
 
