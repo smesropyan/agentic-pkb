@@ -201,7 +201,11 @@ they surface approvals.
 - [ ] **Step 1:** Failing tests: a note-write tool call inside a run LANDS during the turn with no
   interrupt raised (use the existing fake-model run harness from tests/agents — find the pattern
   that drives a scripted tool call); the runtime exposes no interrupt-resume surface; importing
-  `pkb.service.proposals` fails.
+  `pkb.service.proposals` fails. Also run
+  `grep -rn 'approval_mode\|propose_only' src/pkb/service/runtime.py src/pkb/service/__init__.py src/pkb/server/mcp.py src/pkb/agents/routing.py`
+  — Task 5 kept `approval_mode` as a truthful compile-keeper on the session-run path (off the HTTP
+  surface), and this task's own greps would never find it; once interrupts are off it is fully
+  inert, so remove it or document explicitly why it stays (Task 5 review, item 6).
 - [ ] **Step 2:** Implement: interrupts off at the composition point (delete the gate config, not
   the deepagents library shim), delete proposals.py + store init + exports, delete approval
   surfacing in mcp.py/telegram.py with truthful minimal replacements (a Telegram approval prompt
