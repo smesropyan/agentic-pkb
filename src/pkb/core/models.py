@@ -111,18 +111,23 @@ class FileClass(StrEnum):
 
 
 class FileRole(StrEnum):
-    """What a file *is*, decided by its location. Drives the location-consistency table (VA-13)."""
+    """What a file *is*, decided by its location. Drives the location-consistency table (VA-13).
 
-    ROOT_INDEX = "root-index"
+    There is no extension-folder mechanism (T-1): ``ROOT_INDEX``, ``EXTENSION_SUMMARY`` and
+    ``EXTENSION_ITEM`` are gone. ``SESSION`` (T-9) and ``CAPTURED_SOURCE`` (T-14) are new — a
+    session file is a knowledge file with nothing to compare its location against, and a captured
+    source is none of the three file classes T-8 names, whatever its extension.
+    """
+
     ROOT_TAGS = "root-tags"
     TOPIC_OVERVIEW = "topic-overview"
     TOPIC_INDEX = "topic-index"
     NOTES_SUMMARY = "notes-summary"
     REFERENCES_SUMMARY = "references-summary"
-    EXTENSION_SUMMARY = "extension-summary"
     NOTE = "note"
     REFERENCE = "reference"
-    EXTENSION_ITEM = "extension-item"
+    CAPTURED_SOURCE = "captured-source"
+    SESSION = "session"
     EXPERT = "expert"
     SKILL = "skill"
     ASSET = "asset"
@@ -181,8 +186,6 @@ class TopicRecord:
     """KB-relative paths of immediate sub-topics, in render order."""
 
     has_expert: bool = False
-    extension_folders: tuple[str, ...] = ()
-    """Directory names directly under the root that are neither structural nor dot-prefixed (PA-7)."""
 
     meta: Metadata | None = None
     """``topic.md``'s frontmatter, or ``None`` when it is missing or unparseable (GE-25)."""

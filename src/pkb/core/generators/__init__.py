@@ -123,6 +123,12 @@ def regenerate_all(
         flags = [*find_broken_links(kb_root, snap), *find_orphans(kb_root, snap)]
     report = FlushReport()
 
+    # T-37 (P2) rules the root index.md a stray once one exists — the registry is the one derived
+    # file above the topics — but Task 6 owns retiring the generator that writes it (moving
+    # CUSTOM_EXPERT_MARKER and the routing view into the registry); pkb.agents' Librarian still
+    # reads this file's generated content for routing. Leaving the call in place here means a
+    # freshly generated tree carries exactly one transitional UNEXPECTED_ROOT_ENTRY finding for its
+    # own index.md until that task lands — see the note on SC-3 in test_scaffold.py.
     _write(report, paths.INDEX_FILE, partial(generate_root_index, kb_root, snap))
     _write(report, paths.TAGS_FILE, partial(generate_root_tags, kb_root, snap))
     for topic in snap.topics.values():

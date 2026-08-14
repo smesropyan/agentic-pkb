@@ -23,7 +23,6 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from pathlib import Path
-from urllib.parse import quote
 
 from pkb.core import paths, tags
 from pkb.core.errors import Finding, NotATopicRootError, sort_findings
@@ -60,13 +59,7 @@ TAG_SUBTREE = "Tag subtree"
 CROSS_TOPIC_MAPPINGS = "Cross-topic mappings"
 MAINTENANCE_FLAGS = "Maintenance flags"
 
-_BREADTH_ROLES = frozenset(
-    {
-        FileRole.NOTES_SUMMARY,
-        FileRole.REFERENCES_SUMMARY,
-        FileRole.EXTENSION_SUMMARY,
-    }
-)
+_BREADTH_ROLES = frozenset({FileRole.NOTES_SUMMARY, FileRole.REFERENCES_SUMMARY})
 """The ``summary.md`` files. ``topic.md`` leads the section separately — it is the topic itself."""
 
 
@@ -97,10 +90,6 @@ def render_topic_index(
     blocks += base.section(SUBTOPICS, _subtopics(snapshot, topic))
     blocks += base.section(NOTES, _items(snapshot, topic, records, FileRole.NOTE))
     blocks += base.section(REFERENCES, _items(snapshot, topic, records, FileRole.REFERENCE))
-    for folder in topic.extension_folders:
-        blocks += base.section(
-            _folder_heading(folder), _extension_items(snapshot, topic, records, folder)
-        )
     blocks += base.section(OTHER, _items(snapshot, topic, records, FileRole.UNKNOWN))
     blocks += base.section(TAG_SUBTREE, _tag_subtree(snapshot, topic))
     blocks += base.section(CROSS_TOPIC_MAPPINGS, _mappings(snapshot, topic))
@@ -246,38 +235,6 @@ def _items(
         for record in records
         if record.role is role
     ]
-
-
-def _extension_items(
-    snapshot: KbSnapshot, topic: TopicRecord, records: Iterable[FileRecord], folder: str
-) -> list[str]:
-    """Item bullets for one extension folder (PA-7, GE-14)."""
-    prefix = f"{folder}/"
-    return [
-        _bullet(snapshot, topic, record, with_tags=True)
-        for record in records
-        if record.role is FileRole.EXTENSION_ITEM and _relative(topic, record).startswith(prefix)
-    ]
-
-
-def _folder_heading(folder: str) -> str:
-    """An extension folder's section heading: the folder name, first letter upper-cased (§4.3).
-
-    ``recipes/`` renders as ``## Recipes``. The folder name is the human's word for the section, so
-    it is used as written apart from the leading capital a heading wants, and it goes through
-    :func:`base.inline` like every other injected string (GE-26).
-
-    A directory named entirely with whitespace inlines to the empty string, and ``## `` would then
-    carry trailing whitespace — which GE-7 forbids unconditionally, degraded tree or not. Such a
-    folder is legal and reachable: PA-7 makes any non-structural directory under a topic root an
-    extension folder, and VA-38 deliberately never flags one, so this generator is the only place
-    that can absorb it (GE-25). The fallback is the percent-encoded name, which is exactly what
-    :func:`paths.link_target` puts in this section's own bullets (PA-18) — so the heading names the
-    folder its links point into, it can never be whitespace, and two such folders stay
-    distinguishable, which a generic ``*(unnamed folder)*`` literal would not achieve.
-    """
-    heading = base.inline(folder) or quote(folder, safe="")
-    return heading[:1].upper() + heading[1:]
 
 
 def _tag_subtree(snapshot: KbSnapshot, topic: TopicRecord) -> list[str]:

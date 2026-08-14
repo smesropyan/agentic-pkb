@@ -162,7 +162,9 @@ def extension_annotations(snapshot: KbSnapshot) -> dict[str, str]:
     """
     marked: dict[str, str] = {}
     for topic in snapshot.topics.values():
-        for folder in topic.extension_folders:
+        # Read live rather than cached (T-1 retired ``TopicRecord.extension_folders``): this whole
+        # function is EXTENSION_MARKER machinery a later task removes outright.
+        for folder in paths.extension_folders(snapshot.root / topic.path):
             segment = paths.slugify(folder)
             if segment:
                 marked[f"{topic.tag}.{segment}"] = tags.EXTENSION_MARKER

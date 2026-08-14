@@ -27,6 +27,7 @@ from pkb.core.errors import NotATopicRootError
 from pkb.core.models import FileClass, FileRole
 
 __all__ = [
+    "AUTHORSHIP_FILE",
     "EXPERT_FILE",
     "IGNORED_NAMES",
     "INDEX_FILE",
@@ -38,6 +39,7 @@ __all__ = [
     "REFERENCES_DIR",
     "RESERVED_ITEM_NAMES",
     "RESERVED_NAMES",
+    "SESSIONS_DIR",
     "SKILLS_DIR",
     "SKILL_FILE",
     "STRUCTURAL_DIRS",
@@ -82,6 +84,10 @@ NOTES_DIR = "notes"
 REFERENCES_DIR = "references"
 MEDIA_DIR = "media"
 SKILLS_DIR = "skills"
+SESSIONS_DIR = "sessions"
+"""Root-level only (T-9): a session file sits in the KB root's ``sessions/`` folder, never a
+topic's. It is not a :data:`STRUCTURAL_DIRS` member — that set describes a topic root's own shape,
+and a topic that happens to hold a same-named directory is an unrecognized one (T-1)."""
 
 STRUCTURAL_DIRS: frozenset[str] = frozenset(
     {REFERENCES_DIR, NOTES_DIR, MEDIA_DIR, SKILLS_DIR, SUBTOPICS_DIR}
@@ -98,6 +104,10 @@ EXPERT_FILE = "expert.md"
 TAGS_FILE = "tags.md"
 SUMMARY_FILE = "summary.md"
 SKILL_FILE = "SKILL.md"
+AUTHORSHIP_FILE = "AUTHORSHIP.md"
+"""Written by harness code beside a ``SKILL.md`` (§7.8). Class 3 too (T-11): never parsed, and the
+one sibling of ``SKILL.md`` that trips no ``LEGACY_SKILL_LAYOUT`` warning."""
+
 MARKDOWN_SUFFIX = ".md"
 
 RESERVED_NAMES: frozenset[str] = frozenset(
@@ -429,12 +439,15 @@ def _topic_root_chain(kb_root: Path, topic_path: Path) -> list[Path]:
 
 
 def extension_folders(topic_path: Path) -> list[str]:
-    """Directory names directly under a topic root that are extension folders (PA-7).
+    """Directory names directly under a topic root outside :data:`STRUCTURAL_DIRS` (T-1).
 
-    An extension folder is any non-structural, non-ignored directory: human-approved, arbitrarily
-    named, open-set. Its presence is never a finding — the only rule that binds it is the
-    folder-hosted item convention (VA-16). Returned sorted by :func:`sort_key`; GE-24 reads this
-    list to decide which tag leaves carry the extension marker.
+    There is no extension-folder mechanism any more: every name this returns is now unrecognized,
+    and :mod:`pkb.core.validation`'s ``UNEXPECTED_TOPIC_ENTRY`` warning (T-1) reports each one — a
+    change from the retired design, where the identical query fed the extension marker (GE-24) and
+    the folder-hosted item convention (VA-16) and was never itself a finding. The name and the
+    computation survive because Layer 2's write-gate (``pkb.agents.gates``) still asks the same
+    question — "which directories here does nobody recognize yet" — to decide whether a write mints
+    one. Returned sorted by :func:`sort_key`.
     """
     return [
         name
@@ -629,12 +642,22 @@ def classify(kb_root: Path, path: Path) -> tuple[FileRole, FileClass]:
     * ``notes/x/index.md`` is ``UNKNOWN`` but class ``DERIVED`` — derived by name (PA-11), owned by
       no generator (PA-12), and reported by VA-17.
     * A markdown file directly at a topic root that is not ``topic.md`` / ``index.md`` /
-      ``expert.md`` is ``UNKNOWN`` (VA-38); an unknown *directory* is an extension folder and is
-      never a finding (PA-7).
+      ``expert.md`` is ``UNKNOWN`` (VA-38); an unknown *directory* is reported too, now that there is
+      no extension-folder mechanism (T-1, ``UNEXPECTED_TOPIC_ENTRY``).
     * ``expert.md`` and everything under ``skills/`` are class ``SKILL``: agent instructions, not
       indexable knowledge, so they are exempt from the seven required fields and from index and tag
       generation (VA-6, C3, C6). ``EXPERT`` is returned only at a topic root — ``expert.md``
-      anywhere else is misplaced (VA-20) and classifies by its actual location.
+      anywhere else is misplaced (VA-20) and classifies by its actual location. ``AUTHORSHIP.md``
+      beside a ``SKILL.md`` is class ``ASSET`` — never parsed (T-11) — while every other file there
+      is class ``SKILL`` and, if markdown, trips ``LEGACY_SKILL_LAYOUT`` when it sits flat under
+      ``skills/`` rather than in its own folder (PA-14).
+    * Every file under ``references/<src>/`` except ``<src>.md`` is ``CAPTURED_SOURCE``, class
+      ``ASSET`` — never opened for YAML — whatever its extension (T-14); only the file named after
+      the folder is ``REFERENCE`` and parsed.
+    * A markdown file directly under the KB root's ``sessions/`` folder is ``SESSION`` (T-9), parsed
+      as a knowledge file. It owns no topic (:func:`owning_topic_root` finds no ``topic.md``
+      ancestor for it), so the location-agreement checks that compare a file's declared metadata
+      against its owning topic have nothing to compare against and are skipped by construction.
 
     Total by construction: an unrecognized path is ``(UNKNOWN, AUTHORED)`` or ``(ASSET, ASSET)``,
     never an exception, because a file that vanishes from the walk is invisible to every agent
@@ -657,16 +680,19 @@ def classify(kb_root: Path, path: Path) -> tuple[FileRole, FileClass]:
 def _classify_outside_topic(
     parts: tuple[str, ...], *, is_markdown: bool
 ) -> tuple[FileRole, FileClass]:
-    if len(parts) == 1:
-        if parts[0] == INDEX_FILE:
-            return FileRole.ROOT_INDEX, FileClass.DERIVED
-        if parts[0] == TAGS_FILE:
-            return FileRole.ROOT_TAGS, FileClass.DERIVED
+    if len(parts) == 1 and parts[0] == TAGS_FILE:
+        return FileRole.ROOT_TAGS, FileClass.DERIVED
     if parts[0] == SKILLS_DIR:
-        return _classify_skill(is_markdown=is_markdown)
+        return _classify_skill(parts[-1], is_markdown=is_markdown)
+    if parts[0] == SESSIONS_DIR and len(parts) == 2 and is_markdown:
+        return FileRole.SESSION, FileClass.AUTHORED
     if not is_markdown:
         return FileRole.ASSET, FileClass.ASSET
     if parts[-1] == INDEX_FILE:
+        # Covers the root's own index.md too: T-37 (P2) rules it a stray whenever one exists, so
+        # ``UNKNOWN`` rather than a role of its own is the honest answer even while a generator
+        # still writes the file today. :func:`~pkb.core.scan.scan`'s root-entries check is what
+        # reports it, once, as ``UNEXPECTED_ROOT_ENTRY``.
         return FileRole.UNKNOWN, FileClass.DERIVED
     return FileRole.UNKNOWN, FileClass.AUTHORED
 
@@ -689,7 +715,16 @@ def _classify_in_topic(inner: tuple[str, ...], *, is_markdown: bool) -> tuple[Fi
 
     head = inner[0]
     if head == SKILLS_DIR:
-        return _classify_skill(is_markdown=is_markdown)
+        return _classify_skill(inner[-1], is_markdown=is_markdown)
+    if head == REFERENCES_DIR and len(inner) >= 3:
+        # Inside a source's own folder: only <src>.md is the map (T-14). Everything else beside it
+        # is the captured source material, whatever its extension — checked ahead of the
+        # ``is_markdown`` and ``index.md`` branches below, because a captured source is never
+        # opened for YAML regardless of its name or extension.
+        main_name = f"{inner[1]}{MARKDOWN_SUFFIX}"
+        if len(inner) == 3 and inner[2] == main_name:
+            return FileRole.REFERENCE, FileClass.AUTHORED
+        return FileRole.CAPTURED_SOURCE, FileClass.ASSET
     if inner[-1] == INDEX_FILE:
         # Derived by name, generated by nobody (PA-11 vs PA-12); VA-17 reports it.
         return FileRole.UNKNOWN, FileClass.DERIVED
@@ -703,6 +738,7 @@ def _classify_in_topic(inner: tuple[str, ...], *, is_markdown: bool) -> tuple[Fi
             else (FileRole.NOTE, FileClass.AUTHORED)
         )
     if head == REFERENCES_DIR:
+        # len(inner) == 2 here: a breadth summary or a standalone (non-folder-hosted) reference.
         return (
             (FileRole.REFERENCES_SUMMARY, FileClass.AUTHORED)
             if is_section_summary
@@ -710,13 +746,20 @@ def _classify_in_topic(inner: tuple[str, ...], *, is_markdown: bool) -> tuple[Fi
         )
     if head in (SUBTOPICS_DIR, MEDIA_DIR):
         return FileRole.UNKNOWN, FileClass.AUTHORED
-    return (
-        (FileRole.EXTENSION_SUMMARY, FileClass.AUTHORED)
-        if is_section_summary
-        else (FileRole.EXTENSION_ITEM, FileClass.AUTHORED)
-    )
+    # No extension-folder mechanism (T-1): a name STRUCTURAL_DIRS does not recognize is UNKNOWN
+    # here, and the directory itself is reported once, cross-file, as UNEXPECTED_TOPIC_ENTRY.
+    return FileRole.UNKNOWN, FileClass.AUTHORED
 
 
-def _classify_skill(*, is_markdown: bool) -> tuple[FileRole, FileClass]:
-    """Everything under ``skills/`` is agent instruction, whatever its layout (PA-14, VA-6)."""
+def _classify_skill(name: str, *, is_markdown: bool) -> tuple[FileRole, FileClass]:
+    """Everything under ``skills/`` is agent instruction, whatever its layout (PA-14, VA-6).
+
+    ``AUTHORSHIP.md`` is class 3 too (T-11) but carries no deepagents schema of its own: harness
+    code writes it beside a ``SKILL.md`` (§7.8), and the catalog generator and the tree walk read
+    only ``SKILL.md`` inside a skill folder, so an ``AUTHORSHIP.md`` sibling is never parsed and
+    trips no ``LEGACY_SKILL_LAYOUT`` warning — the same ``ASSET`` treatment a non-markdown skill
+    file already gets.
+    """
+    if name == AUTHORSHIP_FILE:
+        return FileRole.SKILL, FileClass.ASSET
     return FileRole.SKILL, (FileClass.SKILL if is_markdown else FileClass.ASSET)

@@ -609,12 +609,14 @@ def test_a_section_level_media_folder_is_not_an_item_folder_ma8(tmp_path: Path) 
     reason, and the two rules live in the same layer, so they must agree about the same directory.
 
     The harm was not the finding but its remedy: MA-10 renders it into the human's ``index.md``
-    with the hint *add ``recipes/media/media.md``*, which would create an item literally named
-    ``media`` inside a section.
+    with the hint *add ``notes/media/media.md``*, which would create an item literally named
+    ``media`` inside a section. Filed under ``notes/`` rather than the extension folder this test
+    used before T-1 retired the mechanism — the directory this rule is about is the section root's
+    own ``media/``, and ``notes/`` still has one.
     """
     root = kb_with(
         tmp_path,
-        {"Cooking/recipes/media/pic.png": "binary\n", "Cooking/recipes/r.md": authored("R")},
+        {"Cooking/notes/media/pic.png": "binary\n", "Cooking/notes/r.md": authored("R")},
     )
 
     findings = [f for f in find_orphans(root, scan(root)) if f.code == "ORPHAN_ITEM_FOLDER"]
@@ -683,7 +685,7 @@ def test_a_folder_hosted_item_with_its_main_file_is_clean_ma8(tmp_path: Path) ->
 
 
 def test_misfiled_markdown_inside_a_topic_is_an_orphan_ma8(tmp_path: Path) -> None:
-    """Authored markdown in none of notes/, references/ or an extension folder is unreachable."""
+    """Authored markdown in neither notes/ nor references/ is unreachable (no extension folders, T-1)."""
     root = kb_with(tmp_path, {"Cooking/media/stray.md": authored("Stray")})
 
     findings = [f for f in find_orphans(root, scan(root)) if f.code == "ORPHAN_FILE"]
@@ -707,7 +709,6 @@ def test_a_note_reachable_only_through_its_index_is_not_an_orphan_ma8(sample_kb:
     orphaned = {f.path for f in find_orphans(sample_kb, scan(sample_kb))}
 
     assert "Cooking/notes/grill-performance-in-windy-conditions.md" not in orphaned
-    assert "Cooking/recipes/ribeye-on-gas.md" not in orphaned
 
 
 # --------------------------------------------------------------------------------------
@@ -814,8 +815,11 @@ def test_a_full_rebuild_equals_an_incremental_flush_ge5(tmp_path: Path) -> None:
     assert regenerate_all(root).written == []
     assert tree_bytes(root) == after_flush
 
+    # ``root / "index.md"`` names a real file today: ``regenerate_all`` still writes one (Task 6
+    # owns retiring that generator). ``missing_ok=True`` is future-proofing for when it stops, not
+    # a description of the current state — this unlink deletes actual bytes right now.
     for derived in {root / "index.md", root / "tags.md", *root.glob("**/index.md")}:
-        derived.unlink()
+        derived.unlink(missing_ok=True)
     regenerate_all(root)
 
     assert tree_bytes(root) == after_flush

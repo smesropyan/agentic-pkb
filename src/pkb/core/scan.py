@@ -41,7 +41,7 @@ from pkb.core.errors import (
     Severity,
     sort_findings,
 )
-from pkb.core.models import FileRecord, KbSnapshot, Metadata, ParsedDocument, TopicRecord
+from pkb.core.models import FileClass, FileRecord, KbSnapshot, Metadata, ParsedDocument, TopicRecord
 
 __all__ = ["FALLBACK_TOPIC_SLUG", "RECORD_ONLY_DIRS", "scan"]
 
@@ -225,7 +225,14 @@ class _Walk:
     def _record_file(self, path: Path, owner: str | None) -> None:
         relative = paths.rel(self.kb_root, path)
         role, file_class = paths.classify(self.kb_root, path)
-        document = self._read(path, relative) if _is_markdown(path) else None
+        # A captured source is never opened for YAML even when it is markdown (T-14) — the same
+        # ``ASSET`` exemption a non-markdown file already gets, extended to a markdown one whose
+        # class says its bytes are source material rather than a knowledge file.
+        document = (
+            self._read(path, relative)
+            if _is_markdown(path) and file_class is not FileClass.ASSET
+            else None
+        )
         self.files.append(
             FileRecord(
                 path=relative,
@@ -316,12 +323,20 @@ class _Walk:
     # -- root --------------------------------------------------------------------------
 
     def _check_root_entries(self, listing: list[tuple[str, bool]]) -> None:
-        """The root holds ``index.md``, ``tags.md``, ``skills/`` and topic directories (PA-1)."""
+        """The root holds ``tags.md``, ``skills/``, ``sessions/`` and topic directories (PA-1).
+
+        A root ``index.md`` is no longer one of them (T-37, P2): the registry is the one derived
+        file above the topics, so a copy on disk — however it got there — is reported here like any
+        other unrecognized entry and never touched or deleted. (A generator still writes one today;
+        a later task retires it. Either way this check treats the bytes the same: a stray.)
+        """
         for name, is_directory in listing:
             if is_directory:
-                if name == paths.SKILLS_DIR or paths.is_topic_root(self.kb_root / name):
+                if name in (paths.SKILLS_DIR, paths.SESSIONS_DIR) or paths.is_topic_root(
+                    self.kb_root / name
+                ):
                     continue
-            elif name in (paths.INDEX_FILE, paths.TAGS_FILE):
+            elif name == paths.TAGS_FILE:
                 continue
             self.findings.append(diagnostics.unexpected_root_entry(name))
 
@@ -356,7 +371,6 @@ def _build_topics(
             # expert for a path ``read_text()`` cannot open. Case-exactness is preserved — that is
             # what the helper is for (PA-17).
             has_expert=paths.has_case_exact_file(draft.abs_path, paths.EXPERT_FILE),
-            extension_folders=tuple(paths.extension_folders(draft.abs_path)),
             meta=_topic_meta(files, draft.path),
         )
         for draft in drafts

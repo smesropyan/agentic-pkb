@@ -84,10 +84,8 @@ _SOURCE_TYPES_BY_ROLE: Mapping[FileRole, frozenset[str]] = {
     FileRole.TOPIC_OVERVIEW: frozenset({"summary"}),
     FileRole.NOTES_SUMMARY: frozenset({"summary"}),
     FileRole.REFERENCES_SUMMARY: frozenset({"summary"}),
-    FileRole.EXTENSION_SUMMARY: frozenset({"summary"}),
     FileRole.NOTE: frozenset({"note", "solution"}),
     FileRole.REFERENCE: frozenset({"reference"}),
-    FileRole.EXTENSION_ITEM: frozenset({"note", "solution", "summary"}),
 }
 """Location → ``source_type`` (VA-13). A role absent from the table constrains nothing."""
 
@@ -105,10 +103,8 @@ _ROLE_LABEL: Mapping[FileRole, str] = {
     FileRole.TOPIC_OVERVIEW: "a topic overview (topic.md)",
     FileRole.NOTES_SUMMARY: "the notes/ breadth summary",
     FileRole.REFERENCES_SUMMARY: "the references/ breadth summary",
-    FileRole.EXTENSION_SUMMARY: "an extension-folder breadth summary",
     FileRole.NOTE: "a note under notes/",
     FileRole.REFERENCE: "a reference under references/",
-    FileRole.EXTENSION_ITEM: "an item in an extension folder",
 }
 
 _FIELD_HINTS: Mapping[str, str] = {
@@ -204,7 +200,7 @@ class _Context:
 
     @property
     def section(self) -> str | None:
-        """``notes`` / ``references`` / an extension-folder name — the item-hosting sections."""
+        """``notes`` / ``references`` — the item-hosting sections (no extension folders, T-1)."""
         if len(self.inner) < 2 or self.inner[0] in _SECTION_EXCLUDED:
             return None
         return self.inner[0]
@@ -421,8 +417,8 @@ def _fm6_unknown_source_type(ctx: _Context) -> list[Finding]:
 def _va32_unknown_fields(ctx: _Context) -> list[Finding]:
     """Unrecognized frontmatter keys are preserved and reported (VA-32, FM-10).
 
-    A warning rather than an error because extension folders legitimately want domain fields
-    (``servings:`` on a recipe); the value of the check is catching ``descripton:``, which would
+    A warning rather than an error because a file can legitimately carry a domain-specific key
+    outside the seven-field schema; the value of the check is catching ``descripton:``, which would
     otherwise surface only as a confusing missing-field error. Keys VA-30 rejects are left to VA-30
     so one defect yields one finding.
     """
@@ -509,11 +505,7 @@ def _va35_filename_title_divergence(ctx: _Context) -> list[Finding]:
     without version control a rename is destructive.
     """
     title = ctx.meta.title
-    if title is None or ctx.role not in {
-        FileRole.NOTE,
-        FileRole.REFERENCE,
-        FileRole.EXTENSION_ITEM,
-    }:
+    if title is None or ctx.role not in {FileRole.NOTE, FileRole.REFERENCE}:
         return []
     expected = paths.slugify(title)
     if not expected or paths.slugify(ctx.stem) == expected:
@@ -760,8 +752,8 @@ def _va13_source_type_location(ctx: _Context) -> list[Finding]:
 def _va14_type_tag_location(ctx: _Context) -> list[Finding]:
     """Location decides which ``type.*`` tag is legal — VA-13's table as tags (VA-14).
 
-    A ``type.solution`` file lives under ``notes/`` or an extension folder, never under
-    ``references/``: a solution is experience, and references are static source material.
+    A ``type.solution`` file lives under ``notes/``, never under ``references/``: a solution is
+    experience, and references are static source material.
     """
     allowed = _TYPE_TAGS_BY_ROLE.get(ctx.role)
     if allowed is None:
@@ -869,8 +861,10 @@ def _va17_item_named_index(ctx: _Context) -> list[Finding]:
 def _va18_reserved_summary_name(ctx: _Context) -> list[Finding]:
     """``summary.md`` is a breadth file, not an item name (VA-18).
 
-    Legal at ``notes/summary.md``, ``references/summary.md`` and ``<extension folder>/summary.md``
-    only.
+    Legal at ``notes/summary.md`` and ``references/summary.md`` — the only two sections a topic
+    root recognizes (T-1). ``_offending_item_name`` exempts a ``summary.md`` under any other
+    directory too, since it does not itself judge whether the section is recognized; an unrecognized
+    directory is its own defect, reported once as ``UNEXPECTED_TOPIC_ENTRY`` (T-1) rather than here.
     """
     if _offending_item_name(ctx) != paths.SUMMARY_FILE.removesuffix(paths.MARKDOWN_SUFFIX):
         return []
@@ -1006,9 +1000,11 @@ def _va37_topic_depth(ctx: _Context) -> list[Finding]:
 def _va38_unexpected_topic_root_file(ctx: _Context) -> list[Finding]:
     """A loose file — markdown or asset — directly at a topic root (VA-38).
 
-    Only ``topic.md``, ``index.md`` and ``expert.md`` belong there; content belongs in ``notes/``,
-    ``references/`` or a human-approved extension folder. Unknown *directories* are extension
-    folders (PA-7) and are never flagged. ``tags.md`` is left to VA-27, which names the real fix.
+    Only ``topic.md``, ``index.md`` and ``expert.md`` belong there; content belongs in ``notes/``
+    or ``references/``. Unknown *directories* are a separate finding, ``UNEXPECTED_TOPIC_ENTRY``
+    (T-1, :func:`_t1_unexpected_topic_entry`) — there is no extension-folder mechanism any more, so
+    this rule stays about loose files, matching its file-vs-directory contrast below. ``tags.md`` is
+    left to VA-27, which names the real fix.
 
     The rule's contrast is file-vs-directory, so a ``Cooking/photo.jpg`` is in scope: VA-7 and
     FM-14 exempt non-markdown from *frontmatter* validation, not from the path rules, and no other
@@ -1025,10 +1021,7 @@ def _va38_unexpected_topic_root_file(ctx: _Context) -> list[Finding]:
             f"{ctx.name!r} sits directly at a topic root, where only topic.md, index.md and "
             "expert.md belong.",
             "VA-38",
-            hint=(
-                f"Move it under {paths.NOTES_DIR}/ or {paths.REFERENCES_DIR}/, or into an "
-                "extension folder."
-            ),
+            hint=f"Move it under {paths.NOTES_DIR}/ or {paths.REFERENCES_DIR}/.",
         )
     ]
 
@@ -1379,6 +1372,7 @@ def validate_tree(kb_root: Path, snapshot: KbSnapshot | None = None) -> list[Fin
         )
 
     findings.extend(_pa1_unexpected_root_entries(kb_root, view))
+    findings.extend(_t1_unexpected_topic_entry(kb_root, view))
     findings.extend(_va16_folder_hosted_items(kb_root, view))
     findings.extend(_va21_duplicate_note_identity(kb_root, view))
     findings.extend(_va23_media_placement(view))
@@ -1423,12 +1417,15 @@ def _tree_finding(
 
 
 def _pa1_unexpected_root_entries(kb_root: Path, view: KbSnapshot) -> list[Finding]:
-    """The knowledge-base root holds ``index.md``, ``tags.md``, ``skills/`` and topics (PA-1).
+    """The knowledge-base root holds ``tags.md``, ``skills/``, ``sessions/`` and topics (PA-1).
 
     A warning, not an error: a stray root entry is untidy rather than corrupting, and the root is
-    the one place a human is most likely to drop something by hand.
+    the one place a human is most likely to drop something by hand. A root ``index.md`` is one of
+    these strays now, not an allowed entry (T-37, P2) — a copy on disk is reported here like any
+    other unrecognized name and never touched or deleted, whether a human dropped it there by hand
+    or a generator wrote it (one still does, pending the task that retires it).
     """
-    allowed = {paths.INDEX_FILE, paths.TAGS_FILE, paths.SKILLS_DIR}
+    allowed = {paths.TAGS_FILE, paths.SKILLS_DIR, paths.SESSIONS_DIR}
     findings = []
     for name in _entry_names(kb_root):
         if paths.is_ignored(name) or name in allowed or name in view.topics:
@@ -1452,10 +1449,11 @@ def _pa1_unexpected_root_entries(kb_root: Path, view: KbSnapshot) -> list[Findin
 def _va16_folder_hosted_items(kb_root: Path, view: KbSnapshot) -> list[Finding]:
     """Every item folder holds a main file named after itself (VA-16, VA-22, PA-17).
 
-    Applies inside ``notes/``, ``references/`` and every extension folder, never inside
-    ``skills/``. The name comparison is case-exact against a directory listing (PA-17): the
-    development host is case-insensitive APFS, so ``Path.exists()`` would accept ``Steak/steak.md``
-    for ``Steak/Steak.md`` and the tree would break on a case-sensitive deploy host.
+    Applies inside ``notes/`` and ``references/`` only — there is no extension-folder mechanism
+    (T-1) — never inside ``skills/``. The name comparison is case-exact against a directory listing
+    (PA-17): the development host is case-insensitive APFS, so ``Path.exists()`` would accept
+    ``Steak/steak.md`` for ``Steak/Steak.md`` and the tree would break on a case-sensitive deploy
+    host.
 
     A folder that holds a ``media/`` subdirectory but no main file is reported under VA-22 instead
     of VA-16 — same code, same fix, but it names the rule that says a note folder is never
@@ -1465,10 +1463,38 @@ def _va16_folder_hosted_items(kb_root: Path, view: KbSnapshot) -> list[Finding]:
     for topic in view.topics.values():
         topic_abs = kb_root / topic.path
         sections: list[tuple[str, bool]] = [(paths.NOTES_DIR, True), (paths.REFERENCES_DIR, False)]
-        sections.extend((name, True) for name in topic.extension_folders)
         for section, recurse in sections:
             findings.extend(
                 _check_item_folders(kb_root, view, topic_abs / section, recurse=recurse)
+            )
+    return findings
+
+
+def _t1_unexpected_topic_entry(kb_root: Path, view: KbSnapshot) -> list[Finding]:
+    """A topic root holds only the directories DESIGN §1.1 names (T-1).
+
+    There is no extension-folder mechanism any more: a directory directly under a topic root
+    outside ``references/``, ``notes/``, ``skills/`` and ``sub-topics/`` is unrecognized. The
+    T-rules name no finding code for this case (T-1's own assertion cites T-34, the per-write
+    location-agreement rules, which do not cover directories), so ``UNEXPECTED_TOPIC_ENTRY`` is
+    minted here, mirroring PA-1's root-level ``UNEXPECTED_ROOT_ENTRY``. A warning, like PA-1: the
+    directory is untidy rather than corrupting, and Layer 1 never touches or deletes it.
+    """
+    findings = []
+    for topic in view.topics.values():
+        for name in paths.extension_folders(kb_root / topic.path):
+            findings.append(
+                _tree_finding(
+                    "UNEXPECTED_TOPIC_ENTRY",
+                    Severity.WARNING,
+                    f"{name!r} is not one of this topic's structural directories.",
+                    "T-1",
+                    f"{topic.path}/{name}",
+                    hint=(
+                        "A topic root holds references/, notes/, skills/ and sub-topics/ only; "
+                        "there is no extension-folder mechanism."
+                    ),
+                )
             )
     return findings
 

@@ -167,7 +167,16 @@ def test_every_scaffolded_file_validates_with_zero_errors_sc3(tmp_path: Path) ->
         text = (kb / rel_path).read_text(encoding="utf-8")
         assert errors_only(validate_content(kb, rel_path, text)) == [], rel_path
 
-    assert validate_tree(kb) == []
+    # A generator still writes a root index.md (Task 6 owns retiring it — pkb.agents' Librarian
+    # still reads its content for routing), and T-37 now rules any root index.md a stray, so a
+    # freshly generated tree carries exactly this one transitional finding until that task lands.
+    # Narrowed to that one finding by path, not by code alone, so a second — or a different —
+    # UNEXPECTED_ROOT_ENTRY still fails this test.
+    findings = validate_tree(kb)
+    root_entry_findings = [f for f in findings if f.code == "UNEXPECTED_ROOT_ENTRY"]
+    assert [f.path for f in root_entry_findings] == ["index.md"]
+    remaining = [f for f in findings if f.code != "UNEXPECTED_ROOT_ENTRY"]
+    assert remaining == []
 
 
 def test_a_placeholder_topic_md_validates_before_it_is_written_sc3(tmp_path: Path) -> None:

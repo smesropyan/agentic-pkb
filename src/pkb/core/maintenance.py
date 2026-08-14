@@ -68,11 +68,11 @@ _SCAN_TRIGGER_ROLES: frozenset[FileRole] = frozenset(
         FileRole.NOTES_SUMMARY,
         FileRole.REFERENCE,
         FileRole.REFERENCES_SUMMARY,
-        FileRole.EXTENSION_ITEM,
-        FileRole.EXTENSION_SUMMARY,
     }
 )
-"""Files under ``notes/``, ``references/`` and extension folders — the conflict-scan triggers.
+"""Files under ``notes/`` and ``references/`` — the conflict-scan triggers (T-1 retires the
+extension-folder mechanism, so it contributes no trigger role of its own any more; this whole
+surface is removed outright in a later task, T-41).
 
 ``topic.md``, ``expert.md``, skills, assets and derived files are excluded: a scan compares the
 knowledge a topic states, and those files either state none or are rebuilt from the ones that do.

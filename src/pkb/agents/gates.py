@@ -489,19 +489,18 @@ def _owning_topic(snapshot: KbSnapshot, rel_path: str) -> _OwningTopic | None:
     unannounced.
 
     Both facts below are therefore taken from the same place ``owning_topic_root`` already looked —
-    the disk — and the snapshot is used only as a cache for the second one. ``extension_folders``
-    is read with Layer 1's own :func:`~pkb.core.paths.extension_folders`, the identical call
-    ``scan`` makes (``scan.py:359``), so a fresh snapshot and a stale one give the same answer; a
-    hardcoded ``()`` would have been safe in the RT-28 direction but would re-gate every later
-    write into a folder the human already approved.
+    the disk — and ``extension_folders`` is read fresh with Layer 1's own
+    :func:`~pkb.core.paths.extension_folders` every time, never cached off the snapshot's
+    :class:`~pkb.core.models.TopicRecord` (T-1 retired that field — a topic no longer carries a
+    blessed list of them, since there is no extension-folder mechanism for the snapshot to have
+    recorded one from). A live disk read is therefore the only source left, and it is also the
+    correct one for RT-28's own purpose: a snapshot the scan has not caught up to must still see a
+    folder the human approved seconds ago.
     """
     root = owning_topic_root(snapshot.root, snapshot.root / rel_path)
     if root is None:
         return None
     key = rel(snapshot.root, root)
-    record = snapshot.topics.get(key)
-    if record is not None:
-        return _OwningTopic(path=key, extension_folders=record.extension_folders)
     return _OwningTopic(path=key, extension_folders=tuple(extension_folders(root)))
 
 

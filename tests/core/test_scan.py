@@ -48,7 +48,6 @@ def fingerprint(snapshot: KbSnapshot) -> object:
                 topic.parent,
                 topic.children,
                 topic.has_expert,
-                topic.extension_folders,
                 topic.meta,
             )
             for topic in snapshot.topics.values()
@@ -108,9 +107,11 @@ def test_unexpected_root_entry_pa1(tmp_path: Path) -> None:
     root = write_kb(
         tmp_path / "KB",
         {
-            "index.md": "generated\n",
+            # A root index.md is not one of these any more (T-37, P2) — the registry is the one
+            # derived file above the topics, and sessions/ replaces it below as a legal entry.
             "tags.md": "generated\n",
             "skills/voice/SKILL.md": "---\nname: voice\ndescription: d\n---\n",
+            "sessions/2024-01-01-standup.md": "raw session text\n",
             "Cooking/topic.md": topic_md("Cooking", "topic.cooking"),
         },
     )
@@ -411,12 +412,10 @@ def test_unaddressable_topic_root_is_reported_not_dropped_pa8(tmp_path: Path) ->
             FileRole.REFERENCE,
             FileClass.AUTHORED,
         ),
-        pytest.param(
-            "Cooking/recipes/ribeye-on-gas.md",
-            FileRole.EXTENSION_ITEM,
-            FileClass.AUTHORED,
-            marks=pytest.mark.superseded,
-        ),
+        # There is no extension-folder mechanism any more (T-1): a file inside an unrecognized
+        # topic-root directory is UNKNOWN, not a role of its own; the directory itself is a
+        # separate UNEXPECTED_TOPIC_ENTRY finding, covered in tests/core/test_tree_rules.py.
+        ("Cooking/recipes/ribeye-on-gas.md", FileRole.UNKNOWN, FileClass.AUTHORED),
         ("skills/voice/SKILL.md", FileRole.SKILL, FileClass.SKILL),
     ],
 )

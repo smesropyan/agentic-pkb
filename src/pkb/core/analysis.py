@@ -289,8 +289,9 @@ def find_orphans(kb_root: Path, snapshot: KbSnapshot) -> list[Finding]:
         a file under ``media/`` or inside a reference folder that the sibling main ``.md`` never
         references — a binary no agent will ever open, because agents read the text.
     ``ORPHAN_FILE``
-        authored markdown inside a topic that is in none of ``notes/``, ``references/``, or an
-        extension folder, and is not one of the structurally required files.
+        authored markdown inside a topic that is in neither ``notes/`` nor ``references/`` — there
+        is no extension-folder mechanism any more (T-1) — and is not one of the structurally
+        required files.
     ``ORPHAN_OUTSIDE_TOPIC``
         authored markdown outside every topic root that is not a reserved root file.
 
@@ -399,8 +400,7 @@ def _orphan_markdown(snapshot: KbSnapshot) -> list[Finding]:
                 Finding(
                     code="ORPHAN_FILE",
                     severity=Severity.WARNING,
-                    message="not in notes/, references/, or an extension folder, so no index "
-                    "lists it as an item",
+                    message="not in notes/ or references/, so no index lists it as an item",
                     rule_id="MA-8",
                     path=record.path,
                     hint="move it under notes/ or references/, or delete it",
@@ -454,7 +454,7 @@ def _item_folders(snapshot: KbSnapshot, topic: TopicRecord) -> dict[str, str]:
     ``recipes/media/media.md`` — a false statement rendered into the human's own ``index.md``
     (MA-10), whose hint asked them to create an item literally named ``media``.
     """
-    sections = {paths.NOTES_DIR, paths.REFERENCES_DIR, *topic.extension_folders}
+    sections = {paths.NOTES_DIR, paths.REFERENCES_DIR}
     folders: dict[str, str] = {}
     for record in snapshot.files_in_topic(topic.path):
         parts = _inner_parts(topic, record.path)
