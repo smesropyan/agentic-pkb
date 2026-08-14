@@ -126,7 +126,7 @@ driven through the API alone.
 Before either phase plan is written, a deep web-research pass goes into the implementations, not
 the readmes, of five repositories the operator named, plus the wider literature on brainstorming
 and planning agents:
-
+- https://github.com/anthropics/claude-cookbooks/tree/main/claude_agent_sdk   - claude orchestration agents
 - `https://github.com/obra/superpowers` — draw heavily on the skill designs.
 - `https://github.com/gsd-build/get-shit-done` and `https://github.com/gsd-build/gsd-2` — GSD 1
   and 2: questioning, workflows, agent prompts.
@@ -134,7 +134,10 @@ and planning agents:
   design; the old §2.8 guards (RS-141/RS-142) came from here and the new Learning agent should be
   grounded in what the implementation actually does.
 - `https://github.com/openclaw/openclaw` — agent interactions and orchestration.
-
+- Deep research on web on loop engineering for prompts.
+- Deep research on web for graph engineering to design agents/sub-agents and workflows. 
+- Knowledge extraction for theoretical knowledge ingestion from this repo: https://github.com/anthropics/claude-cookbooks/tree/main/capabilities/knowledge_graph
+- https://github.com/anthropics/claude-cookbooks for other design skills 
 Read the agent implementations themselves: prompts, loop code, stop conditions, hand-offs. Findings
 land in a research brief beside the phase plan, with strength labels, and anything adopted must
 still beat the measurements this design already carries (code fan-out, attributed merge, no debate
