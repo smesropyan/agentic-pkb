@@ -20,6 +20,11 @@ Three properties make it safe to call from an agent turn:
 which also adds the new topic's line to the root catalog, so a scaffolded topic is addressable the
 moment the call returns (SC-2, SC-7).
 
+``topic.md``'s placeholder body carries a ``## Skills`` heading (T-15, T-39): the procedural
+pillar's breadth file is that section rather than a fourth file class, and it rides the same
+approval ``topic.md`` already needs, so the scaffolder seeds the heading in the one step Tier 1
+owns and leaves the prose for the Topic Expert to draft in step 3 (T-40).
+
 Per decision A in the rules document the placeholders carry ``source_type: summary`` and
 ``type.summary`` — including ``topic.md``, which is distinguished by its location, not by a
 ``source_type`` of its own (VA-13 as amended).
@@ -74,6 +79,12 @@ _TOPIC_BODY: Final = (
     "\n"
     "Placeholder. The Topic Expert drafts the breadth map here for the human to approve: what this "
     "topic covers, how it is organised, and where a reader should start.\n"
+    "\n"
+    "## Skills\n"
+    "\n"
+    "Placeholder. The procedural pillar's breadth file, riding this document's own approval (T-15): "
+    "what the operator has learned about working this topic, distilled the way the two subject "
+    "summaries are.\n"
 )
 
 _NOTES_BODY: Final = (

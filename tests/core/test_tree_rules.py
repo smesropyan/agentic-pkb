@@ -8,10 +8,11 @@ Every test name ends in the rule id it covers, matching the convention in
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import date
 from pathlib import Path
 
-from pkb.core import frontmatter, tags
-from pkb.core.errors import Severity
+from pkb.core import frontmatter, paths, scaffold, tags
+from pkb.core.errors import Severity, errors_only
 from pkb.core.generators import topic_index
 from pkb.core.generators.tags_registry import (
     CUSTOM_EXPERT_MARKER,
@@ -23,7 +24,7 @@ from pkb.core.generators.tags_registry import (
 from pkb.core.generators.topic_index import render_topic_index, topic_index_findings
 from pkb.core.models import FileClass, FileRole
 from pkb.core.scan import scan
-from pkb.core.validation import validate_tree
+from pkb.core.validation import validate_content, validate_tree
 from tests.core.conftest import write_kb
 
 
@@ -724,3 +725,67 @@ def test_conflict_machinery_is_gone_t32() -> None:
     index carries none of the conflict-review machinery it used to render."""
     for name in ("CONFLICT_TAG", "NEEDS_REVIEW", "NO_REVIEW_NOTE", "_needs_review"):
         assert not hasattr(topic_index, name)
+
+
+# --------------------------------------------------------------------------------------
+# Task 8 — T-15, T-39, T-40: the scaffolder writes the new topic shape
+# --------------------------------------------------------------------------------------
+
+_TODAY = date(2024, 9, 1)
+_COOKING_DESC = "Home cooking: technique, equipment, and recipes"
+
+
+def test_scaffolded_topic_md_carries_a_skills_heading_t15_t39_t40(tmp_path: Path) -> None:
+    """T-15: the procedural pillar's breadth file is a ``## Skills`` section inside ``topic.md``
+    rather than a fourth file class. T-39/T-40: the scaffolder seeds that heading in step 1 so the
+    Topic Expert has somewhere to draft into in step 3 — Layer 1 asserts only the placeholder's
+    shape, not its prose."""
+    kb = tmp_path / "KB"
+    kb.mkdir()
+
+    scaffold.scaffold_topic(
+        kb, "Cooking", title="Cooking", description=_COOKING_DESC, today=_TODAY, regenerate=False
+    )
+
+    body = (kb / "Cooking" / paths.TOPIC_FILE).read_text(encoding="utf-8")
+    assert "## Skills" in body
+
+
+def test_no_scaffolded_file_carries_a_status_tag_t39(tmp_path: Path) -> None:
+    """T-39/T-17: there is no ``status.*`` namespace in this design, so no placeholder the
+    scaffolder writes stamps one — a scaffolded file carries only its ``topic.*`` and ``type.*``
+    tags."""
+    kb = tmp_path / "KB"
+    kb.mkdir()
+
+    result = scaffold.scaffold_topic(
+        kb, "Cooking", title="Cooking", description=_COOKING_DESC, today=_TODAY, regenerate=False
+    )
+
+    for rel_path in result.created:
+        target = kb / rel_path
+        if not target.is_file():
+            continue
+        meta = frontmatter.parse(target.read_text(encoding="utf-8")).meta
+        assert meta is not None
+        assert not any(tag.startswith("status.") for tag in meta.tags), rel_path
+
+
+def test_scaffolded_tree_validates_with_zero_errors_under_the_new_rules_t39(tmp_path: Path) -> None:
+    """T-39: every file the scaffolder writes — including the ``## Skills`` heading it now
+    seeds — passes :func:`~pkb.core.validation.validate_content` with zero errors, and a
+    freshly scaffolded, regenerated tree carries zero findings of any kind."""
+    kb = tmp_path / "KB"
+    kb.mkdir()
+
+    result = scaffold.scaffold_topic(
+        kb, "Cooking", title="Cooking", description=_COOKING_DESC, today=_TODAY, regenerate=True
+    )
+
+    written = [rel_path for rel_path in result.created if (kb / rel_path).is_file()]
+    assert written
+    for rel_path in written:
+        text = (kb / rel_path).read_text(encoding="utf-8")
+        assert errors_only(validate_content(kb, rel_path, text)) == [], rel_path
+
+    assert validate_tree(kb) == []
