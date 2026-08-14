@@ -45,7 +45,8 @@ TITLE_SUFFIX = f"{base.EM_DASH}Index"
 DESCRIPTION_TEMPLATE = "Canonical index of the {title} topic"
 
 NO_REVIEW_NOTE = "*(no review note)*"
-"""A ``status.conflict-review`` file whose ``review_note`` is missing (VA-29 reports it)."""
+"""What every ``status.conflict-review`` row renders — ``review_note`` is no longer a schema field
+(T-12), so :func:`_needs_review` cannot glean one from ``Metadata``."""
 
 CONFLICT_TAG = "status.conflict-review"
 
@@ -198,20 +199,22 @@ def _topic_bullet(snapshot: KbSnapshot, topic: TopicRecord) -> str:
 def _needs_review(
     snapshot: KbSnapshot, topic: TopicRecord, records: Iterable[FileRecord]
 ) -> list[str]:
-    """Every ``status.conflict-review`` file, glossed with its ``review_note`` (§4.3, Part 4).
+    """Every ``status.conflict-review`` file (§4.3, Part 4).
 
     This is derived from *current* state, not from a conflict history — Layer 1 keeps no record that
     a conflict ever happened (GE-28), so resolving one and reflushing empties the section entirely.
+
+    ``review_note`` is no longer a schema field (T-12); ``Metadata`` cannot carry it, so every row
+    reads as :data:`NO_REVIEW_NOTE` until the conflict-review workflow itself is redesigned.
     """
     lines: list[str] = []
     for record in records:
         meta = record.meta
         if meta is None or CONFLICT_TAG not in meta.tags:
             continue
-        note = base.inline(meta.review_note) if meta.review_note else ""
         lines.append(
             base.item_bullet(
-                _title_of(topic, record), _link(snapshot, topic, record), note or NO_REVIEW_NOTE
+                _title_of(topic, record), _link(snapshot, topic, record), NO_REVIEW_NOTE
             )
         )
     return lines

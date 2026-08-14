@@ -542,8 +542,10 @@ async def test_a_contradiction_flags_the_source_file_itself_ls5(kb: Path, book: 
     assert meta is not None
     assert "status.conflict-review" in meta.tags
     assert [tag for tag in meta.tags if tag.startswith("status.")] == ["status.conflict-review"]
-    assert meta.review_note is not None
-    assert "contradicts an earlier reading" in meta.review_note
+    # `review_note` is no longer a schema field (T-12) — `set_field` still writes it as a plain
+    # key, so its presence is checked on the raw text rather than through `Metadata`.
+    assert 'review_note: "' in text
+    assert "contradicts an earlier reading" in text
     assert "- Say it early." in text, "change nothing; let the human settle it"
     assert report.conflicts and report.gate is None
     assert not has_errors(validate_content(kb, report.path or "", text))

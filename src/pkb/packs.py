@@ -314,29 +314,27 @@ def _scoped_conflicts(snapshot: KbSnapshot, records: Sequence[TopicRecord]) -> l
 
 
 def escalations(snapshot: KbSnapshot, topics: Iterable[str]) -> tuple[Escalation, ...]:
-    """Every conflict-flagged file inside these topics, with its ``review_note`` (MC-20).
+    """Every conflict-flagged file inside these topics (MC-20).
 
     Exposed separately from the packs because all four MCP tools need it, including the two that
     build no pack: any tool whose scope touches contested material has to stop, and stopping is a
     successful result with a discriminator rather than an error (a well-behaved agent retries
     errors, and a retried escalation is an escalation ignored).
+
+    ``review_note`` is no longer a schema field (T-12): ``Metadata.unknown_fields`` records only the
+    *names* of the keys a file carries, not their values, so there is nothing left here to read one
+    out of. Every :class:`Escalation` below carries an empty ``review_note`` until the
+    conflict-review workflow itself is redesigned.
     """
     records = [_topic_record(snapshot, agent_id) for agent_id in topics]
     out: list[Escalation] = []
     for path in _scoped_conflicts(snapshot, records):
         file_record = snapshot.files[path]
-        meta = file_record.doc.meta if file_record.doc else None
         owner = next(
             (r.agent_id for r in records if r.path == file_record.topic_path),
             "",
         )
-        out.append(
-            Escalation(
-                path=path,
-                review_note=(getattr(meta, "review_note", None) or "") if meta else "",
-                agent_id=owner,
-            )
-        )
+        out.append(Escalation(path=path, review_note="", agent_id=owner))
     return tuple(out)
 
 

@@ -615,10 +615,9 @@ def _tags_of(text: str) -> frozenset[str]:
 def _clears_conflict(current: str, proposed: str) -> bool:
     """Is this the edit that resolves a flagged conflict (RT-26)?
 
-    Fires on the *removal* of ``status.conflict-review`` rather than on the exact three-field
-    edit README §1.7 describes, because the human must see any way an agent decides a conflict is
-    over — including one that forgets to set ``last_reviewed``. Adding the flag is the deliberate
-    exemption and is handled by simply not matching here.
+    Fires on the *removal* of ``status.conflict-review`` alone, because the human must see any way
+    an agent decides a conflict is over, however the write got there. Adding the flag is the
+    deliberate exemption and is handled by simply not matching here.
     """
     return CONFLICT_TAG in _tags_of(current) and CONFLICT_TAG not in _tags_of(proposed)
 

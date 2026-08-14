@@ -9,9 +9,9 @@ path of every agent turn, which is what shapes everything in this module:
   tree to be in order.
 * **Minimal-touch.** The only frontmatter field Layer 1 ever writes is ``updated``, only on paths
   the caller explicitly names, only through :func:`pkb.core.frontmatter.set_field` (MA-3, MA-5).
-  ``created`` is immutable (MA-4) and ``status.*`` / ``review_note`` belong to Layer 2's judgment,
-  never to a mechanical pass (MA-6). There is no version control (arch D6), so a rewrite nobody
-  asked for is unrecoverable.
+  ``created`` is immutable (MA-4) and ``status.*`` belongs to Layer 2's judgment, never to a
+  mechanical pass (MA-6). There is no version control (arch D6), so a rewrite nobody asked for is
+  unrecoverable.
 * **Flag, never repair.** Broken links and orphans are reported, in the returned
   :class:`~pkb.core.models.FlushReport` and in the owning topic's derived ``index.md`` (MA-10).
   Nothing is moved, deleted, or rewritten because of a finding (MA-9).

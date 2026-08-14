@@ -95,9 +95,11 @@ def write_note(
         created=TODAY,
         updated=TODAY,
         source_type=source_type,
-        review_note=review_note,
     )
-    text = serialize(meta, f"\n# {title}\n\n{body}")
+    # `review_note` is no longer a schema field (T-12); serialized as an unknown key so the fixture
+    # text stays exactly what it was when the field was still known.
+    extra = {"review_note": review_note} if review_note is not None else None
+    text = serialize(meta, f"\n# {title}\n\n{body}", extra=extra)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(text.replace("\n", newline).encode("utf-8"))
 

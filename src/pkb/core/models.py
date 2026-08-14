@@ -53,8 +53,6 @@ class Metadata:
     updated: date | None = None
     related_topics: tuple[str, ...] = ()
     source_type: str | None = None
-    review_note: str | None = None
-    last_reviewed: date | None = None
 
     unknown_fields: tuple[str, ...] = ()
     """Keys outside the known schema, first-seen order. Preserved on write (FM-10)."""

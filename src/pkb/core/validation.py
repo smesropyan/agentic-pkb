@@ -144,9 +144,8 @@ _FORBIDDEN_CONFLICT_FIELDS: frozenset[str] = frozenset(
 )
 """Keys that would record that a conflict happened (VA-30).
 
-Anything starting with ``conflict`` is forbidden too. ``last_reviewed`` is the *only* permitted
-trace of a resolved conflict: the spec forbids a conflict registry at every layer, and a
-frontmatter key is a registry with extra steps.
+Anything starting with ``conflict`` is forbidden too: the spec forbids a conflict registry at
+every layer, and a frontmatter key is a registry with extra steps.
 """
 
 _SECTION_EXCLUDED: frozenset[str] = frozenset(
@@ -312,7 +311,7 @@ def _fm4_field_types(ctx: _Context) -> list[Finding]:
 
     The parser is total: it leaves the typed attribute empty and records a ``FieldProblem`` so this
     layer can turn it into a finding (CX-5). ``EMPTY_FIELD`` problems are skipped — VA-4 owns them
-    for required fields and VA-29 owns ``review_note``.
+    for required fields.
     """
     findings = []
     for problem in ctx.meta.bad_fields:
@@ -353,86 +352,11 @@ def _va26_description_shape(ctx: _Context) -> list[Finding]:
     ]
 
 
-def _va28_date_order(ctx: _Context) -> list[Finding]:
-    """``updated`` and ``last_reviewed`` never precede ``created`` (VA-28)."""
-    created = ctx.meta.created
-    if created is None:
-        return []
-    findings = []
-    for name, value in (("updated", ctx.meta.updated), ("last_reviewed", ctx.meta.last_reviewed)):
-        if value is not None and value < created:
-            findings.append(
-                ctx.finding(
-                    "DATE_ORDER",
-                    Severity.ERROR,
-                    f"{name} ({value.isoformat()}) is earlier than created "
-                    f"({created.isoformat()}).",
-                    "VA-28",
-                    field=name,
-                    value=value.isoformat(),
-                    hint=f"Set {name} to {created.isoformat()} or later.",
-                )
-            )
-    return findings
-
-
-def _va29_review_note_coupling(ctx: _Context) -> list[Finding]:
-    """``review_note`` and ``status.conflict-review`` imply each other (VA-29).
-
-    Warning, not error, in both directions: flagging a conflict and writing the note are a
-    legitimate two-step edit, and an error would spend one of Layer 2's three attempts on a file
-    that is halfway through a correct transition.
-    """
-    conflicted = "status.conflict-review" in ctx.meta.tags
-    present = ctx.meta.has("review_note")
-    note = ctx.meta.review_note
-
-    if present and note is None:
-        return [
-            ctx.finding(
-                "EMPTY_REVIEW_NOTE",
-                Severity.WARNING,
-                "review_note is present but empty.",
-                "VA-29",
-                field="review_note",
-                hint="Describe the conflict in review_note, or remove the key entirely.",
-            )
-        ]
-    if conflicted and not present:
-        return [
-            ctx.finding(
-                "MISSING_REVIEW_NOTE",
-                Severity.WARNING,
-                "The file is tagged status.conflict-review but carries no review_note.",
-                "VA-29",
-                field="review_note",
-                hint='Add review_note: "…" saying what conflicts with what.',
-            )
-        ]
-    if note is not None and not conflicted:
-        return [
-            ctx.finding(
-                "ORPHANED_REVIEW_NOTE",
-                Severity.WARNING,
-                "review_note is set on a file that is not tagged status.conflict-review.",
-                "VA-29",
-                field="review_note",
-                value=note,
-                hint=(
-                    "Remove review_note now that the conflict is resolved, or re-tag the file "
-                    "status.conflict-review."
-                ),
-            )
-        ]
-    return []
-
-
 def _va30_forbidden_conflict_fields(ctx: _Context) -> list[Finding]:
     """No frontmatter key may record that a conflict happened (VA-30).
 
     The spec forbids a conflict registry, resolution log, loser marker and confidence score at
-    every layer; a frontmatter key is all of those in miniature. ``last_reviewed`` is the only
-    permitted trace, and ``review_note`` is permitted only while the conflict is open (VA-29).
+    every layer; a frontmatter key is all of those in miniature.
     """
     return [
         ctx.finding(
@@ -441,10 +365,7 @@ def _va30_forbidden_conflict_fields(ctx: _Context) -> list[Finding]:
             f"Frontmatter key {key!r} records conflict state, which is never stored in the KB.",
             "VA-30",
             field=key,
-            hint=(
-                "Remove the key. status.conflict-review plus review_note carry an open conflict; "
-                "last_reviewed is the only permitted trace of a resolved one."
-            ),
+            hint="Remove the key; the spec forbids a conflict registry at every layer.",
         )
         for key in ctx.meta.unknown_fields
         if _is_conflict_residue(key)
@@ -1174,8 +1095,6 @@ _CONTENT_RULES: tuple[_Rule, ...] = (
     _va4_required_fields,
     _fm4_field_types,
     _va26_description_shape,
-    _va28_date_order,
-    _va29_review_note_coupling,
     _va30_forbidden_conflict_fields,
     _va31_reserved_source_type,
     _fm6_unknown_source_type,

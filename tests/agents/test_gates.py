@@ -76,10 +76,15 @@ def doc(
         created=TODAY,
         updated=TODAY,
         source_type=source_type,
-        review_note=review_note,
-        last_reviewed=last_reviewed,
     )
-    return serialize(meta, body)
+    # `review_note` / `last_reviewed` are no longer schema fields (T-12); serialized as unknown
+    # keys so callers that still pass them get the same bytes as when the fields were known.
+    extra: dict[str, object] = {}
+    if review_note is not None:
+        extra["review_note"] = review_note
+    if last_reviewed is not None:
+        extra["last_reviewed"] = last_reviewed
+    return serialize(meta, body, extra=extra or None)
 
 
 def note(

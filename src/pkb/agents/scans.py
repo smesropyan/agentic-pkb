@@ -20,8 +20,9 @@ the checkpointer's database without sharing its connection (RT-4).
 
 **What the schema deliberately does not carry (RT-59).** No finding text, no conflict type, no
 confidence, no resolution, no loser marker. README §1.7 is explicit that the note content is the
-true state of knowledge and that no conflict registry exists — in the tree *or* here. The only trace
-a resolved conflict leaves anywhere is ``last_reviewed``.
+true state of knowledge and that no conflict registry exists — in the tree *or* here. Resolving a
+conflict leaves no trace anywhere: the frontmatter no longer carries a review timestamp, so all
+that changes is the tag moving off ``status.conflict-review`` (T-12, T-32).
 """
 
 from __future__ import annotations

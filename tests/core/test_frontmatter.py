@@ -801,8 +801,6 @@ _METADATA = st.builds(
     updated=st.dates(),
     related_topics=st.lists(_TAG, max_size=3).map(tuple),
     source_type=st.sampled_from(sorted(fm.AUTHORED_SOURCE_TYPES)),
-    review_note=st.one_of(st.none(), _TEXT),
-    last_reviewed=st.one_of(st.none(), st.dates()),
 )
 
 

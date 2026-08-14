@@ -191,11 +191,15 @@ def test_three_defects_yield_three_distinct_codes_cx5(kb: Path) -> None:
     text = note_at(
         NOTE_PATH,
         description=None,
-        updated="2024-10-01",
+        source_type="essay",
         tags=tag_block("topic.cooking.grilling", "type.note", "status.approved", "type.solution"),
     )
     found = validate_content(kb, NOTE_PATH, text)
-    assert set(codes(found)) == {"MISSING_REQUIRED_FIELD", "DATE_ORDER", "MULTIPLE_TYPE_TAGS"}
+    assert set(codes(found)) == {
+        "MISSING_REQUIRED_FIELD",
+        "UNKNOWN_SOURCE_TYPE",
+        "MULTIPLE_TYPE_TAGS",
+    }
     assert len(found) == 3
 
 
@@ -775,7 +779,9 @@ def test_a_multiline_description_is_rejected_va26(kb: Path) -> None:
     assert finding.severity is Severity.ERROR
 
 
+@pytest.mark.superseded
 def test_updated_may_not_precede_created_va28(kb: Path) -> None:
+    """VA-28 is fully removed (T-12): no T-rule replaces the ``updated``-vs-``created`` check."""
     text = note_at(NOTE_PATH, created="2024-10-15", updated="2024-10-14")
     assert only(validate_content(kb, NOTE_PATH, text), "DATE_ORDER").field == "updated"
 

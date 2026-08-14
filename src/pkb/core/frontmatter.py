@@ -62,10 +62,8 @@ REQUIRED_FIELDS: Final[frozenset[str]] = frozenset(
 )
 """Exactly seven, on every authored file (FM-2)."""
 
-OPTIONAL_FIELDS: Final[frozenset[str]] = frozenset(
-    {"related_topics", "review_note", "last_reviewed"}
-)
-"""Recognized but never required; ``related_topics`` defaults to ``[]`` (FM-3)."""
+OPTIONAL_FIELDS: Final[frozenset[str]] = frozenset({"related_topics"})
+"""The only recognized optional field; it defaults to ``[]`` (T-12)."""
 
 KNOWN_FIELDS: Final[frozenset[str]] = REQUIRED_FIELDS | OPTIONAL_FIELDS
 """Everything else is preserved and reported as unknown (FM-10)."""
@@ -79,10 +77,8 @@ CANONICAL_ORDER: Final[tuple[str, ...]] = (
     "updated",
     "related_topics",
     "source_type",
-    "review_note",
-    "last_reviewed",
 )
-"""Serialization key order; unknown keys follow in first-seen order (FM-7)."""
+"""Serialization key order; unknown keys follow in first-seen order (FM-7, T-12)."""
 
 AUTHORED_SOURCE_TYPES: Final[frozenset[str]] = frozenset(
     {"note", "reference", "solution", "summary"}
@@ -97,7 +93,7 @@ SOURCE_TYPES: Final[frozenset[str]] = AUTHORED_SOURCE_TYPES | DERIVED_SOURCE_TYP
 _TAG_NAMESPACES: Final[frozenset[str]] = frozenset({"topic", "status", "type", "domain"})
 """Closed namespace set (TG-2); ``normalize_related_topic`` keys off it (FM-15)."""
 
-_QUOTED_FIELDS: Final[frozenset[str]] = frozenset({"title", "description", "topic", "review_note"})
+_QUOTED_FIELDS: Final[frozenset[str]] = frozenset({"title", "description", "topic"})
 """Always double-quoted on write (FM-8)."""
 
 _LIST_FIELDS: Final[frozenset[str]] = frozenset({"tags", "related_topics"})
@@ -317,8 +313,6 @@ def _build_metadata(loaded: Mapping[Any, Any]) -> Metadata:
             else ()
         ),
         source_type=text_field("source_type"),
-        review_note=text_field("review_note"),
-        last_reviewed=date_field("last_reviewed"),
         unknown_fields=tuple(unknown),
         bad_fields=tuple(problems),
         present_keys=tuple(present),
