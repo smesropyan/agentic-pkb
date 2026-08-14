@@ -17,7 +17,7 @@ source_type: index
 
 ## Tag subtree
 
-- `topic.cooking.grilling` – root topic
+- `topic.cooking.grilling` – Charcoal and gas grilling
 
 ## Cross-topic mappings
 

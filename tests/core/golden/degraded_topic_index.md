@@ -16,4 +16,4 @@ source_type: index
 
 ## Tag subtree
 
-- `topic.physics` – root topic
+- `topic.physics` – *(missing topic metadata)*

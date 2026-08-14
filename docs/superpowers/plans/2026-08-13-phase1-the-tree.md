@@ -261,10 +261,10 @@ def test_a_status_tag_is_an_unknown_namespace_finding_t(tmp_path):
   loses the conflict machinery whole: `CONFLICT_TAG`, `NEEDS_REVIEW`, `NO_REVIEW_NOTE` and
   `_needs_review` are deleted (T-32; the Task 3 review found no task owned this removal).
 
-- [ ] **Step 1:** Failing tests: a topic with one skill folder and a `topic.md` carrying a
+- [x] **Step 1:** Failing tests: a topic with one skill folder and a `topic.md` carrying a
   `## Approaches` list renders both sections; a topic with neither renders neither heading; a
   sub-topic repeats no parent skill. **Step 2:** Run — FAIL. **Step 3:** Implement.
-- [ ] **Step 4:** Run, `make check`. **Step 5:** Commit:
+- [x] **Step 4:** Run, `make check`. **Step 5:** Commit:
   `feat: topic index carries its own skills and the approach entries` — and present P1 to the
   operator in the task report.
 

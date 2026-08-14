@@ -11,12 +11,13 @@ what the reader needs.
 
 Three shapes are worth naming before reading the code:
 
-* **A topic-backed node's summary is lifted, never authored** (T-23). ``_topic_node_annotations``
+* **A topic-backed node's summary is lifted, never authored** (T-23). ``derive.topic_node_annotations``
   builds one suffix per topic in ``snapshot.topics`` — the ``description`` its ``topic.md`` already
   carries, preceded by :data:`CUSTOM_EXPERT_MARKER` when the topic owns an ``expert.md`` — and a tag
   with no topic folder behind it simply has no entry, so :func:`~pkb.core.tags.render_tag_tree`
   renders it bare. Nothing here authors a description; changing one changes the ``topic.md`` an
-  operator already approved (§1.2), and this module only reads it back.
+  operator already approved (§1.2), and this module only reads it back. The same function backs a
+  topic index's own ``## Tag subtree`` (``topic_index.py``), so the two never render it two ways.
 * **The ``type`` section is generator text, not derived content** (TG-12, T-18). It renders
   identically for an empty KB and a full one — an ontology that vanishes when unused cannot teach an
   agent how to file the first note (GE-29). There is no ``status`` section (T-17).
@@ -32,7 +33,7 @@ from pathlib import Path
 from pkb.core import paths, tags
 from pkb.core.errors import Finding
 from pkb.core.generators import base, derive
-from pkb.core.generators.derive import SkillEntry
+from pkb.core.generators.derive import CUSTOM_EXPERT_MARKER, SkillEntry
 from pkb.core.models import KbSnapshot, Metadata, TopicRecord
 
 __all__ = [
@@ -56,13 +57,6 @@ MAPPINGS_HEADING = "Cross-topic mappings (aggregated from `related_topics`)"
 SKILLS_HEADING = "Skills (from each `SKILL.md`)"
 """Including its inline code span — pinned to the byte, verbatim from DESIGN §1.6 (T-25)."""
 
-CUSTOM_EXPERT_MARKER = " *(custom expert)*"
-"""Appended ahead of a topic-backed node's summary when the topic owns an ``expert.md`` (T-23).
-
-Moved here from the retired root ``index.md`` generator (T-37): the registry is the one place a
-topic-backed node's line lives now, so this is the one place the marker is spelled.
-"""
-
 _NAMESPACE_HEADING = "Namespace: {name}"
 
 
@@ -82,7 +76,7 @@ def render_root_tags(snapshot: KbSnapshot, *, shipped_skills: Sequence[SkillEntr
     Topic Expert would never actually load.
     """
     tree = tags.build_tag_tree(snapshot)
-    annotations = _topic_node_annotations(snapshot)
+    annotations = derive.topic_node_annotations(snapshot)
     blocks: list[str] = []
 
     for topic in _root_topics(snapshot):
@@ -110,36 +104,6 @@ def render_root_tags(snapshot: KbSnapshot, *, shipped_skills: Sequence[SkillEntr
 
     meta = Metadata(title=TITLE, source_type=SOURCE_TYPE)
     return base.document(meta, TITLE, blocks, banner=False)
-
-
-def _topic_node_annotations(snapshot: KbSnapshot) -> dict[str, str]:
-    """One rendered suffix per topic-backed ``topic.*`` node, keyed by full dotted tag (T-23).
-
-    A tag with no entry here has no topic folder behind it, so :func:`~pkb.core.tags.render_tag_tree`
-    renders it bare — the lookup miss *is* the "stays bare" half of T-23, not a case this function
-    special-cases.
-    """
-    return {topic.tag: _topic_suffix(topic) for topic in snapshot.topics.values()}
-
-
-def _topic_suffix(topic: TopicRecord) -> str:
-    """``*(custom expert)*`` (if any) then the lifted, degraded-total summary (T-23, GE-25)."""
-    marker = CUSTOM_EXPERT_MARKER if topic.has_expert else ""
-    return f"{marker}{tags.TAG_DEF_SEP}{_topic_summary(topic)}"
-
-
-def _topic_summary(topic: TopicRecord) -> str:
-    """The topic's own ``description``, degraded rather than dropped (T-23, GE-25).
-
-    Never authored here: a missing or unparseable ``topic.md`` renders a placeholder plus the
-    diagnostic :func:`root_tags_findings` reports, exactly as the retired root catalog did — the
-    registry is the one derived file above the topics now (T-37), so it is the one place left to
-    carry that totality.
-    """
-    if topic.meta is None:
-        return base.MISSING_TOPIC_METADATA
-    description = topic.meta.description
-    return base.inline(description) if description else base.NO_DESCRIPTION
 
 
 def _render_skills(shipped: Sequence[SkillEntry], root_owned: Sequence[SkillEntry]) -> list[str]:

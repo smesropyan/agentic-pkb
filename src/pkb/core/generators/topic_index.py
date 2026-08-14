@@ -1,19 +1,29 @@
-"""Topic ``index.md`` — the depth index (GE-14 … GE-18, GE-25 … GE-27, MA-10, §4.3).
+"""Topic ``index.md`` — the depth index (GE-14 … GE-18, GE-25 … GE-27, MA-10, T-16, T-38, §4.3).
 
-Where the root catalog answers *which topic*, this file answers *which file inside it*. It is read
-by a Topic Expert before it opens anything, so every bullet has to carry enough to decide without
+Where the registry answers *which topic*, this file answers *which file inside it*. It is read by a
+Topic Expert before it opens anything, so every bullet has to carry enough to decide without
 opening: the title, the one-line description, and the tags that let an agent select the
-``type.solution`` or ``status.conflict-review`` files without reading twelve notes (Q3).
+``type.solution`` files without reading twelve notes (Q3).
 
-Three boundaries are load-bearing:
+Four boundaries are load-bearing:
 
 * **It does not recurse into ``sub-topics/``** (GE-16). Each immediate sub-topic is one line linking
   to its own index. Thirty notes under ``sub-topics/Grilling/notes/`` add exactly one line here, and
   a thirty-first adds none — which is the only reason a deep tree stays readable at every level.
-* **Bodies are never read** (GE-14). Everything rendered comes from frontmatter and from the path.
+* **Item bodies are never read** (GE-14) — with one deliberate, narrow exception. The three breadth
+  files (``topic.md``, ``notes/summary.md``, ``references/summary.md``) may each carry their own
+  ``## Approaches`` section, and T-38 is explicit that regenerating the approach entries is "a lift
+  rather than a judgment": the generator reads only that one heading's own lines, out of the
+  ``ParsedDocument.body`` the walk already parsed (no second file open), checks each line's shape,
+  and copies the well-formed ones verbatim. Everything else in this file still comes from
+  frontmatter and from the path.
 * **No file is silently dropped** (GE-25). A markdown file in a place the structure does not
   describe still gets a bullet, under ``Other``; a dropped file is invisible to every depth agent,
   which is strictly worse than an ugly index.
+* **The skills catalog and the approach entries repeat no other level's** (T-16, T-35). Only a
+  ``skills/*/SKILL.md`` whose owning topic root is exactly this one appears in ``## Skills`` — never
+  a parent's, a sub-topic's, or a shipped one — and only this topic's own breadth files feed
+  ``## Approaches``.
 
 Item bullets sort by relative POSIX path, never by title (GE-27), so editing a title changes one
 line in place and renaming a file moves exactly one line.
@@ -21,16 +31,16 @@ line in place and renaming a file moves exactly one line.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 from pkb.core import paths, tags
-from pkb.core.errors import Finding, NotATopicRootError, sort_findings
+from pkb.core.errors import Finding, NotATopicRootError, Severity, sort_findings
 from pkb.core.generators import base, derive
 from pkb.core.models import FileClass, FileRecord, FileRole, KbSnapshot, Metadata, TopicRecord
 
 __all__ = [
-    "NO_REVIEW_NOTE",
     "SOURCE_TYPE",
     "generate_topic_index",
     "render_topic_index",
@@ -43,14 +53,9 @@ SOURCE_TYPE = "index"
 TITLE_SUFFIX = f"{base.EM_DASH}Index"
 DESCRIPTION_TEMPLATE = "Canonical index of the {title} topic"
 
-NO_REVIEW_NOTE = "*(no review note)*"
-"""What every ``status.conflict-review`` row renders — ``review_note`` is no longer a schema field
-(T-12), so :func:`_needs_review` cannot glean one from ``Metadata``."""
-
-CONFLICT_TAG = "status.conflict-review"
-
 BREADTH = "Breadth"
-NEEDS_REVIEW = "Needs review"
+SKILLS = "Skills"
+APPROACHES = "Approaches"
 SUBTOPICS = "Sub-topics"
 NOTES = "Notes"
 REFERENCES = "References"
@@ -62,6 +67,18 @@ MAINTENANCE_FLAGS = "Maintenance flags"
 _BREADTH_ROLES = frozenset({FileRole.NOTES_SUMMARY, FileRole.REFERENCES_SUMMARY})
 """The ``summary.md`` files. ``topic.md`` leads the section separately — it is the topic itself."""
 
+_BREADTH_FILE_NAMES: tuple[str, ...] = (
+    paths.TOPIC_FILE,
+    f"{paths.NOTES_DIR}/{paths.SUMMARY_FILE}",
+    f"{paths.REFERENCES_DIR}/{paths.SUMMARY_FILE}",
+)
+"""The three files T-38 allows a ``## Approaches`` section in, topic-relative, breadth order."""
+
+_APPROACHES_HEADING = "## Approaches"
+_APPROACH_LINE = re.compile(r"^- [^:]+: [^\s#]+#.+$")
+"""``- <name>: <kb-path>#<heading>`` (P1). A line under ``## Approaches`` that fails this shape is
+never guessed at — it becomes a :func:`_malformed_approach` finding instead (T-38)."""
+
 
 # --------------------------------------------------------------------------------------
 # Rendering
@@ -71,7 +88,7 @@ _BREADTH_ROLES = frozenset({FileRole.NOTES_SUMMARY, FileRole.REFERENCES_SUMMARY}
 def render_topic_index(
     snapshot: KbSnapshot, topic_path: str | Path, flags: Sequence[Finding] = ()
 ) -> str:
-    """Render one topic's index (GE-14 … GE-18, MA-10). Pure: no I/O, no clock (GE-9).
+    """Render one topic's index (GE-14 … GE-18, MA-10, T-16, T-38). Pure: no I/O, no clock (GE-9).
 
     ``flags`` are the maintenance findings this topic owns; the section is omitted when empty and
     therefore self-clears on the next flush once the defect is fixed (MA-10). Layer 1 never writes a
@@ -86,7 +103,8 @@ def render_topic_index(
 
     blocks: list[str] = []
     blocks += base.section(BREADTH, _breadth(snapshot, topic, records))
-    blocks += base.section(NEEDS_REVIEW, _needs_review(snapshot, topic, records))
+    blocks += base.section(SKILLS, _skills(snapshot, topic))
+    blocks += base.section(APPROACHES, _approaches(snapshot, topic))
     blocks += base.section(SUBTOPICS, _subtopics(snapshot, topic))
     blocks += base.section(NOTES, _items(snapshot, topic, records, FileRole.NOTE))
     blocks += base.section(REFERENCES, _items(snapshot, topic, records, FileRole.REFERENCE))
@@ -185,28 +203,107 @@ def _topic_bullet(snapshot: KbSnapshot, topic: TopicRecord) -> str:
     return base.item_bullet(base.inline(topic.title), target, description)
 
 
-def _needs_review(
-    snapshot: KbSnapshot, topic: TopicRecord, records: Iterable[FileRecord]
-) -> list[str]:
-    """Every ``status.conflict-review`` file (§4.3, Part 4).
-
-    This is derived from *current* state, not from a conflict history — Layer 1 keeps no record that
-    a conflict ever happened (GE-28), so resolving one and reflushing empties the section entirely.
-
-    ``review_note`` is no longer a schema field (T-12); ``Metadata`` cannot carry it, so every row
-    reads as :data:`NO_REVIEW_NOTE` until the conflict-review workflow itself is redesigned.
+def _skills(snapshot: KbSnapshot, topic: TopicRecord) -> list[str]:
+    """This topic's own ``skills/*/SKILL.md`` catalog: ``name``/``description``, nothing inherited
+    and nothing shadowed in (T-16, T-25). Root skills and a parent's or sub-topic's own overload
+    live in *their* catalogs — the registry for the root, that other topic's own ``index.md`` here —
+    and are never repeated in this one (T-35).
     """
     lines: list[str] = []
-    for record in records:
-        meta = record.meta
-        if meta is None or CONFLICT_TAG not in meta.tags:
-            continue
-        lines.append(
-            base.item_bullet(
-                _title_of(topic, record), _link(snapshot, topic, record), NO_REVIEW_NOTE
-            )
-        )
+    for name, description in _topic_skill_entries(snapshot, topic):
+        gloss = base.inline(description) if description else ""
+        lines.append(f"{tags.BULLET}`{name}`" + (f"{tags.TAG_DEF_SEP}{gloss}" if gloss else ""))
     return lines
+
+
+def _topic_skill_entries(snapshot: KbSnapshot, topic: TopicRecord) -> list[derive.SkillEntry]:
+    """This topic's own skill entries, sorted by name — the read side of :func:`_skills`.
+
+    ``snapshot.files_in_topic(topic.path)`` already scopes to files whose *owning topic root* is
+    exactly this one (no ``include_subtopics``), which is what keeps a parent's and a sub-topic's
+    own skill folders out of each other's catalog.
+    """
+    entries: list[derive.SkillEntry] = []
+    for record in snapshot.files_in_topic(topic.path):
+        if record.role is not FileRole.SKILL:
+            continue
+        parts = _relative(topic, record).split("/")
+        if len(parts) != 3 or parts[0] != paths.SKILLS_DIR or parts[2] != paths.SKILL_FILE:
+            continue
+        entry = derive.read_skill_entry(record.doc)
+        if entry is not None:
+            entries.append(entry)
+    return sorted(entries, key=lambda entry: tags.tag_sort_key(entry[0]))
+
+
+def _approaches(snapshot: KbSnapshot, topic: TopicRecord) -> list[str]:
+    """Every well-formed ``## Approaches`` line the topic's own breadth files carry (T-38, P1).
+
+    A breadth file names an approach together with where it sits, so this is a lift rather than a
+    judgment: find the section, keep the lines whose shape matches, and note which breadth file each
+    one came from — a malformed line is dropped here and reported instead by
+    :func:`_malformed_approaches`, never guessed at.
+    """
+    lines: list[str] = []
+    for relative in _BREADTH_FILE_NAMES:
+        for entry in _approach_section_lines(snapshot, topic, relative):
+            if _APPROACH_LINE.match(entry):
+                lines.append(f"{entry} (from `{relative}`)")
+    return lines
+
+
+def _malformed_approaches(snapshot: KbSnapshot, topic: TopicRecord) -> list[Finding]:
+    """One ``MALFORMED_APPROACH_ENTRY`` finding per ``## Approaches`` line that does not match
+    ``- <name>: <kb-path>#<heading>`` (T-38) — the totality counterpart to :func:`_approaches`
+    dropping the same line rather than copying it."""
+    findings: list[Finding] = []
+    for relative in _BREADTH_FILE_NAMES:
+        for entry in _approach_section_lines(snapshot, topic, relative):
+            if not _APPROACH_LINE.match(entry):
+                findings.append(_malformed_approach(f"{topic.path}/{relative}", entry))
+    return findings
+
+
+def _approach_section_lines(
+    snapshot: KbSnapshot, topic: TopicRecord, breadth_relative: str
+) -> list[str]:
+    """The non-blank lines of one breadth file's own ``## Approaches`` section, if it has one.
+
+    Reads ``ParsedDocument.body`` — already parsed by the walk, so this costs no second file open
+    (GE-9) — rather than the filesystem; a breadth file that does not exist or failed to parse
+    contributes nothing, same as a missing ``description`` degrades rather than aborts (GE-25).
+    """
+    record = snapshot.files.get(f"{topic.path}/{breadth_relative}")
+    if record is None or record.doc is None:
+        return []
+    lines = record.doc.body.splitlines()
+    try:
+        start = lines.index(_APPROACHES_HEADING) + 1
+    except ValueError:
+        return []
+    section: list[str] = []
+    for line in lines[start:]:
+        if line.startswith("## "):
+            break
+        stripped = line.strip()
+        if stripped:
+            section.append(stripped)
+    return section
+
+
+def _malformed_approach(path: str, raw: str) -> Finding:
+    return Finding(
+        code="MALFORMED_APPROACH_ENTRY",
+        severity=Severity.WARNING,
+        message=(
+            f"'## Approaches' line {raw!r} does not match '- <name>: <kb-path>#<heading>', so it "
+            "was not copied into the topic index"
+        ),
+        rule_id="T-38",
+        path=path,
+        hint="use the shape '- <name>: <kb-path>#<heading>', e.g. "
+        "'- Reverse sear: Cooking/recipes/ribeye-on-gas.md#Reverse sear'",
+    )
 
 
 def _subtopics(snapshot: KbSnapshot, topic: TopicRecord) -> list[str]:
@@ -238,15 +335,20 @@ def _items(
 
 
 def _tag_subtree(snapshot: KbSnapshot, topic: TopicRecord) -> list[str]:
-    """The branch of the **global** tag tree rooted at this topic's tag (GE-17).
+    """The branch of the **global** tag tree rooted at this topic's tag (GE-17, T-16).
 
     Global, not local: a file filed elsewhere that carries ``topic.cooking.sous-vide`` still shows
     up here, which is the point — the subtree describes the topic's vocabulary, not its folder. Only
-    ``topic.*`` is rendered; ``type.*``/``status.*``/``domain.*`` live in the registry (§5).
+    ``topic.*`` is rendered; ``type.*``/``domain.*`` live in the registry (§5).
+
+    Annotated the same way the registry annotates its own namespace section — same source function,
+    :func:`~pkb.core.generators.derive.topic_node_annotations` — so a topic-backed node's lifted
+    description and ``*(custom expert)*`` marker read identically whichever file shows them (T-16's
+    own "same renderer for the tag subtree").
     """
     tree = tags.build_tag_tree(snapshot)
     node = tree.subtree(topic.tag) or tags.TagNode(topic.tag)
-    return tags.render_tag_tree([node], annotations=derive.topic_annotations(snapshot, topic.tag))
+    return tags.render_tag_tree([node], annotations=derive.topic_node_annotations(snapshot))
 
 
 def _mappings(snapshot: KbSnapshot, topic: TopicRecord) -> list[str]:
@@ -334,11 +436,12 @@ def _tag_suffix(meta: Metadata | None) -> str:
 
 
 def topic_index_findings(snapshot: KbSnapshot, topic_path: str | Path) -> list[Finding]:
-    """One diagnostic per degraded entry this index renders (GE-25). Pure.
+    """One diagnostic per degraded entry this index renders (GE-25, T-38). Pure.
 
-    The topic's own ``topic.md`` is diagnosed by the root catalog (it renders the same entry), so
+    The topic's own ``topic.md`` is diagnosed by the registry (it renders the same entry — T-37), so
     only the topic's items are reported here — otherwise a single missing ``description`` would
-    produce two findings for one fix.
+    produce two findings for one fix. A malformed ``## Approaches`` line has no such twin anywhere
+    else, so :func:`_malformed_approaches` is folded straight in.
     """
     topic = _topic(snapshot, topic_path)
     findings: list[Finding] = []
@@ -348,4 +451,5 @@ def topic_index_findings(snapshot: KbSnapshot, topic_path: str | Path) -> list[F
         meta = record.meta
         if meta is None or not meta.description:
             findings.append(base.missing_description(record.path))
+    findings += _malformed_approaches(snapshot, topic)
     return findings

@@ -15,10 +15,6 @@ source_type: index
 - [Notes summary](notes/summary.md) — Distilled rules from cooking experience
 - [References summary](references/summary.md) — Overview of ingested cooking sources
 
-## Needs review
-
-- [Preheat the grill](notes/preheat-the-grill.md) — Reference 'Grill Basics' says preheat for 10 min. Note says 15 min.
-
 ## Sub-topics
 
 - [Grilling](sub-topics/Grilling/index.md) — Charcoal and gas grilling
@@ -33,16 +29,16 @@ source_type: index
 
 - [Grill Basics](references/grill-basics/grill-basics.md) — Beginner guide to charcoal grilling · tags: `status.approved` `topic.cooking.grilling` `type.reference`
 
-## Recipes
+## Other
 
 - [Ribeye on gas](recipes/ribeye-on-gas.md) — Reverse-sear ribeye on a three-burner gas grill · tags: `status.approved` `topic.cooking.recipes` `type.note`
 
 ## Tag subtree
 
-- `topic.cooking` – root topic
-    - `topic.cooking.grilling`
+- `topic.cooking` *(custom expert)* – Home cooking: technique, equipment, and recipes
+    - `topic.cooking.grilling` – Charcoal and gas grilling
     - `topic.cooking.heat-management`
-    - `topic.cooking.recipes` *(topic-specific extension)*
+    - `topic.cooking.recipes`
 
 ## Cross-topic mappings
 

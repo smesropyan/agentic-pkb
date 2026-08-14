@@ -1,6 +1,6 @@
 """What the generators compute from a snapshot before any byte is rendered (GE-3, GE-19 … GE-24).
 
-Three derivations are needed by more than one artifact, and each is subtle enough that two
+Four derivations are needed by more than one artifact, and each is subtle enough that two
 implementations would silently disagree:
 
 * **Cross-topic mappings.** Root ``tags.md`` aggregates them (GE-19, GE-20) and every topic index
@@ -8,24 +8,31 @@ implementations would silently disagree:
   root ``tags.md``" — is only checkable because both read the same list.
 * **Skill entries.** A ``SKILL.md``'s ``name``/``description`` are read out of the ``ParsedDocument``
   the walk already parsed (T-25, T-16) — never a second file open — so the root registry's ``##
-  Skills`` section and a future topic index's own catalog agree on what one ``SKILL.md`` says.
+  Skills`` section and each topic index's own catalog agree on what one ``SKILL.md`` says.
+* **Topic-node annotations.** A topic-backed ``topic.*`` node's summary is lifted from its own
+  ``topic.md`` and marked when the topic owns an ``expert.md`` (T-23), and it has to read the same
+  whether it appears in the registry's own namespace section or in that topic's own ``## Tag
+  subtree`` (T-16's "the same renderer for the tag subtree") — :func:`test_topic_tag_subtree_equals
+  _the_registry_block_ge17` in ``tests/core/test_generators.py`` is exactly the check that two
+  drifting implementations would fail.
 
-There is no tag-section annotation derivation left (T-1): the extension-folder mechanism the old
-``EXTENSION_MARKER`` depended on is retired outright, not merely renamed, so a topic's local tag
-subtree carries only its root gloss now (:func:`topic_annotations`).
+There is no *folder*-driven tag-section annotation left (T-1): the extension-folder mechanism the
+old ``EXTENSION_MARKER`` depended on is retired outright, not merely renamed.
 
 Everything here is pure over the snapshot: no filesystem, no clock, no absolute path in any result.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 
 from pkb.core import frontmatter, paths, tags
 from pkb.core.errors import Finding, Severity, has_errors
-from pkb.core.models import FileRole, KbSnapshot, ParsedDocument
+from pkb.core.generators import base
+from pkb.core.models import FileRole, KbSnapshot, ParsedDocument, TopicRecord
 
 __all__ = [
+    "CUSTOM_EXPERT_MARKER",
     "Pair",
     "SkillEntry",
     "cross_topic_pairs",
@@ -33,8 +40,16 @@ __all__ = [
     "pairs_for_topic",
     "read_skill_entry",
     "root_skills",
-    "topic_annotations",
+    "topic_node_annotations",
 ]
+
+CUSTOM_EXPERT_MARKER = " *(custom expert)*"
+"""Appended ahead of a topic-backed node's summary when the topic owns an ``expert.md`` (T-23).
+
+The one place this is spelled: both the registry (``tags_registry.py``, re-exporting it for its own
+already-established public import path) and a topic's own ``## Tag subtree`` (``topic_index.py``)
+read it from here rather than each defining their own.
+"""
 
 Pair = tuple[str, str]
 """An oriented cross-topic mapping: ``(left, right)`` as rendered."""
@@ -154,19 +169,43 @@ def pairs_for_topic(pairs: Iterable[Pair], topic_tag: str) -> list[Pair]:
 
 
 # --------------------------------------------------------------------------------------
-# Tag-section annotations (GE-23)
+# Topic-node annotations (T-23, GE-23)
 # --------------------------------------------------------------------------------------
 
 
-def topic_annotations(snapshot: KbSnapshot, root_tag: str) -> Mapping[str, str]:
-    """Annotation for one ``topic.*`` section's root node: the root gloss, and nothing else (GE-23).
+def topic_node_annotations(snapshot: KbSnapshot) -> dict[str, str]:
+    """One rendered suffix per topic-backed ``topic.*`` node, keyed by full dotted tag (T-23).
+
+    A tag with no entry here has no topic folder behind it, so
+    :func:`~pkb.core.tags.render_tag_tree` renders it bare — the lookup miss *is* the "stays bare"
+    half of T-23, not a case this function special-cases. Covers every topic in the snapshot, not
+    only top-level ones, because a sub-topic (``topic.cooking.baking``) is just as topic-backed as
+    its parent, and a caller that wants only one topic's own subtree simply looks up fewer keys.
 
     There is no extension-folder mechanism any more (T-1), so this no longer also marks a folder
     that happens to sit under the topic root — a name ``STRUCTURAL_DIRS`` does not recognize is
     reported once, cross-file, as ``UNEXPECTED_TOPIC_ENTRY`` (:func:`pkb.core.paths.extension_folders`),
     never rendered into a tag-tree annotation.
     """
-    return {root_tag: tags.ROOT_TOPIC_ANNOTATION}
+    return {topic.tag: _topic_node_suffix(topic) for topic in snapshot.topics.values()}
+
+
+def _topic_node_suffix(topic: TopicRecord) -> str:
+    """``*(custom expert)*`` (if any) then the lifted, degraded-total summary (T-23, GE-25)."""
+    marker = CUSTOM_EXPERT_MARKER if topic.has_expert else ""
+    return f"{marker}{tags.TAG_DEF_SEP}{_topic_node_summary(topic)}"
+
+
+def _topic_node_summary(topic: TopicRecord) -> str:
+    """The topic's own ``description``, degraded rather than dropped (T-23, GE-25).
+
+    Never authored here: a missing or unparseable ``topic.md`` renders a placeholder — the caller
+    reports the accompanying diagnostic (``root_tags_findings``, T-37).
+    """
+    if topic.meta is None:
+        return base.MISSING_TOPIC_METADATA
+    description = topic.meta.description
+    return base.inline(description) if description else base.NO_DESCRIPTION
 
 
 # --------------------------------------------------------------------------------------

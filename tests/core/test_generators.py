@@ -1,14 +1,14 @@
-"""The two derived files: content, byte format, determinism and totality (GE-1 … GE-32, T-22 … T-37).
+"""The two derived files: content, byte format, determinism and totality (GE-1 … GE-32, T-22 … T-38).
 
 The golden files in ``tests/core/golden/`` are the contract. ``tags.md`` and ``empty_tags.md`` were
-regenerated against the new registry renderer by Phase 1's Task 6 and their comparison
-(:func:`test_goldens_match_ge31`, parametrized per file) is live again — the rest
-(``cooking_index.md``, ``bbq_index.md``, ``grilling_index.md``, ``minimal_topic_index.md``,
-``flagged_cooking_index.md``, ``degraded_topic_index.md``) are ``topic_index.py`` goldens Task 6
-does not touch and stay :data:`_LIVE_GOLDENS`-excluded (superseded) until Task 7 rebuilds that
-generator and regenerates them in turn. ``root_index.md``, ``empty_root_index.md`` and
-``degraded_root_index.md`` are gone along with ``root_index.py`` — there is no root ``index.md``
-generator left to compare against one (T-37).
+regenerated against the new registry renderer by Phase 1's Task 6; ``cooking_index.md``,
+``bbq_index.md``, ``grilling_index.md``, ``minimal_topic_index.md``, ``flagged_cooking_index.md``
+and ``degraded_topic_index.md`` were regenerated against the new ``topic_index.py`` (its own
+skills catalog, its approach entries, the conflict machinery gone, and a ``## Tag subtree`` that now
+shares the registry's own topic-node annotation) by Task 7, and every name's comparison
+(:func:`test_goldens_match_ge31`, parametrized per file) is live. ``root_index.md``,
+``empty_root_index.md`` and ``degraded_root_index.md`` are gone along with ``root_index.py`` — there
+is no root ``index.md`` generator left to compare against one (T-37).
 
 Regenerate the live goldens with::
 
@@ -17,9 +17,9 @@ Regenerate the live goldens with::
 The switch lives on the module's script entry point rather than on ``pytest`` because
 ``pytest_addoption`` is only honoured from a ``conftest.py``, and this phase does not own
 ``tests/core/conftest.py``. Compare and update run through the same :func:`render_goldens`, so the
-two can never disagree about what a golden contains — but :func:`_update_goldens` writes only
-:data:`_LIVE_GOLDENS`: writing every key in :func:`render_goldens`' dict would silently regenerate
-the topic-index goldens Task 7 still owns, ahead of the rework that is supposed to change them.
+two can never disagree about what a golden contains; :data:`_LIVE_GOLDENS` is kept as the seam for a
+later phase that stages a new golden ahead of the rework that is supposed to change it, the way Task
+7's own topic-index names sat out of it until this task landed.
 
 Re-run the live goldens against DESIGN §1.6 after any change to them: they are quoted text, and a
 golden that drifts from the document it was copied from is worse than no golden at all.
@@ -263,9 +263,11 @@ GOLDEN_NAMES = tuple(
     )
 )
 
-_LIVE_GOLDENS = frozenset({"tags.md", "empty_tags.md"})
-"""Task 6 regenerates these two against the new registry renderer, so their comparison is live
-again; the rest are topic-index goldens Task 7 rebuilds when it reworks ``topic_index.py``."""
+_LIVE_GOLDENS = frozenset(GOLDEN_NAMES)
+"""Every golden is live: Task 6 regenerated ``tags.md``/``empty_tags.md`` against the new registry
+renderer and Task 7 regenerated the six topic-index goldens against the reworked
+``topic_index.py``. Kept as a named set, rather than inlined into the parametrize call below, so a
+later phase that stages a new golden ahead of its own rework has the one seam to narrow again."""
 
 
 def _read_golden(name: str) -> str:
@@ -712,16 +714,13 @@ def _block(text: str, heading: str) -> list[str]:
     return [line for line in rest[:end] if line]
 
 
-@pytest.mark.superseded
 def test_topic_tag_subtree_equals_the_registry_block_ge17(tmp_path: Path) -> None:
     """A topic's ``## Tag subtree`` equals its ``## Namespace:`` block in ``tags.md`` (GE-17).
 
-    Superseded by Task 6 (T-23): the registry's root node now carries a lifted description plus
-    ``*(custom expert)*`` instead of the generic "root topic" gloss, but ``topic_index.py``'s own
-    ``## Tag subtree`` section still renders the old ``ROOT_TOPIC_ANNOTATION`` — Task 6's own scope
-    is ``tags_registry.py``/``derive.py``/``generators/__init__.py``, not ``topic_index.py``. Task
-    7's own interface is explicit that it picks this up: "Consumes: ... Task 6's registry
-    conventions (same renderer for the tag subtree)."
+    Live again as of Task 7 (T-16): ``_tag_subtree`` now annotates through the same
+    ``derive.topic_node_annotations`` the registry itself uses, so a topic-backed node's lifted
+    description and ``*(custom expert)*`` marker read identically in both files — "Consumes: ...
+    Task 6's registry conventions (same renderer for the tag subtree)."
     """
     snapshot = scan(write_kb(tmp_path / "KB", SAMPLE_KB_FILES))
     index = render_topic_index(snapshot, "Cooking")
@@ -1044,12 +1043,11 @@ def test_item_bullets_sort_by_path_not_title_ge27(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     after = render_topic_index(scan(kb), "Cooking")
-    assert _changed_lines(before, after) == 2  # the Notes bullet and the Needs review bullet
+    assert _changed_lines(before, after) == 1  # the Notes bullet — there is no other section to
+    # repeat it in now that the conflict-review machinery is gone (T-32)
     assert after.split("\n").index("## Notes") == before.split("\n").index("## Notes")
 
     # A rename moves exactly one line: out of its old slot and into the new sorted position.
-    # (A note that is also listed under Needs review would move two, which is why this uses the
-    # unconflicted one.)
     wind = kb / "Cooking" / "notes" / "grill-performance-in-windy-conditions.md"
     wind.rename(wind.with_name("zzz-wind.md"))
     moved = render_topic_index(scan(kb), "Cooking").split("\n")
@@ -1281,10 +1279,10 @@ def test_registry_rendering_is_invariant_to_file_order_ge4(segments: list[str]) 
 def _update_goldens() -> list[str]:
     """Rewrite the *live* goldens from the current renderers. Used by the script entry point (GE-31).
 
-    Restricted to :data:`_LIVE_GOLDENS` rather than every key :func:`render_goldens` renders: the
-    topic-index goldens are Task 7's to regenerate, and a script that quietly overwrote them ahead
-    of that rework would make the stale comparison in :func:`test_goldens_match_ge31` stale in the
-    other direction — passing against bytes nobody reviewed rather than failing loudly.
+    Restricted to :data:`_LIVE_GOLDENS` rather than every key :func:`render_goldens` renders: a
+    golden a later phase stages ahead of its own rework must not be silently overwritten by this
+    script before anyone reviewed the new bytes — that would make :func:`test_goldens_match_ge31`
+    stale in the other direction, passing against output nobody looked at rather than failing loudly.
     """
     with tempfile.TemporaryDirectory() as workdir:
         rendered = render_goldens(Path(workdir))

@@ -12,6 +12,7 @@ from pathlib import Path
 
 from pkb.core import frontmatter, tags
 from pkb.core.errors import Severity
+from pkb.core.generators import topic_index
 from pkb.core.generators.tags_registry import (
     CUSTOM_EXPERT_MARKER,
     MAPPINGS_HEADING,
@@ -19,6 +20,7 @@ from pkb.core.generators.tags_registry import (
     render_root_tags,
     root_tags_findings,
 )
+from pkb.core.generators.topic_index import render_topic_index, topic_index_findings
 from pkb.core.models import FileClass, FileRole
 from pkb.core.scan import scan
 from pkb.core.validation import validate_tree
@@ -574,3 +576,151 @@ def test_sibling_order_is_case_insensitive_by_the_full_string_t27(tmp_path: Path
         f"- `apple`{tags.TAG_DEF_SEP}Lowercase on purpose.",
         f"- `Zebra`{tags.TAG_DEF_SEP}Capitalized on purpose.",
     ]
+
+
+# --------------------------------------------------------------------------------------
+# Task 7 — T-16, T-38: the topic index carries its own skills catalog and approach entries;
+# T-32: the conflict machinery it used to render is gone outright
+# --------------------------------------------------------------------------------------
+
+
+def _cooking_topic(body: str = "Body.\n") -> str:
+    return _knowledge_file(
+        title="Cooking",
+        description=_COOKING_DESCRIPTION,
+        topic="Cooking",
+        tags_=["topic.cooking", "type.summary"],
+        source_type="summary",
+        body=body,
+    )
+
+
+def test_topic_with_a_skill_and_an_approach_renders_both_sections_t16_t38(tmp_path: Path) -> None:
+    """T-16, T-38: a topic's own ``SKILL.md`` and its ``topic.md``'s own ``## Approaches`` list
+    each earn a section — the catalog from the skill's own name/description, the pointer copied
+    verbatim from the breadth file that names it."""
+    kb = write_kb(
+        tmp_path / "KB",
+        {
+            "Cooking/topic.md": _cooking_topic(
+                "# Cooking\n\n"
+                "## Approaches\n\n"
+                "- Reverse sear: Cooking/recipes/ribeye-on-gas.md#Reverse sear\n"
+            ),
+            "Cooking/skills/timing/SKILL.md": (
+                "---\nname: timing\ndescription: When to pull it off the heat.\n---\n\nBody.\n"
+            ),
+        },
+    )
+    snapshot = scan(kb)
+    text = render_topic_index(snapshot, "Cooking")
+
+    assert "## Skills" in text
+    assert f"{tags.BULLET}`timing`{tags.TAG_DEF_SEP}When to pull it off the heat." in text
+    assert "## Approaches" in text
+    assert "- Reverse sear: Cooking/recipes/ribeye-on-gas.md#Reverse sear" in text
+
+
+def test_topic_with_neither_renders_neither_heading_t16_t38(tmp_path: Path) -> None:
+    """T-16, T-38: no topic-owned skill and no ``## Approaches`` line means no heading at all — a
+    promised, empty section is worse than an absent one (§4.3's own totality rule)."""
+    kb = write_kb(tmp_path / "KB", {"Cooking/topic.md": _cooking_topic()})
+    snapshot = scan(kb)
+    text = render_topic_index(snapshot, "Cooking")
+
+    assert "## Skills" not in text
+    assert "## Approaches" not in text
+
+
+def test_sub_topic_repeats_no_parent_skill_t16(tmp_path: Path) -> None:
+    """T-16: a topic's catalog lists only what that level declared — a sub-topic never repeats its
+    parent's ``SKILL.md``, and a parent never repeats a sub-topic's."""
+    kb = write_kb(
+        tmp_path / "KB",
+        {
+            "Cooking/topic.md": _cooking_topic(),
+            "Cooking/skills/timing/SKILL.md": (
+                "---\nname: timing\ndescription: Cooking's own overload.\n---\n\nBody.\n"
+            ),
+            "Cooking/sub-topics/Grilling/topic.md": _knowledge_file(
+                title="Grilling",
+                description="Charcoal and gas grilling",
+                topic="Grilling",
+                tags_=["topic.cooking.grilling", "type.summary"],
+                source_type="summary",
+            ),
+        },
+    )
+    snapshot = scan(kb)
+
+    grilling_text = render_topic_index(snapshot, "Cooking/sub-topics/Grilling")
+    assert "## Skills" not in grilling_text
+    assert "timing" not in grilling_text
+
+    cooking_text = render_topic_index(snapshot, "Cooking")
+    assert "## Skills" in cooking_text
+    assert "timing" in cooking_text
+
+
+def test_malformed_approach_line_is_a_finding_and_is_not_copied_t38(tmp_path: Path) -> None:
+    """T-38: a line under ``## Approaches`` that does not match ``- <name>: <kb-path>#<heading>``
+    becomes a ``MALFORMED_APPROACH_ENTRY`` finding, never a best-effort guess, and it is dropped
+    rather than copied into the topic index."""
+    kb = write_kb(
+        tmp_path / "KB",
+        {
+            "Cooking/topic.md": _cooking_topic(
+                "# Cooking\n\n## Approaches\n\n- Reverse sear, no target at all\n"
+            ),
+        },
+    )
+    snapshot = scan(kb)
+    text = render_topic_index(snapshot, "Cooking")
+
+    assert "Reverse sear, no target at all" not in text
+    assert "## Approaches" not in text  # the only candidate line was malformed
+
+    findings = topic_index_findings(snapshot, "Cooking")
+    matches = [f for f in findings if f.code == "MALFORMED_APPROACH_ENTRY"]
+    assert len(matches) == 1
+    assert matches[0].path == "Cooking/topic.md"
+    assert matches[0].rule_id == "T-38"
+
+
+def test_approach_entries_note_their_source_breadth_file_t38(tmp_path: Path) -> None:
+    """T-38: each approach entry carries the breadth file it was lifted from, so two identically
+    shaped entries declared in different files stay distinguishable."""
+    kb = write_kb(
+        tmp_path / "KB",
+        {
+            "Cooking/topic.md": _cooking_topic(
+                "# Cooking\n\n"
+                "## Approaches\n\n"
+                "- Reverse sear: Cooking/recipes/ribeye-on-gas.md#Reverse sear\n"
+            ),
+            "Cooking/notes/summary.md": _knowledge_file(
+                title="Notes summary",
+                description="Distilled rules from cooking experience",
+                topic="Cooking",
+                tags_=["topic.cooking", "type.summary"],
+                source_type="summary",
+                body=(
+                    "# Notes summary\n\n"
+                    "## Approaches\n\n"
+                    "- Cold start: Cooking/notes/cold-start.md#Cold start\n"
+                ),
+            ),
+        },
+    )
+    snapshot = scan(kb)
+    text = render_topic_index(snapshot, "Cooking")
+
+    assert "- Reverse sear: Cooking/recipes/ribeye-on-gas.md#Reverse sear (from `topic.md`)" in text
+    assert "- Cold start: Cooking/notes/cold-start.md#Cold start (from `notes/summary.md`)" in text
+
+
+def test_conflict_machinery_is_gone_t32() -> None:
+    """T-32: "it grows no task queue, no runner and no status field" (§1.8 rule 9) — the topic
+    index carries none of the conflict-review machinery it used to render."""
+    for name in ("CONFLICT_TAG", "NEEDS_REVIEW", "NO_REVIEW_NOTE", "_needs_review"):
+        assert not hasattr(topic_index, name)

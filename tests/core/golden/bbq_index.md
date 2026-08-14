@@ -17,7 +17,7 @@ source_type: index
 
 ## Tag subtree
 
-- `topic.bbq` – root topic
+- `topic.bbq` – Barbecue equipment, fuel, and technique
     - `topic.bbq.equipment`
 
 ## Cross-topic mappings

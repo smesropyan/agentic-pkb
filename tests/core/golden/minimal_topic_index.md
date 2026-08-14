@@ -25,5 +25,5 @@ source_type: index
 
 ## Tag subtree
 
-- `topic.physics` – root topic
+- `topic.physics` – Motion, energy, and matter
     - `topic.physics.mechanics`
