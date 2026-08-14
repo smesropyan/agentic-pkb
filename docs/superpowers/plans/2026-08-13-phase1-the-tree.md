@@ -257,7 +257,9 @@ def test_a_status_tag_is_an_unknown_namespace_finding_t(tmp_path):
 - Consumes: Task 5's roles, Task 6's registry conventions (same renderer for the tag subtree).
 - Produces: each topic `index.md` gains `## Skills` (that topic's own `skills/*/SKILL.md` name +
   description, no parent's, no shipped) and `## Approaches` (P1: verbatim copy of `- <name>:
-  <kb-path>#<heading>` items from the topic's breadth files, source file noted per entry).
+  <kb-path>#<heading>` items from the topic's breadth files, source file noted per entry), and
+  loses the conflict machinery whole: `CONFLICT_TAG`, `NEEDS_REVIEW`, `NO_REVIEW_NOTE` and
+  `_needs_review` are deleted (T-32; the Task 3 review found no task owned this removal).
 
 - [ ] **Step 1:** Failing tests: a topic with one skill folder and a `topic.md` carrying a
   `## Approaches` list renders both sections; a topic with neither renders neither heading; a
@@ -312,7 +314,8 @@ def test_a_status_tag_is_an_unknown_namespace_finding_t(tmp_path):
 
 - [ ] **Step 1:** `grep -rln 'pytestmark.*superseded\|mark\.superseded' tests/core/` — delete those
   tests (whole files where wholly dead). **Step 2:** Remove dead exports; run
-  `grep -rn 'root_index\|STATUS_DEFINITIONS\|EXTENSION_MARKER' src/` — must be empty.
+  `grep -rn 'root_index\|STATUS_DEFINITIONS\|EXTENSION_MARKER\|status\.draft\|status\.approved\|status\.conflict-review' src/`
+  — must be empty (the status literals are T-32's own list; the Task 3 review widened this).
 - [ ] **Step 3:** `make check` — green; record final counts. **Step 4:** Commit:
   `chore: remove the superseded tree tests and dead exports`.
 
