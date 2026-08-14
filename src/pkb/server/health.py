@@ -2,13 +2,16 @@
 
 Degradation is reported in the **body**, never in the status code. D9's whole point is that a
 crashed Telegram bot must not take the daemon down; a 503 invites exactly the restart D9 forbids and
-would kill in-flight runs and pending approvals that are perfectly healthy. A supervisor that
-restarts on a non-200 would therefore turn one flapping subsystem into lost work.
+would kill in-flight runs that are perfectly healthy. A supervisor that restarts on a non-200 would
+therefore turn one flapping subsystem into lost work.
 
 **Cheap and side-effect-free** (AP-19): no tree walk, no ``regenerate``, no graph compile, no
-checkpointer read, no model call. ``agent_count`` comes from the cached catalog and the thread and
-proposal counts are one indexed ``COUNT(*)`` each. A health endpoint that walks the tree times out
-exactly when the system is under load — which is when something is asking.
+checkpointer read, no model call. ``agent_count`` comes from the cached catalog and the thread count
+is one indexed ``COUNT(*)``. A health endpoint that walks the tree times out exactly when the system
+is under load — which is when something is asking.
+
+No ``proposals`` key (Task 6): ``pkb.service.proposals`` and the ``propose_only`` auto-rejection it
+recorded are both gone, so there is nothing left to count.
 """
 
 from __future__ import annotations
@@ -213,9 +216,9 @@ class SubsystemState:
 
         Deliberately touches neither ``state`` nor ``restarts``: ``degraded`` keeps its narrow
         meaning of "an enabled subsystem is not running". A 503 or a widened ``degraded`` on a
-        failed ``sendMessage`` invites the supervisor restart D9 forbids, killing in-flight runs and
-        pending approvals that are perfectly healthy — and a signal that fires for every dropped
-        message is one somebody mutes.
+        failed ``sendMessage`` invites the supervisor restart D9 forbids, killing in-flight runs that
+        are perfectly healthy — and a signal that fires for every dropped message is one somebody
+        mutes.
 
         The message goes through :func:`redact` for the same reason :meth:`failed` does: it is
         arbitrary text from an arbitrary library, and this field is served unauthenticated with the
@@ -279,7 +282,6 @@ class HealthState:
         active_runs: int,
         subscribers: int,
         threads: tuple[int, int],
-        proposals_pending: int,
         mcp_sessions: int = 0,
         unmapped_agents: tuple[str, ...] = (),
     ) -> dict[str, Any]:
@@ -313,7 +315,6 @@ class HealthState:
                 "fanout_limit": self.fanout_limit,
             },
             "threads": {"total": total, "pending_approvals": pending},
-            "proposals": {"pending": proposals_pending},
             "scan_worker": {
                 "state": self.scan_worker.state,
                 "pending": self.scan_worker.pending,

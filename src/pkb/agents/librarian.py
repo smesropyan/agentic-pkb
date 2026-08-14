@@ -34,9 +34,11 @@ registration order and the flush must be the graph's exit node (EX-14, MW-15).
 under ``/kb/**`` (RT-16), and its only skill sources are the packaged mount and the knowledge base's
 own ``skills/`` — nothing topic-scoped (LB-5). Filing a note needs the topic's skills, its voice
 overload and its ``expert.md`` behaviour, none of which the Librarian loads. Its one mutation is the
-gated ``create_topic`` tool, which the registry passes in and which writes through
+``create_topic`` tool, which the registry passes in and which writes through
 :func:`pkb.core.scaffold_topic` under the write lock (LB-7, RT-18) — and which stays here, because a
-topic gap is still the Librarian's to notice and the human's to decide.
+topic gap is still the Librarian's to notice. It is no longer *gated*: Task 6 stops composing
+``interrupt_on`` for every graph in this package, this one included, so the model's call lands in the
+turn like any other write (DESIGN.md §2.10, "the operator's instruction is the approval").
 
 **Its prompt is knowledge-base-independent (LB-3).** No topic names, no descriptions, no per-topic
 instructions — the routing view is the *generated* root ``index.md``, loaded fresh each turn by
@@ -45,9 +47,9 @@ registered as subagents, that catalog is now the *only* place topic descriptions
 which makes LB-4's "nothing about routing is maintained by hand" strictly true.
 
 **An empty knowledge base must compile (LB-6).** Bootstrapping starts with zero topics and every
-inbound item is a topic gap. The Librarian still gets its general-purpose subagent, its gates and its
-flush, and ``route`` with an empty catalog is answered by the topic-creation flow rather than by a
-menu of nothing.
+inbound item is a topic gap. The Librarian still gets its general-purpose subagent and its flush, and
+``route`` with an empty catalog is answered by the topic-creation flow rather than by a menu of
+nothing.
 """
 
 from __future__ import annotations
@@ -70,7 +72,6 @@ from pkb.agents.expert import (
     load_prompt,
     render_prompt,
 )
-from pkb.agents.gates import GateEnv, build_interrupt_on
 from pkb.agents.middleware.breadth import KbBreadthMiddleware
 from pkb.agents.middleware.maintenance import SupportsInvalidate
 from pkb.agents.paths import KB_MOUNT
@@ -121,11 +122,11 @@ def build_librarian(
         model: Always explicit (RG-21, EX-9).
         registry: Invalidated after a turn that changed an ``expert.md``, a skill or a ``topic.md``
             (MW-30). Topic creation invalidates through the ``create_topic`` tool itself (LB-7).
-        tools: Additional tools. This is where the registry passes the gated ``create_topic``
-            (LB-7); the gate table already carries an entry for that tool name, so passing it is the
-            whole of the wiring. The ``route`` tool is **not** passed in — it is intrinsic to what a
-            Librarian is, like its middleware, and a Librarian compiled without it could not route
-            at all.
+        tools: Additional tools. This is where the registry passes ``create_topic`` (LB-7); passing
+            it is the whole of the wiring, and it is no longer gated (Task 6 stops composing
+            ``interrupt_on`` for this graph). The ``route`` tool is **not** passed in — it is
+            intrinsic to what a Librarian is, like its middleware, and a Librarian compiled without
+            it could not route at all.
 
     Returns:
         A compiled graph, always with the general-purpose subagent attached (EX-11) and never with an
@@ -144,7 +145,6 @@ def build_librarian(
         skills=skills,
         permissions=kb_permissions(None),
         backend=runtime.backend,
-        interrupt_on=build_interrupt_on(GateEnv(snapshot=runtime.snapshot)),
         checkpointer=runtime.checkpointer,
         store=runtime.store,
         name=LIBRARIAN_AGENT_ID,

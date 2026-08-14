@@ -5,37 +5,43 @@ type, a dataclass of primitives defined here, or a builtin. Nothing in a signatu
 ``AgentGraph``, ``Interrupt``, ``Command`` or ``RunnableConfig``. That is not tidiness: it is what
 makes the architecture's stub possible. A stub is writable exactly when the Protocol is expressible
 without the harness, and a stub is what lets the whole server suite assert things a live system
-could never assert deterministically — that a fan-out interleaves, that an expert's gate parks on
-the derived thread, that a busy thread 409s in milliseconds while the first event is five seconds
-away.
+could never assert deterministically — that a fan-out interleaves, that a busy thread 409s in
+milliseconds while the first event is five seconds away.
 
-**Runs are addressed by thread, never by agent** (SV-6). ``start_run(thread_id, …)`` and
-``resume(thread_id, …)`` take no ``agent_id``; the service resolves it, from the id's own shape or
-from the ``threads`` row. That is what makes cross-channel resume a one-field handoff: Telegram
-needs only the id from ``list_threads`` to continue what the TUI started (D3).
+**Runs are addressed by thread, never by agent** (SV-6). ``start_run(thread_id, …)`` takes no
+``agent_id``; the service resolves it, from the id's own shape or from the ``threads`` row.
+
+**No interrupt-resume surface** (S-38, S-39; Task 6 of
+``docs/superpowers/plans/2026-08-14-phase2-sessions.md``). There is no ``resume`` on this Protocol
+and no ``pending_approval`` anywhere below it: no graph in :mod:`pkb.agents` composes ``interrupt_on``
+any longer, so nothing a run does ever parks on a human decision, and there is nothing left to
+answer. "The operator's instruction is the approval" — a write lands during the turn it was
+instructed in, full stop.
 
 **The service adds no behaviour to a run** (SV-5). It does not retry, does not reorder events, does
 not synthesize an :data:`~pkb.contracts.AgentEvent` the runtime did not emit, and does not swallow
-one. Everything mechanical already exists below — event normalization, the diff inside an approval,
-which decisions an action allows, the gate table, the write lock, the flush. Layer 3 cites those
-rules; it never contains a second implementation of one.
+one. Everything mechanical already exists below — event normalization, the write lock, the flush.
+Layer 3 cites those rules; it never contains a second implementation of one.
 
 The package layout, and why it is a package rather than a module (decision C):
 
 * ``__init__`` — this file: the Protocol and the Layer-3 dataclasses, harness-free.
 * ``threads.py`` — the ``threads`` table on Layer 3's own ``aiosqlite`` connection. Superseded by
-  ``sessions.py`` (``DESIGN.md`` §2); kept until Task 6/10 stop needing its methods and its table.
+  ``sessions.py`` (``DESIGN.md`` §2); kept until Task 10 stops needing its methods and its table.
 * ``sessions.py`` — the ``sessions`` table: one durable, named state machine per `S-1 … S-39`
   (``docs/superpowers/specs/2026-08-14-sessions-S-rules.md``).
 * ``session_file.py`` — the one write surface for ``sessions/**`` (S-11), harness-free.
-* ``proposals.py`` — ``pkb_proposals``, so a propose-only write survives a restart.
 * ``runs.py`` — the run supervisor and the per-run hub: **the daemon owns runs, the request does
   not** (decision A).
 * ``runtime.py`` — the one module permitted to import ``pkb.agents``.
 
+``proposals.py`` — ``pkb_proposals``, a durable home for a write an external agent proposed and could
+not approve — is **deleted** (Task 6). It served ``propose_only`` mode's auto-rejection, and there is
+nothing left to auto-reject once no tool call ever interrupts.
+
 Something has to call ``PkbRuntime.open``. Naming exactly one module keeps I2 structural instead of
-exempting a whole package, so a later ``pkb/service/proposals.py`` cannot inherit the exemption
-silently — the same trick ``pkb/contracts.py`` used at the Layer 2 seam.
+exempting a whole package, so a later addition to this package cannot inherit the exemption silently
+— the same trick ``pkb/contracts.py`` used at the Layer 2 seam.
 """
 
 from __future__ import annotations
@@ -48,12 +54,9 @@ from typing import Protocol, runtime_checkable
 from pkb.contracts import (
     AgentDescriptor,
     AgentEvent,
-    ApprovalMode,
     ApprovalRequest,
-    Decision,
     MessageView,
     OriginChannel,
-    PendingProposal,
     RunHandle,
     ScanRequest,
     ScanResult,
@@ -99,12 +102,13 @@ class Thread:
     """
 
     pending_interrupt_id: str | None = None
-    """An **index**, never the authority (decision E).
+    """Always ``None`` (S-38, S-39; Task 6).
 
-    The checkpoint decides whether an approval is pending; this column exists so the thread *list*
-    can badge one without an ``aget_state`` and a lazy graph compile per row. It is reconciled
-    against the checkpointer at startup (AP-5) and repaired on read (RO-9), and it never refuses a
-    run — a stale column would block a legitimate turn with no way for the human to clear it (SV-16).
+    Before the sessions rebuild this was an index reconciled against the checkpointer at startup
+    (AP-5) and repaired on read (RO-9) — never the authority, because the checkpoint decided whether
+    an approval was pending. No graph in :mod:`pkb.agents` composes ``interrupt_on`` any longer, so
+    nothing ever parks and nothing ever sets this column; it survives on the row only until Task 10
+    deletes ``threads.py`` outright.
     """
 
     @property
@@ -119,15 +123,17 @@ class Thread:
 
 @dataclass(frozen=True, slots=True)
 class ThreadDetail:
-    """Everything needed to render one conversation and its pending approval (SV-14).
+    """Everything needed to render one conversation (SV-14).
 
     One call has to be enough, because that is all a client re-attaching from a second channel has:
-    somebody answering on a phone at lunch an approval the TUI raised that morning has no local
-    state at all (arch §8, D3).
+    a phone at lunch and a TUI that morning must see the same state (arch §8, D3).
 
-    ``pending`` is read **live** from the runtime, never from the row's column, and a disagreement
-    repairs the column (RO-9). ``children`` are the threads this turn routed to, carried for
-    **provenance** — their primary home is their own expert's list (RO-7).
+    ``pending`` is always ``None`` (S-38, S-39; Task 6): there is no interrupt-resume surface left to
+    read it from, live or otherwise. The field stays on the dataclass rather than being dropped
+    outright because every consumer already reads it as "nothing to answer" when it is ``None``, and
+    an always-``None`` field says that truthfully; it is retired along with the rest of ``Thread``
+    at Task 10. ``children`` are the threads this turn routed to, carried for **provenance** — their
+    primary home is their own expert's list (RO-7).
     """
 
     thread: Thread
@@ -211,7 +217,7 @@ class PkbService(Protocol):
         ...
 
     async def get_thread(self, thread_id: str) -> ThreadDetail:
-        """One conversation, its history, and its **live** pending approval (SV-14)."""
+        """One conversation and its history (SV-14). ``pending`` is always ``None`` (Task 6)."""
         ...
 
     async def set_title(self, thread_id: str, title: str) -> Thread:
@@ -278,20 +284,16 @@ class PkbService(Protocol):
         """``/end`` (S-22): legal only from ``closed``; seals the file (S-24/P3)."""
         ...
 
-    async def start_session_run(
-        self,
-        session_id: str,
-        message: str,
-        *,
-        approval_mode: ApprovalMode = "interactive",
-    ) -> RunSubscription:
+    async def start_session_run(self, session_id: str, message: str) -> RunSubscription:
         """Begin a turn on a session (re-homed from ``start_run``'s thread-keyed machinery).
 
         Refused on any session that is not ``open`` — a closed session "takes no more turns"
         (S-20) and a sealed one never reopens (S-24/P3).
 
-        ``approval_mode`` is not exposed over HTTP (RO-11 unchanged); it exists so MCP can request
-        ``propose_only`` in-process, the same reason ``start_run`` carries it.
+        Carries no ``approval_mode`` (Task 6). The parameter distinguished ``interactive`` from
+        ``propose_only`` so MCP's writes could auto-reject a gate no robot could answer; no graph
+        composes a gate any longer; the distinction has nothing left to select between, and MCP now
+        calls this exactly as every other caller does.
         """
         ...
 
@@ -302,40 +304,16 @@ class PkbService(Protocol):
     # -- runs ----------------------------------------------------------------------
 
     async def start_run(
-        self,
-        thread_id: str,
-        message: str,
-        *,
-        approval_mode: ApprovalMode = "interactive",
-        run_id: str | None = None,
+        self, thread_id: str, message: str, *, run_id: str | None = None
     ) -> RunSubscription:
         """Begin a turn and return a live subscription to it.
 
-        The refusals — ``ThreadBusyError``, ``ApprovalPendingError``, ``UnknownAgentError`` — are
-        raised **here**, before the caller commits a response (AP-10). The alternative is a 200 that
-        later has to carry a 409, and headers cannot wait a whole model call.
+        The refusals — ``ThreadBusyError``, ``UnknownAgentError`` — are raised **here**, before the
+        caller commits a response (AP-10). The alternative is a 200 that later has to carry a 409,
+        and headers cannot wait a whole model call.
 
-        ``approval_mode`` exists on the Protocol because otherwise the MCP adapter cannot get
-        propose-only behaviour without importing the harness (SV-17) — and an MCP write that
-        interrupts hangs forever on a decision no robot can make. It is **not** exposed over HTTP
-        (RO-11): over a human channel, propose-only is a run that silently refuses its own approvals
-        and files nothing, which is a broken agent rather than a mode.
-        """
-        ...
-
-    async def resume(
-        self,
-        thread_id: str,
-        decisions: Sequence[Decision],
-        *,
-        interrupt_id: str | None = None,
-    ) -> RunSubscription:
-        """Answer a pending approval and continue **the same run**.
-
-        Validates with ``pkb.contracts.validate_decisions`` *itself*, before touching the runtime
-        (SV-15). The service validating and the runtime validating again is deliberate: the shared
-        validator lives in the seam precisely so that every caller answers "which decisions are
-        allowed" identically.
+        Carries no ``approval_mode`` (Task 6): see :meth:`start_session_run`'s docstring for why the
+        parameter is gone rather than defaulted.
         """
         ...
 
@@ -352,32 +330,23 @@ class PkbService(Protocol):
         """Cancel a run and everything it fanned out to. An unknown id is a no-op (SV-19, RT-46)."""
         ...
 
-    # -- proposals and maintenance ---------------------------------------------------
-
-    async def list_proposals(self, *, status: str = "pending") -> Sequence[PendingProposal]:
-        """Writes an external agent proposed and cannot approve (RT-42, decision F)."""
-        ...
-
-    async def get_proposal(self, proposal_id: str) -> PendingProposal: ...
-
-    async def dismiss_proposal(self, proposal_id: str) -> None:
-        """Take one off the human's queue. v1 cannot *apply* one — that is a Layer 2 entry point."""
-        ...
+    # -- maintenance -----------------------------------------------------------------
+    # No proposals surface (Task 6): `pkb.service.proposals` and its `pkb_proposals` table are
+    # deleted along with the gates they served. `propose_only` auto-rejected a gate a robot could not
+    # answer and recorded the rejection for a human to review later; no gate ever fires now, so there
+    # is nothing to auto-reject and nothing to review.
 
     async def run_scan(self, request: ScanRequest) -> ScanResult:
         """Run one conflict scan. The dequeue timer is Layer 3's; the graph run is Layer 2's (C12)."""
         ...
 
     async def thread_counts(self) -> tuple[int, int]:
-        """``(total, pending_approvals)`` for ``/health`` — two indexed counts, no walk (AP-19)."""
-        ...
+        """``(total, pending_approvals)`` for ``/health`` — two indexed counts, no walk (AP-19).
 
-    async def proposal_count(self) -> int:
-        """How many proposals await the human. One indexed count (AP-19)."""
-        ...
-
-    async def reconcile(self) -> int:
-        """Rewrite every row's pending-approval index from the checkpoint at startup (AP-5)."""
+        ``pending_approvals`` is always ``0`` (Task 6): the column it counts is never set (see
+        :attr:`Thread.pending_interrupt_id`). Kept as a pair rather than narrowed to ``total`` alone
+        because ``Thread`` itself — and the column — survive on the row until Task 10.
+        """
         ...
 
     async def regenerate(self) -> None:

@@ -13,15 +13,18 @@ SQLite treats NULLs as *distinct* in a unique index, so a nullable topic column 
 General rows for one chat, and nothing would ever notice. Telegram mints topic ids from the message
 id sequence, which starts at 1, so 0 is permanently free and is never a real topic.
 
-Four things are remembered, and each answers a failure that is otherwise silent.
+Three things are remembered, and each answers a failure that is otherwise silent. A fourth used to be
+here — the approval prompts a gate posted while a run sat parked, waiting on a button press. It is
+gone along with the gates themselves: no tool call can raise an ``InterruptEvent`` any more
+(DESIGN.md §2.10 — the operator's instruction is the approval, so there is nothing left to park and
+nothing left to remember about it).
 
 **The channel → thread binding.** A channel is one continuous conversation; a thread is a turn-taking
 unit (Q24, ruled). Held in memory, one 502 from Telegram silently starts the human's next message in
-a brand-new conversation while the old one still holds their pending approval — an amnesiac bot, and
-no error anywhere. Keyed per channel (TG-26 amended) because one thread per *chat* under topics
-would mean every expert in that chat sharing one conversation: the human sees distinct topics and
-assumes distinct threads, and the mis-file TG-1 exists to prevent happens with no configuration
-change at all.
+a brand-new conversation while the old one is forgotten — an amnesiac bot, and no error anywhere.
+Keyed per channel (TG-26 amended) because one thread per *chat* under topics would mean every expert
+in that chat sharing one conversation: the human sees distinct topics and assumes distinct threads,
+and the mis-file TG-1 exists to prevent happens with no configuration change at all.
 
 **The update ledger.** ``getUpdates`` is at-least-once: an update is confirmed only by the *next*
 poll's offset, and an unconfirmed one is redelivered for 24 hours. With a supervisor that restarts
@@ -31,12 +34,6 @@ written **before** dispatch and the offset is derived from the ledger: agent exe
 at-most-once, and a crash in the gap between the row and the run is a **named** loss the bot can
 report on restart. It carries the topic beside the chat (TG-29 amended) so the notice reaches the
 channel that lost the message rather than the right chat's wrong topic.
-
-**The approval prompts.** A button pressed after the daemon restarted arrives into an adapter with
-no memory of the message. The row carries ``topic_id`` for **re-sends**, never for edits: clearing a
-keyboard addresses a message by ``chat_id`` + ``message_id`` and takes no thread parameter at all
-(F-6, TG-90), so TG-63 keeps working in a topic exactly as in General — and keeps working after the
-topic is deleted, which is the case the natural assumption gets wrong.
 
 **The channel directory** (``pkb_telegram_channels``, TG-77). Which topic is which agent's, and how
 many times it has had to be recreated. Durable because Telegram mints a topic id, shows it in no
@@ -53,7 +50,6 @@ Layer 3 already reserves the ``pkb_`` prefix for its own tables (ST-7), and ``db
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final, Protocol
@@ -67,7 +63,6 @@ __all__ = [
     "GENERAL",
     "LEDGER_TABLE",
     "LEGACY_BINDINGS_TABLE",
-    "PROMPTS_TABLE",
     "SqliteTelegramStore",
     "TelegramStore",
 ]
@@ -83,13 +78,12 @@ topic row stop comparing equal. ``0`` and not ``None`` — see the module docstr
 BINDINGS_TABLE: Final = "pkb_telegram_channel_bindings"
 LEGACY_BINDINGS_TABLE: Final = "pkb_telegram_bindings"
 LEDGER_TABLE: Final = "pkb_telegram_updates"
-PROMPTS_TABLE: Final = "pkb_telegram_prompts"
 CHANNELS_TABLE: Final = "pkb_telegram_channels"
 
-# `topic_id` is declared LAST on the two migrated tables on purpose. `ALTER TABLE … ADD COLUMN`
-# appends, so a file that upgrades gets it last; declaring it anywhere else here would give a fresh
-# file a different column order from an upgraded one, and `SELECT *` would then mean two different
-# things depending on when the deployment was installed.
+# `topic_id` is declared LAST on the migrated table on purpose. `ALTER TABLE … ADD COLUMN` appends,
+# so a file that upgrades gets it last; declaring it anywhere else here would give a fresh file a
+# different column order from an upgraded one, and `SELECT *` would then mean two different things
+# depending on when the deployment was installed.
 _SCHEMA: Final = f"""
 CREATE TABLE IF NOT EXISTS {BINDINGS_TABLE} (
     chat_id    INTEGER NOT NULL,
@@ -108,18 +102,6 @@ CREATE TABLE IF NOT EXISTS {LEDGER_TABLE} (
     thread_id   TEXT,
     run_id      TEXT,
     topic_id    INTEGER NOT NULL DEFAULT {GENERAL}
-);
-CREATE TABLE IF NOT EXISTS {PROMPTS_TABLE} (
-    handle       TEXT PRIMARY KEY,
-    chat_id      INTEGER NOT NULL,
-    thread_id    TEXT NOT NULL,
-    interrupt_id TEXT NOT NULL,
-    message_ids  TEXT NOT NULL,
-    answers_json TEXT NOT NULL DEFAULT '{{}}',
-    action_count INTEGER NOT NULL,
-    created_at   TEXT NOT NULL,
-    resolved     INTEGER NOT NULL DEFAULT 0,
-    topic_id     INTEGER NOT NULL DEFAULT {GENERAL}
 );
 CREATE TABLE IF NOT EXISTS {CHANNELS_TABLE} (
     chat_id     INTEGER NOT NULL,
@@ -169,24 +151,6 @@ class TelegramStore(Protocol):
 
     async def unfinished(self) -> list[tuple[int, int | None, int, str]]: ...
 
-    async def open_prompt(
-        self,
-        handle: str,
-        chat_id: int,
-        topic_id: int,
-        thread_id: str,
-        interrupt_id: str,
-        action_count: int,
-    ) -> None: ...
-
-    async def prompt(self, handle: str) -> Mapping[str, Any] | None: ...
-
-    async def record_message(self, handle: str, message_id: int) -> None: ...
-
-    async def record_answer(self, handle: str, index: int, verb: str) -> Mapping[int, str]: ...
-
-    async def resolve_prompt(self, handle: str) -> None: ...
-
     # -- the channel directory (TG-77, TG-82) ----------------------------------------
 
     async def channels(self, chat_id: int) -> Mapping[int, str]: ...
@@ -216,8 +180,8 @@ class SqliteTelegramStore:
 
         Every statement here is a single short autocommit write, which is only true because Layer 3
         opens its connection with ``isolation_level=None`` (ST-1). Handed a default aiosqlite
-        connection (``isolation_level=""``), :meth:`_merged`'s ``execute → fetchall → commit`` would
-        hold an implicit transaction across two awaits — and ST-3 measured what that costs: a
+        connection (``isolation_level=""``), :meth:`rebind_channel`'s ``execute → fetchall → commit``
+        would hold an implicit transaction across two awaits — and ST-3 measured what that costs: a
         handler holding a write transaction across an ``await`` killed a concurrent checkpointer run
         after the victim's 5 s timeout, surfacing as a failed agent run with a written file and no
         flush. The bot writes on the inbound path, which is exactly when a run is streaming.
@@ -244,10 +208,10 @@ class SqliteTelegramStore:
         transaction on this connection killing a concurrent checkpointer run and this runs at
         startup, when the daemon is doing everything else at the same time.
 
-        The ledger and the prompts take an ``ADD COLUMN``: their primary keys (``update_id``,
-        ``handle``) are still correct under topics, so the topic is one more column and nothing
-        moves. ``NOT NULL DEFAULT 0`` is legal as an ``ADD COLUMN`` on a populated table and needs
-        no rewrite — every existing row becomes a General row, which is exactly right.
+        The ledger takes an ``ADD COLUMN``: its primary key (``update_id``) is still correct under
+        topics, so the topic is one more column and nothing moves. ``NOT NULL DEFAULT 0`` is legal as
+        an ``ADD COLUMN`` on a populated table and needs no rewrite — every existing row becomes a
+        General row, which is exactly right.
 
         **The bindings could not be migrated in place**, and this is the one place §9.6.1's
         "``ADD COLUMN`` and a unique index" is not sufficient. The shipped table declares
@@ -272,8 +236,7 @@ class SqliteTelegramStore:
         both on the next start, which is harmless: nothing has polled yet, so no rotation can have
         happened in between.
         """
-        for table in (LEDGER_TABLE, PROMPTS_TABLE):
-            await self._add_column(table, "topic_id", f"INTEGER NOT NULL DEFAULT {GENERAL}")
+        await self._add_column(LEDGER_TABLE, "topic_id", f"INTEGER NOT NULL DEFAULT {GENERAL}")
         if not await self._table_exists(LEGACY_BINDINGS_TABLE):
             return
         await self._add_column(LEGACY_BINDINGS_TABLE, "migrated_at", "TEXT")
@@ -472,138 +435,6 @@ class SqliteTelegramStore:
             (int(row[0]), None if row[1] is None else int(row[1]), int(row[2]), str(row[3]))
             for row in await cursor.fetchall()
         ]
-
-    # -- approval prompts (TG-57, TG-58, TG-60) -------------------------------------
-
-    async def open_prompt(
-        self,
-        handle: str,
-        chat_id: int,
-        topic_id: int,
-        thread_id: str,
-        interrupt_id: str,
-        action_count: int,
-    ) -> None:
-        """Record an approval the human is being shown.
-
-        Durable because a button pressed after the daemon restarted arrives into an adapter with no
-        memory of the message — Telegram redelivers an unconfirmed update for 24 hours, and RT-38
-        makes the interrupt itself durable. Making this the *only* path means the restart case is
-        exercised by every test rather than by an incident.
-
-        ``topic_id`` is stored for **re-sends and for ``/pending``**, not for edits (TG-90). Nothing
-        about clearing this approval's keyboards needs it: ``editMessageReplyMarkup`` addresses a
-        message by ``chat_id`` + ``message_id`` and takes no thread parameter (F-6), so TG-63 works
-        unchanged for a prompt whose topic has since been deleted — which is the case worth being
-        explicit about, because the obvious assumption is that a topic-scoped message needs a
-        topic-scoped edit, and acting on it puts an unknown parameter on the one call that disarms
-        an irreversible button, inside a ``finally``. What the topic *is* needed for is knowing
-        which channel a parked approval belongs to when ``/pending`` brings it back (TG-88), and
-        where to re-post it after TG-82 repairs a dead channel.
-
-        ``callback_data`` is unchanged and carries none of this (TG-57): it is 64 bytes, a chat id
-        alone was already refused at that budget (P-28), and the durable row exists for exactly
-        this purpose.
-        """
-        await self._connection.execute(
-            f"INSERT OR REPLACE INTO {PROMPTS_TABLE} "
-            f"(handle, chat_id, topic_id, thread_id, interrupt_id, message_ids, answers_json, "
-            f" action_count, created_at, resolved) VALUES (?,?,?,?,?,?,?,?,?,0)",
-            (handle, chat_id, topic_id, thread_id, interrupt_id, "[]", "{}", action_count, _now()),
-        )
-        await self._connection.commit()
-
-    async def prompt(self, handle: str) -> Mapping[str, Any] | None:
-        cursor = await self._connection.execute(
-            f"SELECT handle, chat_id, topic_id, thread_id, interrupt_id, message_ids, "
-            f"answers_json, action_count, resolved FROM {PROMPTS_TABLE} WHERE handle = ?",
-            (handle,),
-        )
-        row = await cursor.fetchone()
-        if row is None:
-            return None
-        return {
-            "handle": str(row[0]),
-            "chat_id": int(row[1]),
-            "topic_id": int(row[2]),
-            "thread_id": str(row[3]),
-            "interrupt_id": str(row[4]),
-            "message_ids": json.loads(str(row[5])),
-            "answers": {int(k): v for k, v in json.loads(str(row[6])).items()},
-            "action_count": int(row[7]),
-            "resolved": bool(row[8]),
-        }
-
-    async def record_message(self, handle: str, message_id: int) -> None:
-        """Remember every message of this approval, so all of them lose their keyboard (TG-63).
-
-        The id is appended by ``json_insert`` inside the ``UPDATE`` instead of being read out,
-        extended in Python and written back — the same fix, and for the same reason, as
-        :meth:`record_answer` (TG-60). A read-modify-write across an ``await`` lets two callers
-        observe the same array and the second write erase the first, and the id that vanishes is a
-        message whose keyboard is never cleared: a live approve button sitting in the chat on a
-        write that already happened, pressable a week later.
-
-        The message id alone is enough, with no channel beside it, and that is a fact about the API
-        rather than an economy: an edit is addressed by ``chat_id`` + ``message_id`` (F-6, TG-90).
-        It is also what makes TG-81 possible — a stray message that landed in General because its
-        topic was deleted is disarmed with the ``message_id`` the send response just returned, and
-        nothing needs to know where it was *meant* to go.
-        """
-        await self._merged(
-            f"UPDATE {PROMPTS_TABLE} SET message_ids = json_insert(message_ids, '$[#]', ?) "
-            f"WHERE handle = ? RETURNING message_ids",
-            (message_id, handle),
-        )
-
-    async def record_answer(self, handle: str, index: int, verb: str) -> Mapping[int, str]:
-        """Accumulate one action's answer and return the set so far (TG-60).
-
-        Durable because a partial answer must survive a restart: CL-6 forbids padding a missing one,
-        so a lost accumulator means the human's earlier taps are gone and the approval can only be
-        finished from the TUI.
-
-        The merge happens **inside the database**, in one statement, for the same reason. Reading the
-        blob, awaiting, then writing it back loses an answer whenever two taps are in flight at once:
-        both callers observe the older set and the second ``UPDATE`` overwrites the first. Because
-        CL-6 forbids padding the missing one, the accumulator then never reaches ``action_count``,
-        ``resolve`` is never called, and the interrupt stays parked with both of the human's taps
-        already spent — silent from the phone, where both buttons appeared to work. It was latent
-        only because ``_poll`` happened to dispatch serially; TG-93's per-channel turn lock removes
-        even that, since two channels of one chat now hold turns at the same time by design.
-
-        The key is written as a JSON object label (``$."0"``), so it comes back a string and is
-        re-keyed to ``int`` by :meth:`prompt`'s own convention — the indices order the decisions
-        against ``request.actions``.
-        """
-        merged = await self._merged(
-            f"UPDATE {PROMPTS_TABLE} SET answers_json = json_set(answers_json, ?, ?) "
-            f"WHERE handle = ? RETURNING answers_json",
-            (f'$."{int(index)}"', verb, handle),
-        )
-        return {int(k): str(v) for k, v in (merged or {}).items()}
-
-    async def _merged(self, statement: str, parameters: tuple[Any, ...]) -> Any:
-        """Run one merging ``UPDATE`` and hand back what it wrote, or ``None`` for an unknown handle.
-
-        ``RETURNING`` is what keeps the read and the write one statement (TG-60): a follow-up
-        ``SELECT`` would reopen the very gap the merge was moved into SQL to close. The rows are
-        drained before the commit because a ``RETURNING`` cursor with unstepped rows is a statement
-        still in progress. No match means no row: a stale handle must stay unresolvable rather than
-        conjure a prompt of its own (TG-58).
-        """
-        cursor = await self._connection.execute(statement, parameters)
-        rows = list(await cursor.fetchall())
-        await self._connection.commit()
-        if not rows:
-            return None
-        return json.loads(str(rows[0][0]))
-
-    async def resolve_prompt(self, handle: str) -> None:
-        await self._connection.execute(
-            f"UPDATE {PROMPTS_TABLE} SET resolved = 1 WHERE handle = ?", (handle,)
-        )
-        await self._connection.commit()
 
     # -- the channel directory (TG-77, TG-79, TG-82) ---------------------------------
 

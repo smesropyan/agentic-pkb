@@ -36,15 +36,7 @@ import pkb.server.telegram as telegram_module
 from pkb.agents.gates import GATE_DECISIONS, GateReason
 from pkb.clients.approval import TRUNCATION_MARKER, truncate
 from pkb.contracts import ActionView, DecisionType
-from pkb.server.telegram import (
-    NO_UNDO_REASONS,
-    callback_data,
-    fit,
-    keyboard_for,
-    parse_callback,
-    split_message,
-    utf16_len,
-)
+from pkb.server.telegram import split_message, utf16_len
 from pkb.server.telegram_api import CALLBACK_DATA_LIMIT, MESSAGE_LIMIT
 
 SOURCE = Path(telegram_module.__file__)
@@ -199,11 +191,8 @@ def test_a_character_budget_passes_a_message_telegram_refuses_tg44() -> None:
     assert utf16_len(P26) == 6512 > MESSAGE_LIMIT
     assert utf16_len(P26) - len(P26) == 3000  # exactly one extra unit per emoji
 
-    fitted, cut_by_fit = fit(P26)
-    assert cut_by_fit is True
-    assert utf16_len(fitted) <= MESSAGE_LIMIT
 
-
+@pytest.mark.superseded
 @pytest.mark.parametrize(
     ("label", "text"),
     [
@@ -223,14 +212,20 @@ def test_fit_bounds_every_content_shape_in_utf16_units_tg44(label: str, text: st
     cut, re-measure and cut again, and the only honest assertion is on the *output*: every one of
     these seven shapes, emoji-only through ASCII-only, comes back inside 4,096 units. A budget
     computed once from a fixed ratio passes the ASCII rows and silently fails the first row.
+
+    Superseded (Task 6, DESIGN.md §2.10): ``fit`` existed for one caller, ``_post_action``, which
+    posted an approval's description under a keyboard (TG-56) — both gone with the gates. Its
+    generic cut-and-measure arithmetic is not otherwise needed: ``split_message``/``utf16_len``
+    already cover an ordinary reply, and nothing left in this module previews a single description.
     """
-    fitted, was_cut = fit(text)
+    fitted, was_cut = fit(text)  # noqa: F821
     assert utf16_len(fitted) <= MESSAGE_LIMIT, label
     assert was_cut is (utf16_len(text) > MESSAGE_LIMIT), label
     if not was_cut:
         assert fitted == text, label
 
 
+@pytest.mark.superseded
 @pytest.mark.parametrize("text", [FIRE * 5000, "x" * 12000, P26, ASCII_LINES])
 def test_fit_only_ever_stops_early_it_never_rewrites_tg44(text: str) -> None:
     """What survives the cut is a **prefix** of what the model wrote, plus a visible marker.
@@ -239,8 +234,11 @@ def test_fit_only_ever_stops_early_it_never_rewrites_tg44(text: str) -> None:
     the human then approves or acts on that the agent never said. Cutting is allowed to lose the
     end; it is not allowed to change the beginning. The marker is asserted because a silent stop is
     a reply the human believes is complete.
+
+    Superseded (Task 6, DESIGN.md §2.10): see the mark on ``test_fit_bounds_every_content_shape_
+    in_utf16_units_tg44`` above — ``fit`` is deleted with its one caller.
     """
-    fitted, was_cut = fit(text)
+    fitted, was_cut = fit(text)  # noqa: F821
     assert was_cut is True
     assert fitted.endswith(CONTINUES)
     body = fitted.removesuffix(CONTINUES)
@@ -248,14 +246,18 @@ def test_fit_only_ever_stops_early_it_never_rewrites_tg44(text: str) -> None:
     assert body, "a cut that keeps nothing tells the human less than the marker alone"
 
 
+@pytest.mark.superseded
 def test_fit_takes_an_adapter_supplied_marker_tg44() -> None:
     """The preview under a keyboard says "full text above", not "open the TUI" (TG-56, decision U).
 
     ``truncate``'s own marker points at another client, which is exactly wrong when the whole text
     is three messages up in the same chat. The marker is the adapter's to choose, and the shared
     one must not leak through.
+
+    Superseded (Task 6, DESIGN.md §2.10): the keyboard this preview sat under is gone, and ``fit``
+    with it — there is no approval description left to preview.
     """
-    preview, was_cut = fit(P26, 1200, marker="\n… (full text above)")
+    preview, was_cut = fit(P26, 1200, marker="\n… (full text above)")  # noqa: F821
     assert was_cut is True
     assert preview.endswith("\n… (full text above)")
     assert "open the TUI" not in preview
@@ -393,9 +395,9 @@ def test_every_emitted_callback_data_fits_the_64_byte_budget_tg57() -> None:
         handle = secrets.token_hex(4)
         for index in (0, 1, 9, 10, 42, 99):
             for verb in EMITTED_VERBS:
-                data = callback_data(handle, index, verb)
+                data = callback_data(handle, index, verb)  # noqa: F821
                 assert len(data.encode()) <= CALLBACK_DATA_LIMIT
-                assert parse_callback(data) == (handle, index, verb)
+                assert parse_callback(data) == (handle, index, verb)  # noqa: F821
 
 
 @pytest.mark.superseded
@@ -418,7 +420,7 @@ def test_the_state_that_does_not_fit_is_pinned_tg57() -> None:
     interrupt_id = secrets.token_hex(16)  # xxh3_128 hexdigest — 32 characters
     assert len(f"a|{thread_id}|{interrupt_id}|0".encode()) == 97 > CALLBACK_DATA_LIMIT
 
-    assert callback_data("7f3a2b1c", 0, "a") == "v1|7f3a2b1c|0|a"
+    assert callback_data("7f3a2b1c", 0, "a") == "v1|7f3a2b1c|0|a"  # noqa: F821
     assert len(b"v1|7f3a2b1c|0|a") == 15
 
 
@@ -434,7 +436,7 @@ def test_callback_data_refuses_to_emit_an_oversized_payload_tg57() -> None:
     decision on a button; with no gates nothing ever builds one.
     """
     with pytest.raises(ValueError, match="64"):
-        callback_data(secrets.token_hex(32), 0, "a")
+        callback_data(secrets.token_hex(32), 0, "a")  # noqa: F821
 
 
 @pytest.mark.superseded
@@ -449,7 +451,9 @@ def test_parse_callback_round_trips_what_callback_data_emits_tg57() -> None:
     """
     for index in (0, 7, 99):
         handle = secrets.token_hex(4)
-        assert parse_callback(callback_data(handle, index, "cr")) == (handle, index, "cr")
+        assert parse_callback(  # noqa: F821
+            callback_data(handle, index, "cr")  # noqa: F821
+        ) == (handle, index, "cr")
 
 
 @pytest.mark.superseded
@@ -479,7 +483,7 @@ def test_parse_callback_rejects_rather_than_guesses_tg57(label: str, data: str) 
     resolve an approval-decision button press; with no gates there is no press and no decision to
     guess at or refuse.
     """
-    assert parse_callback(data) is None, label
+    assert parse_callback(data) is None, label  # noqa: F821
 
 
 # --------------------------------------------------------------------------------------
@@ -504,12 +508,17 @@ def test_the_keyboard_is_the_servers_decisions_minus_edit_tg54(reason: GateReaso
     keyboard from at all.
     """
     expected = tuple(d for d in GATE_DECISIONS[reason] if d not in {"edit", "respond"})
-    keyboard = keyboard_for(action(GATE_DECISIONS[reason], reason=reason.value), "7f3a2b1c", 0)
+    keyboard = keyboard_for(  # noqa: F821
+        action(GATE_DECISIONS[reason], reason=reason.value), "7f3a2b1c", 0
+    )
 
     assert keyboard is not None
     labels = {"approve": "Approve", "reject": "Reject"}
     assert [button["text"] for button in buttons(keyboard)] == [labels[d] for d in expected]
-    assert all(parse_callback(button["callback_data"]) is not None for button in buttons(keyboard))
+    assert all(
+        parse_callback(button["callback_data"]) is not None  # noqa: F821
+        for button in buttons(keyboard)
+    )
 
 
 @pytest.mark.superseded
@@ -534,10 +543,13 @@ def test_a_gate_todays_table_does_not_ship_is_still_rendered_tg54(
     Superseded (Task 6 rebuilds this): ``allowed_decisions``/``validate_decisions`` are the gate's
     vocabulary; with the gate gone there is no server-offered decision set left to narrow.
     """
-    keyboard = keyboard_for(action(allowed), "7f3a2b1c", 3)
+    keyboard = keyboard_for(action(allowed), "7f3a2b1c", 3)  # noqa: F821
     assert keyboard is not None
     assert [button["text"] for button in buttons(keyboard)] == expected, label
-    assert all(parse_callback(b["callback_data"])[1] == 3 for b in buttons(keyboard))  # type: ignore[index]
+    assert all(
+        parse_callback(b["callback_data"])[1] == 3  # noqa: F821 # type: ignore[index]
+        for b in buttons(keyboard)
+    )
 
 
 @pytest.mark.superseded
@@ -557,7 +569,7 @@ def test_an_action_offering_only_respond_draws_no_button_tg54() -> None:
     a keyboard channel, handed off to the TUI via TG-55 — is interrupt-surface machinery; with the
     operator's instruction as the approval, no channel is ever asked to render a decision at all.
     """
-    assert keyboard_for(action(("respond",)), "7f3a2b1c", 0) is None
+    assert keyboard_for(action(("respond",)), "7f3a2b1c", 0) is None  # noqa: F821
 
 
 @pytest.mark.superseded
@@ -596,7 +608,9 @@ def test_approve_and_reject_are_never_in_one_row_tg64(reason: GateReason) -> Non
     operator's instruction is the approval; the underlying "a destructive action needs a thumb-safe
     layout" concern has no successor until Phase 5 revisits confirmation UX, if at all.
     """
-    keyboard = keyboard_for(action(GATE_DECISIONS[reason], reason=reason.value), "7f3a2b1c", 0)
+    keyboard = keyboard_for(  # noqa: F821
+        action(GATE_DECISIONS[reason], reason=reason.value), "7f3a2b1c", 0
+    )
     assert keyboard is not None
     for row in keyboard:
         texts = {button["text"] for button in row}
@@ -622,7 +636,7 @@ def test_nothing_offerable_gives_no_keyboard_not_an_empty_one_tg64(
     exactly the interrupt-resume surface Task 6 removes; ``keyboard_for`` renders nothing because
     there is no gate to narrow, not because a channel narrowed one away.
     """
-    assert keyboard_for(action(allowed), "7f3a2b1c", 0) is None, label
+    assert keyboard_for(action(allowed), "7f3a2b1c", 0) is None, label  # noqa: F821
 
 
 @pytest.mark.superseded
@@ -643,8 +657,8 @@ def test_the_no_undo_reasons_are_real_gate_reasons_tg64() -> None:
         GateReason.TOPIC_CREATION.value,
         GateReason.CONFLICT_RESOLUTION.value,
     }
-    assert set(NO_UNDO_REASONS) - shipped == set()
-    assert set(NO_UNDO_REASONS) == destructive
+    assert set(NO_UNDO_REASONS) - shipped == set()  # noqa: F821
+    assert set(NO_UNDO_REASONS) == destructive  # noqa: F821
 
 
 @pytest.mark.superseded
@@ -660,9 +674,9 @@ def test_the_confirm_step_still_fits_the_button_budget_tg64() -> None:
     destructive gate decision; with no gate there is no second tap to budget for.
     """
     for verb in ("ca", "cr", "x"):
-        data = callback_data(secrets.token_hex(4), 99, verb)
+        data = callback_data(secrets.token_hex(4), 99, verb)  # noqa: F821
         assert len(data.encode()) <= CALLBACK_DATA_LIMIT
-        assert parse_callback(data) == (data.split("|")[1], 99, verb)
+        assert parse_callback(data) == (data.split("|")[1], 99, verb)  # noqa: F821
 
 
 # --------------------------------------------------------------------------------------
@@ -714,6 +728,7 @@ def test_the_verb_table_is_read_in_both_directions_tg54() -> None:
     ), "the inverse is derived from the table rather than written out beside it"
 
 
+@pytest.mark.superseded
 def test_the_preview_marker_is_passed_through_not_stripped_back_off_tg56() -> None:
     """``truncate(marker=)`` exists for this caller; the adapter kept a copy of the default instead.
 
@@ -723,6 +738,9 @@ def test_the_preview_marker_is_passed_through_not_stripped_back_off_tg56() -> No
     and the preview then reads "open the TUI for the whole diff" directly above the whole diff —
     the exact outcome decision U added the parameter to prevent. No behavioural test can see it, so
     it is asserted at the call and by the absence of the duplicate.
+
+    Superseded (Task 6, DESIGN.md §2.10): ``fit`` is deleted with its one caller, ``_post_action``
+    (TG-56's approval-description preview) — ``names_in("fit")`` now has no function to walk.
     """
     assert "truncate" in names_in("fit")
     assert "removesuffix" not in names_in("fit")

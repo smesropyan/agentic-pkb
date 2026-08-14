@@ -36,13 +36,9 @@ import aiosqlite
 from pkb.contracts import (
     AgentDescriptor,
     AgentEvent,
-    ApprovalMode,
-    ApprovalRequest,
-    Decision,
     InterruptEvent,
     MessageView,
     OriginChannel,
-    PendingProposal,
     RunEnd,
     RunError,
     RunHandle,
@@ -55,10 +51,8 @@ from pkb.contracts import (
     expert_thread_id,
     is_scan_thread,
     librarian_thread_id,
-    validate_decisions,
 )
 from pkb.service import RunSubscription, Thread, ThreadDetail
-from pkb.service.proposals import ProposalStore
 from pkb.service.runs import RunSupervisor
 from pkb.service.session_file import (
     LEARNING_AGENT_ID,
@@ -113,23 +107,10 @@ class Runtime(Protocol):
         thread_id: str,
         message: str,
         *,
-        approval_mode: ApprovalMode = "interactive",
-        run_id: str | None = None,
-    ) -> AsyncIterator[AgentEvent]: ...
-
-    def resume(
-        self,
-        agent_id: str,
-        thread_id: str,
-        decisions: Sequence[Decision],
-        *,
-        interrupt_id: str | None = None,
         run_id: str | None = None,
     ) -> AsyncIterator[AgentEvent]: ...
 
     async def cancel(self, run_id: str) -> None: ...
-
-    async def pending_approval(self, agent_id: str, thread_id: str) -> ApprovalRequest | None: ...
 
     async def history(self, agent_id: str, thread_id: str) -> Sequence[MessageView]: ...
 
@@ -154,7 +135,6 @@ class RuntimeService:
         self._runtime = runtime
         self._connection = connection
         self._threads = ThreadStore(connection)
-        self._proposals = ProposalStore(connection)
         self._sessions = SessionStore(connection)
         self._session_files = SessionFileWriter(kb_root)
         self._runs = supervisor or RunSupervisor()
@@ -176,14 +156,8 @@ class RuntimeService:
         """
         return self._connection
 
-    @property
-    def proposals_store(self) -> ProposalStore:
-        """The proposal sink's target — handed to ``RuntimeConfig`` by the composition root."""
-        return self._proposals
-
     async def setup(self) -> None:
         await self._threads.setup()
-        await self._proposals.setup()
         await self._sessions.setup()
 
     # ----------------------------------------------------------------------------------
@@ -219,12 +193,12 @@ class RuntimeService:
         return await self._threads.list_threads(agent_id)
 
     async def get_thread(self, thread_id: str) -> ThreadDetail:
-        """The row, the history, and the **live** pending approval (SV-14, RO-9).
+        """The row and the history (SV-14). ``pending`` is always ``None`` (Task 6, S-38).
 
-        ``pending`` comes from the runtime, never from the column, and a disagreement **repairs**
-        the column. The column can be stale in both directions and a false negative is the dangerous
-        one: it hides a pending approval from every channel, and is never discovered, because nobody
-        resumes a thread they cannot see (decision E).
+        Before the sessions rebuild ``pending`` was read live from the runtime and a disagreement
+        with the row's own column was repaired on the spot (RO-9, decision E). No graph composes
+        ``interrupt_on`` any longer, so nothing is ever pending, there is nothing to read live, and
+        nothing to repair.
         """
         agent_id = await self._threads.resolve_agent(thread_id)
         row = await self._threads.get(thread_id)
@@ -238,18 +212,11 @@ class RuntimeService:
         if row is None:  # pragma: no cover - the insert above cannot fail silently
             raise UnknownThreadError(f"no thread {thread_id!r}")
 
-        pending = await self._runtime.pending_approval(agent_id, thread_id)
-        live_id = pending.interrupt_id if pending else None
-        if live_id != row.pending_interrupt_id:
-            await self._threads.set_pending(thread_id, live_id)
-            row = await self._threads.get(thread_id) or row
-
         messages = await self._runtime.history(agent_id, thread_id)
         descriptor = next((d for d in self._runtime.list_agents() if d.agent_id == agent_id), None)
         return ThreadDetail(
             thread=row,
             messages=tuple(messages),
-            pending=pending,
             children=tuple(await self._threads.children(thread_id)),
             descriptor=descriptor,
         )
@@ -410,13 +377,7 @@ class RuntimeService:
             self._session_files.mark_ended(session)
         return session
 
-    async def start_session_run(
-        self,
-        session_id: str,
-        message: str,
-        *,
-        approval_mode: ApprovalMode = "interactive",
-    ) -> RunSubscription:
+    async def start_session_run(self, session_id: str, message: str) -> RunSubscription:
         """``POST /sessions/{id}/runs``: resolve, admit, and hand back a subscription.
 
         Re-homed from ``start_run``'s thread-keyed admission race (AP-10) rather than sharing it:
@@ -426,11 +387,13 @@ class RuntimeService:
         ``_observe`` does for a thread. The events therefore relay **untouched** (SV-5) with nothing
         wrapped around them at all.
 
-        ``approval_mode`` survives on the Protocol for the same reason it did on ``start_run``: MCP
-        is a caller with no human on the line, so it sets ``propose_only`` in-process (RT-42,
-        SV-17) — Task 6 is what removes the gate table this exists to route around, not this
-        signature. It stays **unsettable over HTTP** (RO-11's reasoning holds unchanged): no route
-        in ``pkb.server.routes`` accepts or forwards this field.
+        Carries no ``approval_mode`` (Task 6). Before the gates died, MCP set ``propose_only``
+        in-process (RT-42, SV-17) so its writes auto-rejected a gate no robot could answer; no graph
+        composes a gate any longer (``pkb.agents.gates.build_interrupt_on`` is no longer called from
+        ``build_expert``/``build_librarian``), so there is nothing left to route around and nothing
+        left to pass. Removing the parameter is the honest default over keeping an inert one: RO-11's
+        reasoning that it must never reach HTTP has nothing left to guard either, since the whole
+        distinction it named is gone.
         """
         session = await self.get_session(session_id)
         if session.state != "open":
@@ -440,9 +403,7 @@ class RuntimeService:
                 f"sealed one never reopens)"
             )
         minted = mint_run_id()
-        stream = self._runtime.run(
-            session.agent_id, session_id, message, approval_mode=approval_mode, run_id=minted
-        )
+        stream = self._runtime.run(session.agent_id, session_id, message, run_id=minted)
         return await self._launch_session(session_id, session.agent_id, minted, stream)
 
     async def attach_session(self, session_id: str) -> RunSubscription | None:
@@ -479,52 +440,19 @@ class RuntimeService:
     # ----------------------------------------------------------------------------------
 
     async def start_run(
-        self,
-        thread_id: str,
-        message: str,
-        *,
-        approval_mode: ApprovalMode = "interactive",
-        run_id: str | None = None,
+        self, thread_id: str, message: str, *, run_id: str | None = None
     ) -> RunSubscription:
-        """Resolve the agent, admit the run, and hand back a subscription (SV-6, AP-10)."""
+        """Resolve the agent, admit the run, and hand back a subscription (SV-6, AP-10).
+
+        Carries no ``approval_mode`` (Task 6): see :meth:`start_session_run`'s docstring.
+        """
         agent_id = await self._threads.resolve_agent(thread_id)
         await self._threads.register(
             thread_id, agent_id, origin_channel=await self._channel(thread_id)
         )
         minted = run_id or mint_run_id()
-        stream = self._runtime.run(
-            agent_id, thread_id, message, approval_mode=approval_mode, run_id=minted
-        )
+        stream = self._runtime.run(agent_id, thread_id, message, run_id=minted)
         return await self._launch(thread_id, agent_id, minted, stream, title_after=True)
-
-    async def resume(
-        self,
-        thread_id: str,
-        decisions: Sequence[Decision],
-        *,
-        interrupt_id: str | None = None,
-    ) -> RunSubscription:
-        """Validate here, **then** touch the runtime (SV-15, RO-13).
-
-        The shared validator lives in the seam precisely so that the service, the runtime and every
-        client answer "which decisions are allowed" identically. Validating before the stream opens
-        is what makes 400 and 409 deterministic rather than something smuggled into a committed 200.
-        """
-        agent_id = await self._threads.resolve_agent(thread_id)
-        pending = await self._runtime.pending_approval(agent_id, thread_id)
-        validate_decisions(pending, decisions, interrupt_id=interrupt_id)
-        # SV-12: an unregistered derived thread is resumable from its id alone, and touching it
-        # registers the row. `start_run` and `get_thread` both do this; without it here, answering
-        # an approval on a thread whose row was never written leaves that conversation invisible to
-        # every list — the one failure arch §8 promises cannot happen, reached from the resume path.
-        await self._threads.register(
-            thread_id, agent_id, origin_channel=await self._channel(thread_id)
-        )
-        minted = mint_run_id()
-        stream = self._runtime.resume(
-            agent_id, thread_id, decisions, interrupt_id=interrupt_id, run_id=minted
-        )
-        return await self._launch(thread_id, agent_id, minted, stream)
 
     async def attach(self, thread_id: str) -> RunSubscription | None:
         return self._runs.attach(thread_id)
@@ -689,27 +617,18 @@ class RuntimeService:
             _log.warning("titling thread %s failed; it stays untitled", thread_id, exc_info=True)
 
     # ----------------------------------------------------------------------------------
-    # Proposals and maintenance
+    # Maintenance
     # ----------------------------------------------------------------------------------
-
-    async def list_proposals(self, *, status: str = "pending") -> Sequence[PendingProposal]:
-        return await self._proposals.list_proposals(status=status)
-
-    async def get_proposal(self, proposal_id: str) -> PendingProposal:
-        proposal = await self._proposals.get(proposal_id)
-        if proposal is None:
-            raise UnknownThreadError(f"no proposal {proposal_id!r}")
-        return proposal
-
-    async def dismiss_proposal(self, proposal_id: str) -> None:
-        if not await self._proposals.dismiss(proposal_id):
-            raise UnknownThreadError(f"no pending proposal {proposal_id!r}")
+    # No proposals surface and no startup reconciliation (Task 6). `list_proposals`,
+    # `get_proposal`, `dismiss_proposal`, `proposal_count` and `reconcile` all existed to serve the
+    # interrupt-resume surface: the first four read `pkb_proposals`, `pkb.service.proposals`'s durable
+    # record of a write `propose_only` mode auto-rejected; `reconcile` repaired `pending_interrupt_id`
+    # against the checkpointer at startup because that column could go stale across a restart. No
+    # graph composes `interrupt_on` any longer, so nothing is ever pending and nothing is ever
+    # proposed — there is nothing left for any of the five to do.
 
     async def thread_counts(self) -> tuple[int, int]:
         return await self._threads.counts()
-
-    async def proposal_count(self) -> int:
-        return await self._proposals.count()
 
     async def run_scan(self, request: ScanRequest) -> ScanResult:
         """One scan, forwarded. The dequeue timer is the daemon's; the graph run is Layer 2's."""
@@ -717,32 +636,6 @@ class RuntimeService:
 
     async def regenerate(self) -> None:
         await self._runtime.regenerate()
-
-    # ----------------------------------------------------------------------------------
-    # Startup reconciliation
-    # ----------------------------------------------------------------------------------
-
-    async def reconcile(self) -> int:
-        """Rewrite every row's ``pending_interrupt_id`` from the checkpoint (AP-5, decision E).
-
-        The ``pending_interrupt_id`` analogue of RT-7's ``regenerate_all``, and it exists because
-        the column can be stale in **both** directions across a restart. The false negative is the
-        one that matters: a pending approval invisible to every channel is never discovered, because
-        nobody resumes a thread they cannot see. Bounded by the thread count, which for a personal
-        knowledge base is small.
-        """
-        repaired = 0
-        for thread_id, agent_id, recorded in await self._threads.all_ids():
-            try:
-                pending = await self._runtime.pending_approval(agent_id, thread_id)
-            except Exception:  # a thread whose agent is gone must not stop the daemon booting
-                _log.warning("could not reconcile thread %s", thread_id, exc_info=True)
-                continue
-            live = pending.interrupt_id if pending else None
-            if live != recorded:
-                await self._threads.set_pending(thread_id, live)
-                repaired += 1
-        return repaired
 
 
 def _prepend(first: AgentEvent, rest: AsyncIterator[AgentEvent]) -> AsyncIterator[AgentEvent]:
@@ -823,9 +716,6 @@ async def open_service(
     and ``PRAGMA journal_mode=WAL`` is set in ``setup()``, which ``PkbRuntime.open`` calls. A
     connection opened before that talks to a rollback-journal file, where a reader blocks a writer —
     measured as ``journal_mode == 'delete'`` before and ``'wal'`` after.
-
-    The proposal sink is wired here because it is the composition root's job: ``PkbRuntime`` keeps
-    proposals in memory only, so without this a propose-only write is one restart from gone (AP-15).
     """
     # The harness import is **inside** this function, and that is SV-4 rather than style: the real
     # `RuntimeService` class has to import and run in a subprocess with `deepagents`/`langgraph`/

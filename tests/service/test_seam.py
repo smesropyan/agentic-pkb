@@ -220,10 +220,15 @@ def _import_every(directories: tuple[Path, ...], extra: tuple[str, ...]) -> str:
 
 # The real service, constructed and driven with the harness absent (SV-4, SV-30). The fake runtime
 # is built from `pkb.contracts` alone: if `RuntimeService` needed one harness object to function —
-# a `RunnableConfig` to pass down, a `Command` to build a resume — this is where that shows up, as
-# a NameError in a subprocess rather than as an architectural argument two layers later.
+# a `RunnableConfig` to pass down, a harness type to build a run — this is where that shows up, as
+# a NameError in a subprocess rather than as an architectural argument two layers later. Session-
+# shaped (Task 6): `create_session`, `start_session_run`, its events, `close_session`/`end_session` —
+# no thread CRUD, no `resume`, no `pending_approval`, no delete, because none of the four exists on
+# the Protocol any longer (S-38, S-39: no gate, no parked write, nothing to resume, and "nothing
+# deletes a session," DESIGN.md §2.7).
 _DRIVE_THE_REAL_SERVICE = '''
 import asyncio
+import tempfile
 from pathlib import Path
 
 import aiosqlite
@@ -235,23 +240,15 @@ from pkb.contracts import (
     RunEnd,
     UnknownAgentError,
 )
+from pkb.core.paths import LIBRARIAN_AGENT_ID
 from pkb.service.runtime import Runtime, RuntimeService
-
-COOKING = "topic/cooking"
 
 CATALOG = [
     AgentDescriptor(
-        agent_id="librarian",
+        agent_id=LIBRARIAN_AGENT_ID,
         title="Librarian",
         description="Routes each item to the right Topic Expert.",
         has_custom_expert=False,
-        model_id="ollama:deepseek-v4-flash:cloud",
-    ),
-    AgentDescriptor(
-        agent_id=COOKING,
-        title="Cooking",
-        description="Food, heat and time.",
-        has_custom_expert=True,
         model_id="ollama:deepseek-v4-flash:cloud",
     ),
 ]
@@ -265,23 +262,14 @@ class FakeRuntime:
     def list_agents(self):
         return CATALOG
 
-    def run(self, agent_id, thread_id, message, *, approval_mode="interactive", run_id=None):
+    def run(self, agent_id, thread_id, message, *, run_id=None):
         async def stream():
             yield MessageComplete(run_id="R1", agent_id=agent_id, text="echo: " + message)
             yield RunEnd(run_id="R1", final_text="echo: " + message)
 
         return stream()
 
-    def resume(self, agent_id, thread_id, decisions, *, interrupt_id=None, run_id=None):
-        async def stream():
-            yield RunEnd(run_id="R2", final_text="resumed")
-
-        return stream()
-
     async def cancel(self, run_id):
-        return None
-
-    async def pending_approval(self, agent_id, thread_id):
         return None
 
     async def history(self, agent_id, thread_id):
@@ -298,51 +286,65 @@ class FakeRuntime:
 
 
 # Structural, not nominal: every member of the Protocol answered by an object that never heard of
-# `PkbRuntime`. This is SV-4 stated as an assertion rather than as a type annotation.
+# `PkbRuntime`. This is SV-4 stated as an assertion rather than as a type annotation. Eight, not ten
+# (Task 6): `resume` and `pending_approval` are gone from `Runtime` itself, not merely unused here.
 MEMBERS = [name for name in vars(Runtime) if not name.startswith("_")]
 MEMBERS += list(Runtime.__annotations__)
-assert len(MEMBERS) == 10, MEMBERS
+assert len(MEMBERS) == 8, MEMBERS
 for member in MEMBERS:
     assert hasattr(FakeRuntime, member), member
 
 
 async def main():
+    kb_root = Path(tempfile.mkdtemp(prefix="pkb-seam-"))
     connection = await aiosqlite.connect(":memory:", isolation_level=None)
-    service = RuntimeService(FakeRuntime(), connection)
+    service = RuntimeService(FakeRuntime(), connection, kb_root=kb_root)
     await service.setup()
 
-    thread = await service.create_thread(COOKING, origin_channel="telegram")
-    assert thread.agent_id == COOKING
-    assert thread.title is None, thread.title
-    assert thread.origin_channel == "telegram"
-
     try:
-        await service.create_thread("topic/atlantis")
+        await service.create_session("topic/atlantis", objective="a lost recipe")
     except UnknownAgentError:
         pass
     else:
         raise AssertionError("an unknown agent must be refused before the row is inserted")
-    assert len(list(await service.list_threads())) == 1
+    assert list(await service.list_sessions()) == []
 
-    listed = await service.list_threads(COOKING)
-    assert [row.thread_id for row in listed] == [thread.thread_id]
-    assert list(await service.list_threads("librarian")) == []
+    session = await service.create_session(
+        LIBRARIAN_AGENT_ID, objective="plan the week", operator="tester"
+    )
+    assert session.agent_id == LIBRARIAN_AGENT_ID
+    assert session.operator == "tester"
+    assert session.state == "open"
+    on_disk = kb_root / session.file_path
+    assert on_disk.is_file(), on_disk  # S-27: harness code creates the file when the session opens
 
-    detail = await service.get_thread(thread.thread_id)
-    assert detail.thread.thread_id == thread.thread_id
-    assert detail.descriptor is not None and detail.descriptor.title == "Cooking"
-    assert detail.pending is None
-    assert [message.role for message in detail.messages] == ["human"]
+    listed = await service.list_sessions()
+    assert [row.session_id for row in listed] == [session.session_id]
 
-    subscription = await service.start_run(thread.thread_id, "hello")
+    fetched = await service.get_session(session.session_id)
+    assert fetched.session_id == session.session_id
+
+    # No InterruptEvent is even expressible any longer (no graph composes `interrupt_on`), so the
+    # stream this fake produces is exactly what a real session run's stream now always looks like:
+    # a reply, with nothing ever parked in between.
+    subscription = await service.start_session_run(session.session_id, "hello")
     events = [event async for event in subscription.events]
     assert isinstance(events[-1], RunEnd), events
     assert events[-1].final_text == "echo: hello"
 
-    await asyncio.sleep(0.05)  # let the off-critical-path titling task finish (TT-2)
+    assert list(await service.list_sessions(state="closed")) == []
+    closed = await service.close_session(session.session_id)
+    assert closed.state == "closed"
+    queue = await service.list_sessions(state="closed")  # S-25/P4: the queue IS this view
+    assert [row.session_id for row in queue] == [session.session_id]
 
-    await service.delete_thread(thread.thread_id)
-    assert list(await service.list_threads()) == []
+    ended = await service.end_session(session.session_id)
+    assert ended.state == "ended"
+    assert list(await service.list_sessions(state="closed")) == []  # left the queue by state alone
+
+    sealed_text = on_disk.read_text(encoding="utf-8")
+    assert "## Ended" in sealed_text  # S-24/P3: the seal is an appended marker, not a frontmatter flag
+
     await connection.close()
 
 
@@ -375,16 +377,14 @@ def test_every_layer3_module_imports_with_the_harness_banned_sv30() -> None:
     assert result.stdout.strip().endswith("OK")
 
 
-@pytest.mark.superseded
 def test_the_real_service_runs_against_a_fake_runtime_with_the_harness_banned_sv4() -> None:
     """Importing is half of it; the class has to *work*, which is why this drives it (SV-4, SV-30).
 
-    Superseded (Task 3/5 rebuild this): the embedded ``_DRIVE_THE_REAL_SERVICE`` script is entirely
-    thread-CRUD-shaped — ``create_thread(..., origin_channel=...)``, ``list_threads``, ``get_thread``,
-    ``delete_thread`` — entangled with the ``start_run``/events check that survives. The SV-4/SV-30
-    architectural principle (the seam works end to end with the harness banned) is permanent and
-    needs a session-shaped driver script; Task 6 owns the rewrite (assigned by Task 2's review),
-    once the Protocol is session-shaped (Task 5) and gate-free (Task 6).
+    Rewritten for Task 6 (assigned by Task 2's review; restores SV-4/SV-30/AP-2 coverage lost when
+    the thread-CRUD-and-gate-shaped driver was retired). The embedded ``_DRIVE_THE_REAL_SERVICE``
+    script is now session-shaped: ``create_session``, ``start_session_run``, its events,
+    ``close_session``/``end_session`` — no thread CRUD, no ``resume``, no ``pending_approval``, no
+    delete, because none of the four exists on the Protocol once the gates are gone (S-38, S-39).
 
     ``RuntimeService`` is constructor-injected with a structural ``Runtime``, so the fake below —
     built from ``pkb.contracts`` and nothing else — is a complete substitute. If a single method
@@ -580,18 +580,18 @@ def _protocol_members(protocol: type) -> set[str]:
     return {name for name in vars(protocol) if not name.startswith("_")} | set(annotated)
 
 
-@pytest.mark.superseded
 def test_the_service_depends_on_a_structural_runtime_not_a_concrete_one_sv4() -> None:
     """The injected dependency is a Protocol written out here, never ``PkbRuntime`` imported.
 
     Written out rather than imported is the property SV-30's subprocess rests on: annotate the
     parameter with the real class and the module has a module-scope harness import, and the class
     can no longer be constructed on a machine without the harness. Structural also means Layer 2 can
-    add a method without Layer 3 seeing it, and Layer 3 states exactly the nine calls it makes.
+    add a method without Layer 3 seeing it, and Layer 3 states exactly the calls it makes.
 
-    Superseded (Task 6 rebuilds this): the pinned member set includes ``resume`` and
+    Rewritten for Task 6: the pinned member set no longer includes ``resume`` or
     ``pending_approval`` — the interrupt-resume surface Task 6 removes from the ``Runtime`` protocol
-    entirely. The structural-Protocol principle survives; the exact nine-member set does not.
+    entirely (S-38, S-39). The structural-Protocol principle is unchanged; the member set shrank
+    from ten to eight.
     """
     parameter = inspect.signature(RuntimeService.__init__).parameters["runtime"]
     assert parameter.annotation is Runtime or parameter.annotation == "Runtime"
@@ -604,9 +604,7 @@ def test_the_service_depends_on_a_structural_runtime_not_a_concrete_one_sv4() ->
         "db_path",
         "list_agents",
         "run",
-        "resume",
         "cancel",
-        "pending_approval",
         "history",
         "delete_thread",
         "request_scan",

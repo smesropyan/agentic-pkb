@@ -69,9 +69,6 @@ from pkb.server.telegram import (
     Channel,
     TelegramAdapter,
     TelegramConfig,
-    callback_data,
-    fit,
-    keyboard_for,
     split_message,
     utf16_len,
 )
@@ -82,7 +79,7 @@ from pkb.server.telegram_api import (
     TelegramError,
 )
 from pkb.service import RunSubscription, Thread, ThreadDetail
-from pkb.service.telegram import GENERAL, PROMPTS_TABLE, SqliteTelegramStore
+from pkb.service.telegram import GENERAL, SqliteTelegramStore
 from tests.server.stub import AGENTS, COOKING, GRILLING, LIBRARIAN, NOW, StubService
 
 CHAT = 770001
@@ -485,7 +482,10 @@ async def deliver(bot: TelegramAdapter, update: Mapping[str, Any]) -> None:
 
 
 async def press(bot: TelegramAdapter, handle: str, index: int, verb: str, **kwargs: Any) -> None:
-    await deliver(bot, callback_update(callback_data(handle, index, verb), **kwargs))
+    # `callback_data()`'s old format (Task 6, DESIGN.md §2.10) — the function is gone with the
+    # approval-posting flow, but every caller below is `@pytest.mark.superseded` and still needs a
+    # well-formed payload to drive the (now-dead) callback dispatch it is documenting.
+    await deliver(bot, callback_update(f"v1|{handle}|{index}|{verb}", **kwargs))
 
 
 def thread_row(
@@ -547,16 +547,22 @@ def approval(
     )
 
 
+# `PROMPTS_TABLE`'s old name (Task 6, DESIGN.md §2.10): the constant and the table it named are
+# gone with the approval-prompt surface, but the helpers below are read only by tests marked
+# `@pytest.mark.superseded`, which still document the table's shape until Task 10 removes them.
+_PROMPTS_TABLE = "pkb_telegram_prompts"
+
+
 async def handles(connection: aiosqlite.Connection) -> list[str]:
     """Every approval the adapter has staged, oldest first — read from the durable table."""
-    cursor = await connection.execute(f"SELECT handle FROM {PROMPTS_TABLE} ORDER BY rowid")
+    cursor = await connection.execute(f"SELECT handle FROM {_PROMPTS_TABLE} ORDER BY rowid")
     return [str(row[0]) for row in await cursor.fetchall()]
 
 
 async def prompt_rows(connection: aiosqlite.Connection) -> list[dict[str, Any]]:
     cursor = await connection.execute(
         f"SELECT handle, chat_id, thread_id, interrupt_id, action_count, resolved "
-        f"FROM {PROMPTS_TABLE} ORDER BY rowid"
+        f"FROM {_PROMPTS_TABLE} ORDER BY rowid"
     )
     return [
         {
@@ -642,7 +648,6 @@ async def test_an_unmapped_chat_runs_nothing_and_says_the_message_was_dropped_tg
     service: ScriptedService,
     store: SqliteTelegramStore,
     api: FakeBotApi,
-    connection: aiosqlite.Connection,
 ) -> None:
     """Nothing ran, nothing was stored, and the human is told so in the same breath.
 
@@ -657,7 +662,6 @@ async def test_an_unmapped_chat_runs_nothing_and_says_the_message_was_dropped_tg
 
     assert service.calls == []
     assert await store.bound_thread(STRANGER_CHAT, GENERAL) is None
-    assert await prompt_rows(connection) == []
     assert "not kept" in api.texts[0]
 
 
@@ -1493,7 +1497,8 @@ async def test_the_callback_is_answered_while_the_resume_is_still_blocked_tg61(
     service.resume_gate = gate
     journal.clear()
 
-    pressing = asyncio.create_task(bot._dispatch(callback_update(callback_data(handle, 0, "a"))))
+    # callback_data()'s old format — the function is gone (Task 6, DESIGN.md §2.10).
+    pressing = asyncio.create_task(bot._dispatch(callback_update(f"v1|{handle}|0|a")))
     for _ in range(200):
         if service.resumed:
             break
@@ -1674,11 +1679,12 @@ def test_the_keyboard_is_built_from_allowed_decisions_not_a_hardcoded_pair_tg54(
     moment a human is deciding on an irreversible write. Deriving also preserves the server's
     ordering, which decides which button a hurried thumb lands on first.
     """
-    narrowed = keyboard_for(action(allowed=("edit", "reject")), "7f3a2b1c", 0)
+    # keyboard_for() is deleted (Task 6, DESIGN.md §2.10); this test is what it deleted.
+    narrowed = keyboard_for(action(allowed=("edit", "reject")), "7f3a2b1c", 0)  # noqa: F821
     assert narrowed is not None
     assert [button["text"] for row in narrowed for button in row] == ["Reject"]
 
-    ordered = keyboard_for(action(allowed=("reject", "approve")), "7f3a2b1c", 0)
+    ordered = keyboard_for(action(allowed=("reject", "approve")), "7f3a2b1c", 0)  # noqa: F821
     assert ordered is not None
     assert [button["text"] for row in ordered for button in row] == ["Reject", "Approve"]
 
@@ -1691,7 +1697,8 @@ def test_approve_and_reject_never_share_a_row_tg64() -> None:
     "write this irreversibly" and "do not". Separate rows is the cheapest possible mitigation and it
     costs nothing.
     """
-    keyboard = keyboard_for(action(allowed=("approve", "reject")), "7f3a2b1c", 0)
+    # keyboard_for() is deleted (Task 6, DESIGN.md §2.10); this test is what it deleted.
+    keyboard = keyboard_for(action(allowed=("approve", "reject")), "7f3a2b1c", 0)  # noqa: F821
     assert keyboard is not None
     assert [len(row) for row in keyboard] == [1, 1]
 
@@ -1756,10 +1763,11 @@ def test_callback_data_carries_a_handle_and_fits_the_budget_tg57() -> None:
     If a future picker or confirm flow (Task 7's "deep Telegram UX") needs buttons of its own, the
     byte-budget property this test pins is worth re-deriving against whatever that scheme keys on.
     """
+    # callback_data() is deleted (Task 6, DESIGN.md §2.10); this test is what it deleted.
     for index in range(100):
-        data = callback_data("7f3a2b1c", index, "a")
+        data = callback_data("7f3a2b1c", index, "a")  # noqa: F821
         assert len(data.encode()) <= CALLBACK_DATA_LIMIT
-    assert len(callback_data("7f3a2b1c", 0, "a").encode()) == 15
+    assert len(callback_data("7f3a2b1c", 0, "a").encode()) == 15  # noqa: F821
 
 
 @pytest.mark.asyncio
@@ -2836,7 +2844,10 @@ def test_the_preview_marker_is_the_one_the_caller_supplied_tg56() -> None:
     ``fit``'s generic cut-and-mark behaviour is untouched; only this call site's reason to pass a
     custom marker goes away.
     """
-    preview, was_cut = fit("x" * 400 + "\n" + "y" * 400, 200, marker="\n… (full text above)")
+    # fit() is deleted along with its one caller, _post_action (Task 6, DESIGN.md §2.10).
+    preview, was_cut = fit(  # noqa: F821
+        "x" * 400 + "\n" + "y" * 400, 200, marker="\n… (full text above)"
+    )
 
     assert was_cut is True
     assert preview.endswith("\n… (full text above)")

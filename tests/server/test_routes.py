@@ -990,9 +990,7 @@ def test_a_subsystem_error_never_publishes_a_credential_ap18() -> None:
     except httpx.HTTPStatusError as exc:
         state.telegram.failed(exc)
 
-    body = state.payload(
-        agent_count=1, active_runs=0, subscribers=0, threads=(0, 0), proposals_pending=0
-    )
+    body = state.payload(agent_count=1, active_runs=0, subscribers=0, threads=(0, 0))
 
     assert token not in str(body)
     assert "[redacted]" in str(body["telegram"]["last_error"])
@@ -1157,9 +1155,7 @@ def test_a_send_failure_never_publishes_the_bot_token_tg13() -> None:
     state.telegram.send_failed(
         ConnectionError(f"POST https://api.telegram.org/bot{token}/sendMessage failed")
     )
-    body = state.payload(
-        agent_count=3, active_runs=0, subscribers=0, threads=(0, 0), proposals_pending=0
-    )
+    body = state.payload(agent_count=3, active_runs=0, subscribers=0, threads=(0, 0))
 
     assert token not in str(body)
     assert "[redacted]" in str(body["telegram"]["last_send_error"])

@@ -74,7 +74,7 @@ from pkb.server.telegram_api import (
     BotApi,
     TelegramError,
 )
-from pkb.service.telegram import PROMPTS_TABLE, SqliteTelegramStore
+from pkb.service.telegram import SqliteTelegramStore
 from tests.server.stub import COOKING, LIBRARIAN, StubService
 
 pytestmark = pytest.mark.asyncio
@@ -469,8 +469,13 @@ def kill_topics(api: FakeBotApi) -> None:
     api.topics[CHAT] = set()
 
 
+# `PROMPTS_TABLE`'s old name (Task 6, DESIGN.md §2.10): the constant is deleted with the
+# approval-prompt surface; this helper is read only by a `@pytest.mark.superseded` test.
+_PROMPTS_TABLE = "pkb_telegram_prompts"
+
+
 async def prompt_message_ids(connection: aiosqlite.Connection) -> list[int]:
-    cursor = await connection.execute(f"SELECT message_ids FROM {PROMPTS_TABLE}")
+    cursor = await connection.execute(f"SELECT message_ids FROM {_PROMPTS_TABLE}")
     rows = await cursor.fetchall()
     return [message_id for row in rows for message_id in json.loads(str(row[0]))]
 

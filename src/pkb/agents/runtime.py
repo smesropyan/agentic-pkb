@@ -85,10 +85,7 @@ from langgraph.types import Checkpointer
 
 from pkb.agents.approval import (
     DEFAULT_REASON,
-    normalize_interrupts,
     propose_only_command,
-    to_resume_command,
-    validate_decisions,
 )
 from pkb.agents.events import stream_events
 from pkb.agents.expert import expert_prompt
@@ -138,7 +135,6 @@ from pkb.contracts import (
     ApprovalMode,
     ApprovalPendingError,
     ApprovalRequest,
-    Decision,
     FlushReport,
     InterruptEvent,
     MessageComplete,
@@ -813,63 +809,6 @@ class PkbRuntime:
         ):
             yield event
 
-    async def resume(
-        self,
-        agent_id: str,
-        thread_id: str,
-        decisions: Sequence[Decision],
-        *,
-        interrupt_id: str | None = None,
-        run_id: str | None = None,
-    ) -> AsyncIterator[AgentEvent]:
-        """Answer the thread's pending approval and stream the rest of the run (RT-40, LB-10).
-
-        The decisions are validated **before the graph is touched**. Without that,
-        ``_process_decision`` raises a bare ``ValueError`` from inside ``after_model``, which aborts
-        the superstep, skips the flush (D-1) and hands the human a stack trace instead of a 400 —
-        and an unmatched interrupt id degrades into a confusing message about hanging tool calls
-        that never names the id.
-
-        Approvals are routed **by thread, never by agent** (LB-10): the interrupt is resolved on the
-        thread that raised it, with that thread's agent id. Since the fan-out gives every expert its
-        own derived thread (LB-14), an expert's approval is answered as
-        ``resume("topic/cooking", "<librarian-thread>::topic/cooking", …)`` — which is exactly what
-        the merged reply told the human, and what makes step 4's offer a real link rather than a
-        suggestion.
-
-        Raises:
-            StaleInterruptError: Nothing is pending, or ``interrupt_id`` names a different interrupt.
-                The thread is left interrupted and the original approval is still resolvable.
-            InvalidDecisionError: Wrong number of decisions, or a type the action does not allow.
-        """
-        pending = await self.pending_approval(agent_id, thread_id)
-        command = _resume_payload(pending, decisions, interrupt_id=interrupt_id)
-        rid = run_id or _new_run_id()
-        if agent_id == LIBRARIAN_AGENT_ID:
-            # A resumed Librarian turn is normally the topic-creation gate completing, which routes
-            # nowhere. It goes through the same workflow anyway so that the one case where it *does*
-            # carry a decision — a model that batched `route` with a gated call — still fans out
-            # rather than silently dropping the classification it already made (LB-12).
-            async for event in self._librarian_turn(
-                thread_id,
-                lambda: command,
-                message=None,
-                run_id=rid,
-                approval_mode="interactive",
-                refuse_when_pending=False,
-            ):
-                yield event
-            return
-        async for event in self._stream(
-            agent_id,
-            thread_id,
-            lambda: command,
-            run_id=rid,
-            approval_mode="interactive",
-            refuse_when_pending=False,
-        ):
-            yield event
-
     async def cancel(self, run_id: str) -> None:
         """Stop a run in flight (RT-46).
 
@@ -890,26 +829,8 @@ class PkbRuntime:
                 task.cancel()
 
     # ----------------------------------------------------------------------------------
-    # Approvals, history, threads (RT-38, RT-48, RT-49)
+    # History, threads (RT-43, RT-48, RT-49)
     # ----------------------------------------------------------------------------------
-
-    async def pending_approval(self, agent_id: str, thread_id: str) -> ApprovalRequest | None:
-        """The approval this thread is waiting on, normalized — or ``None`` (RT-38, RT-41).
-
-        Read from the checkpoint, so any client, in any process, after any delay, across a daemon
-        restart, can resolve it. The same interrupt appears on both ``.interrupts`` and
-        ``.tasks[0].interrupts`` and a delegated one is emitted under two namespaces with one id, so
-        the normalization deduplicates by id: one approval, one request.
-        """
-        graph = self._registry.get(agent_id)
-        state = await graph.aget_state(self.thread_config(thread_id))
-        requests = normalize_interrupts(
-            state.interrupts,
-            agent_id=agent_id,
-            thread_id=thread_id,
-            reason_for=self.reason_for,
-        )
-        return requests[0] if requests else None
 
     async def history(self, agent_id: str, thread_id: str) -> list[MessageView]:
         """Replay a thread's conversation as primitives (RT-43).
@@ -1769,22 +1690,6 @@ def _payload_factory(message: str) -> Callable[[], Any]:
         return {"messages": [HumanMessage(message)]}
 
     return build
-
-
-def _resume_payload(
-    pending: ApprovalRequest | None,
-    decisions: Sequence[Decision],
-    *,
-    interrupt_id: str | None,
-) -> Any:
-    """Validate and build the resume command, outside the graph (RT-40, RT-33).
-
-    :func:`~pkb.agents.approval.to_resume_command` validates again; the explicit call here is what
-    lets the staleness check see the ``interrupt_id`` the client believes it is answering, which the
-    two-argument form cannot express.
-    """
-    request = validate_decisions(pending, decisions, interrupt_id=interrupt_id)
-    return to_resume_command(request, decisions)
 
 
 def _new_run_id() -> str:

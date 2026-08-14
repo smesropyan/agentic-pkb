@@ -46,7 +46,7 @@ from pkb.contracts import ActionView, ApprovalRequest, MessageView, RunEnd
 from pkb.server.telegram import Channel, TelegramAdapter, TelegramConfig, _agent_of
 from pkb.server.telegram_api import GENERAL, POLL_TIMEOUT
 from pkb.service import Thread, ThreadDetail
-from pkb.service.telegram import PROMPTS_TABLE, SqliteTelegramStore
+from pkb.service.telegram import SqliteTelegramStore
 from tests.server.stub import COOKING, LIBRARIAN, StubService
 
 pytestmark = pytest.mark.asyncio
@@ -256,8 +256,13 @@ def thread_row(thread_id: str, agent_id: str = COOKING) -> Thread:
     )
 
 
+# `PROMPTS_TABLE`'s old name (Task 6, DESIGN.md §2.10): the constant is deleted with the
+# approval-prompt surface; these helpers are read only by tests marked `@pytest.mark.superseded`.
+_PROMPTS_TABLE = "pkb_telegram_prompts"
+
+
 async def handle_of(connection: aiosqlite.Connection) -> str:
-    cursor = await connection.execute(f"SELECT handle FROM {PROMPTS_TABLE}")
+    cursor = await connection.execute(f"SELECT handle FROM {_PROMPTS_TABLE}")
     row = await cursor.fetchone()
     assert row is not None
     return str(row[0])
@@ -562,6 +567,6 @@ async def test_a_press_from_a_relocated_message_still_resolves_the_rows_thread_t
     await bot._on_callback(press(button_data(api, "a")))
 
     assert ("resume", (request.thread_id, request.interrupt_id)) in service.calls
-    cursor = await connection.execute(f"SELECT answers_json FROM {PROMPTS_TABLE}")
+    cursor = await connection.execute(f"SELECT answers_json FROM {_PROMPTS_TABLE}")
     row = await cursor.fetchone()
     assert row is not None and json.loads(str(row[0])) == {"0": "a"}

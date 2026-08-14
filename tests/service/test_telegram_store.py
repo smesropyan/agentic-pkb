@@ -34,7 +34,6 @@ from pkb.service.telegram import (
     CHANNELS_TABLE,
     GENERAL,
     LEDGER_TABLE,
-    PROMPTS_TABLE,
     SqliteTelegramStore,
 )
 
@@ -61,7 +60,6 @@ CREATE INDEX store_prefix_idx ON store (prefix);
 OWNED_TABLES = {
     BINDINGS_TABLE,
     LEDGER_TABLE,
-    PROMPTS_TABLE,
     CHANNELS_TABLE,
     f"{CHANNELS_TABLE}_topic_idx",
 }
@@ -72,7 +70,9 @@ like any other — and because ST-7's rule is about the *names* this layer takes
 it shares with the checkpointer. An unprefixed index name collides exactly as destructively
 as an unprefixed table name and is easier to add without noticing. The directory itself
 (``CHANNELS_TABLE``) arrived with §9; the legacy bindings table is deliberately absent,
-because a fresh install is never handed it (TG-28 amended).
+because a fresh install is never handed it (TG-28 amended); ``PROMPTS_TABLE`` is deliberately
+absent too now (Task 6, DESIGN.md §2.10) — the test below that reads this set is superseded and
+still names the old table in its own docstring, pending Task 6/7's successor.
 """
 
 
@@ -806,10 +806,14 @@ async def test_a_full_bot_session_leaves_the_foreign_tables_byte_identical_st7(
     """Every write the bot makes must be invisible to the five tables it does not own.
 
     The dangerous version of this failure is not a ``DROP`` — that fails loudly. It is a stray
-    ``UPDATE threads SET …`` from the transport's own bookkeeping, which silently rewrites the row
-    Layer 3 uses to find a pending approval, and only shows up as an approval no channel can list.
-    So an entire session — bind, claim, dispatch, prompt, answers, resolve — runs between the two
-    reads, and both the schemas and the rows have to come back unchanged.
+    ``UPDATE threads SET …`` from the transport's own bookkeeping, which silently rewrites a row
+    Layer 3 owns. So a whole session — bind, claim, dispatch, unbind — runs between the two reads,
+    and both the schemas and the rows have to come back unchanged.
+
+    Once claimed a full session also opened an approval prompt, recorded its messages and answers,
+    and resolved it — that machinery is deleted with the rest of the interrupt/resume surface
+    (Task 6, DESIGN.md §2.10), so the session this test builds is the bind/claim/dispatch/unbind
+    shape that survives it; the isolation claim itself is unaffected by what is inside the session.
     """
     await seeded_foreign_tables(db_path)
     before = catalog(db_path)
@@ -822,11 +826,6 @@ async def test_a_full_bot_session_leaves_the_foreign_tables_byte_identical_st7(
         await store.claim(1, CHAT, GENERAL, "message")
         await store.dispatched(1)
         await store.claim(2, CHAT, GENERAL, "callback_query")
-        await open_two_action_prompt(store)
-        await store.record_message(HANDLE, 11)
-        await store.record_answer(HANDLE, 0, "approve")
-        await store.record_answer(HANDLE, 1, "reject")
-        await store.resolve_prompt(HANDLE)
         await store.unbind(CHAT, GENERAL)
 
     after = catalog(db_path)
@@ -926,9 +925,12 @@ async def test_the_store_is_hammered_while_a_run_streams_and_never_locks_tg28(
     """The bot writes on the inbound path, which is exactly when the checkpointer is writing.
 
     Two connections on one file, one of them looping the checkpointer's own tables while the store
-    accumulates ledger rows, prompts and answers: with a transaction held across an ``await`` this
-    is where ``database is locked`` appears, five seconds later, on the *other* connection. Zero is
-    the only acceptable number because the victim of the failure is an agent run, not the bot.
+    accumulates ledger rows and directory rows (the approval prompts this used to hammer with are
+    deleted with the rest of the interrupt/resume surface — Task 6, DESIGN.md §2.10 — but the
+    concurrency claim is about writes racing the checkpointer, not about what they are): with a
+    transaction held across an ``await`` this is where ``database is locked`` appears, five seconds
+    later, on the *other* connection. Zero is the only acceptable number because the victim of the
+    failure is an agent run, not the bot.
     """
     async with opened(db_path) as store:
         other = await aiosqlite.connect(db_path, isolation_level=None)
@@ -952,8 +954,8 @@ async def test_the_store_is_hammered_while_a_run_streams_and_never_locks_tg28(
                     try:
                         await store.claim(index, CHAT, GENERAL, "message")
                         await store.started(index, THREAD, f"run-{index}")
-                        await store.open_prompt(f"h{index}", CHAT, GENERAL, THREAD, f"i-{index}", 1)
-                        await store.record_answer(f"h{index}", 0, "a")
+                        await store.dispatched(index)
+                        await store.open_channel(CHAT, index + 1, f"topic/agent-{index}")
                     except sqlite3.OperationalError as exc:  # pragma: no cover - the failure case
                         errors.append(str(exc))
                     await asyncio.sleep(0)

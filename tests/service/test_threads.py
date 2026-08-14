@@ -64,7 +64,6 @@ from pkb.contracts import (
 )
 from pkb.core.models import FlushReport
 from pkb.service import RunSubscription, Thread
-from pkb.service.proposals import TABLE as PROPOSALS_TABLE
 from pkb.service.runtime import RuntimeService
 from pkb.service.threads import MIGRATIONS_TABLE, TABLE, ThreadStore, mint_thread_id
 from tests.server.stub import AGENTS, COOKING, LIBRARIAN
@@ -772,6 +771,8 @@ async def test_setup_creates_only_the_tables_layer_3_owns_st7(tmp_path: Path) ->
     runtime = FakeRuntime(db)
     async with service_over(db, runtime) as (service, _):
         await service.setup()  # twice: setup is idempotent and startup may repeat it
+
+    from pkb.service.proposals import TABLE as PROPOSALS_TABLE  # module deleted (Task 6); dead code
 
     added = table_names(db) - set(FOREIGN_TABLES)
     assert added == {TABLE, MIGRATIONS_TABLE, PROPOSALS_TABLE}

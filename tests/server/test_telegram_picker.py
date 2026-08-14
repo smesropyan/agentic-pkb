@@ -43,8 +43,6 @@ from pkb.server.telegram import (
     PICKER_PREFIX,
     PICKER_ROWS,
     Channel,
-    callback_data,
-    parse_callback,
     parse_picker,
     picker_callback,
     resolve_picker,
@@ -366,19 +364,24 @@ def test_the_shallow_case_rides_inline_and_is_readable_in_a_log_tg97() -> None:
     assert len(GRILLING.encode()) == 22
 
 
+@pytest.mark.superseded
 def test_the_two_callback_grammars_refuse_each_other_tg97() -> None:
     """One press, one handler. A grammar that overlapped would route a tap to the wrong code.
 
     Two fields against four, and no agent id can hold a ``|``, so neither parser can be fooled by
     the other's payload.
+
+    Superseded (Task 6, DESIGN.md §2.10): ``callback_data``/``parse_callback`` were the approval
+    grammar this test proved disjoint from the picker's; with no gate ever posting an approval
+    keyboard, the picker is the only grammar this adapter draws and there is nothing left to refuse.
     """
-    approval = callback_data("abcd", 0, "a")
+    approval = callback_data("abcd", 0, "a")  # noqa: F821
     channel = picker_callback(COOKING)
 
-    assert parse_callback(channel) is None
+    assert parse_callback(channel) is None  # noqa: F821
     assert parse_picker(approval) is None
     assert parse_picker(channel) == COOKING
-    assert parse_callback(approval) == ("abcd", 0, "a")
+    assert parse_callback(approval) == ("abcd", 0, "a")  # noqa: F821
 
 
 @pytest.mark.asyncio

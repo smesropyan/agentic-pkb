@@ -49,14 +49,18 @@ STUB_SOURCE = '''
 
 Written the way Layer 3 will be written: it binds against `pkb.contracts` and a structural view of
 the runtime, and it imports nothing from `pkb.agents` — the runtime arrives as a constructor
-argument. Everything the checkpointer cannot answer (D-19) is answered by the `threads` table.
+argument. Everything the checkpointer cannot answer (D-19) is answered by the `sessions` table.
+
+Session-shaped (Task 6, DESIGN.md §2): a session is created directly on its agent and addressed by
+its own id thereafter — no thread CRUD, and nothing deletes one (§2.7). No `resume` and no
+`pending_approval` either: no graph composes a gate any longer, so nothing ever parks (S-38, S-39).
 """
 
 from __future__ import annotations
 
 import sqlite3
 import uuid
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -65,30 +69,36 @@ from typing import Protocol
 from pkb.contracts import (
     AgentDescriptor,
     AgentEvent,
-    ApprovalRequest,
-    Decision,
     MessageView,
     UnknownAgentError,
 )
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS threads (
-    thread_id      TEXT PRIMARY KEY,
-    agent_id       TEXT NOT NULL,
-    title          TEXT NOT NULL,
-    created_at     TEXT NOT NULL,
-    origin_channel TEXT NOT NULL
+CREATE TABLE IF NOT EXISTS sessions (
+    session_id TEXT PRIMARY KEY,
+    agent_id   TEXT NOT NULL,
+    objective  TEXT,
+    name       TEXT NOT NULL,
+    operator   TEXT NOT NULL,
+    state      TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    closed_at  TEXT,
+    ended_at   TEXT
 )
 """
 
 
 @dataclass(frozen=True, slots=True)
-class Thread:
-    thread_id: str
+class Session:
+    session_id: str
     agent_id: str
-    title: str
+    objective: str | None
+    name: str
+    operator: str
+    state: str
     created_at: str
-    origin_channel: str
+    closed_at: str | None
+    ended_at: str | None
 
 
 class Runtime(Protocol):
@@ -98,19 +108,9 @@ class Runtime(Protocol):
 
     def run(self, agent_id: str, thread_id: str, message: str) -> AsyncIterator[AgentEvent]: ...
 
-    def resume(
-        self, agent_id: str, thread_id: str, decisions: Sequence[Decision]
-    ) -> AsyncIterator[AgentEvent]: ...
-
     async def cancel(self, run_id: str) -> None: ...
 
-    async def pending_approval(
-        self, agent_id: str, thread_id: str
-    ) -> ApprovalRequest | None: ...
-
     async def history(self, agent_id: str, thread_id: str) -> list[MessageView]: ...
-
-    async def delete_thread(self, thread_id: str) -> None: ...
 
 
 class PkbService:
@@ -127,77 +127,98 @@ class PkbService:
     def list_agents(self) -> list[AgentDescriptor]:
         return self._runtime.list_agents()
 
-    # -- threads: Layer 3's table, because the checkpointer cannot answer any of this ----
+    # -- sessions: Layer 3's table, because the checkpointer cannot answer any of this ---
 
-    def create_thread(self, agent_id: str, *, title: str = "", channel: str = "tui") -> Thread:
+    def create_session(
+        self, agent_id: str, *, objective: str | None = None, operator: str = "operator"
+    ) -> Session:
         known = {descriptor.agent_id for descriptor in self._runtime.list_agents()}
         if agent_id not in known:
             raise UnknownAgentError(agent_id)
-        thread = Thread(
-            thread_id=str(uuid.uuid4()),
+        session = Session(
+            session_id=str(uuid.uuid4()),
             agent_id=agent_id,
-            title=title or "New conversation",
+            objective=objective,
+            name=objective or "session",
+            operator=operator,
+            state="open",
             created_at=datetime.now(UTC).isoformat(),
-            origin_channel=channel,
+            closed_at=None,
+            ended_at=None,
         )
         self._db.execute(
-            "INSERT INTO threads VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                thread.thread_id,
-                thread.agent_id,
-                thread.title,
-                thread.created_at,
-                thread.origin_channel,
+                session.session_id,
+                session.agent_id,
+                session.objective,
+                session.name,
+                session.operator,
+                session.state,
+                session.created_at,
+                session.closed_at,
+                session.ended_at,
             ),
         )
-        return thread
+        return session
 
-    def list_threads(self, agent_id: str | None = None) -> list[Thread]:
-        if agent_id is None:
-            rows = self._db.execute("SELECT * FROM threads ORDER BY created_at")
-        else:
-            rows = self._db.execute(
-                "SELECT * FROM threads WHERE agent_id = ? ORDER BY created_at", (agent_id,)
-            )
-        return [Thread(*row) for row in rows]
+    def list_sessions(
+        self, agent_id: str | None = None, *, state: str | None = None
+    ) -> list[Session]:
+        clauses, params = [], []
+        if agent_id is not None:
+            clauses.append("agent_id = ?")
+            params.append(agent_id)
+        if state is not None:
+            clauses.append("state = ?")
+            params.append(state)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._db.execute(f"SELECT * FROM sessions{where} ORDER BY created_at", params)
+        return [Session(*row) for row in rows]
 
-    def get_thread(self, thread_id: str) -> Thread:
+    def get_session(self, session_id: str) -> Session:
         row = self._db.execute(
-            "SELECT * FROM threads WHERE thread_id = ?", (thread_id,)
+            "SELECT * FROM sessions WHERE session_id = ?", (session_id,)
         ).fetchone()
         if row is None:
-            raise UnknownAgentError(thread_id)
-        return Thread(*row)
+            raise UnknownAgentError(session_id)
+        return Session(*row)
+
+    def close_session(self, session_id: str) -> Session:
+        """S-20: state -> closed, entering the learning queue (S-25/P4: `state='closed'` IS it)."""
+        session = self.get_session(session_id)
+        stamp = datetime.now(UTC).isoformat()
+        self._db.execute(
+            "UPDATE sessions SET state = 'closed', closed_at = ? WHERE session_id = ?",
+            (stamp, session_id),
+        )
+        return self.get_session(session_id)
+
+    def end_session(self, session_id: str) -> Session:
+        """S-22/S-24: seals the session — legal only from `closed`."""
+        session = self.get_session(session_id)
+        if session.state != "closed":
+            raise UnknownAgentError(f"{session_id} is {session.state!r}, not closed")
+        stamp = datetime.now(UTC).isoformat()
+        self._db.execute(
+            "UPDATE sessions SET state = 'ended', ended_at = ? WHERE session_id = ?",
+            (stamp, session_id),
+        )
+        return self.get_session(session_id)
 
     # -- runs ---------------------------------------------------------------------------
 
-    async def stream_run(self, thread_id: str, message: str) -> AsyncIterator[AgentEvent]:
-        thread = self.get_thread(thread_id)
-        async for event in self._runtime.run(thread.agent_id, thread_id, message):
-            yield event
-
-    async def resume(
-        self, thread_id: str, decisions: Sequence[Decision]
-    ) -> AsyncIterator[AgentEvent]:
-        thread = self.get_thread(thread_id)
-        async for event in self._runtime.resume(thread.agent_id, thread_id, decisions):
+    async def stream_run(self, session_id: str, message: str) -> AsyncIterator[AgentEvent]:
+        session = self.get_session(session_id)
+        async for event in self._runtime.run(session.agent_id, session_id, message):
             yield event
 
     async def cancel(self, run_id: str) -> None:
         await self._runtime.cancel(run_id)
 
-    async def pending_approval(self, thread_id: str) -> ApprovalRequest | None:
-        thread = self.get_thread(thread_id)
-        return await self._runtime.pending_approval(thread.agent_id, thread_id)
-
-    async def history(self, thread_id: str) -> list[MessageView]:
-        thread = self.get_thread(thread_id)
-        return await self._runtime.history(thread.agent_id, thread_id)
-
-    async def delete_thread(self, thread_id: str) -> None:
-        thread = self.get_thread(thread_id)
-        await self._runtime.delete_thread(thread.thread_id)
-        self._db.execute("DELETE FROM threads WHERE thread_id = ?", (thread.thread_id,))
+    async def history(self, session_id: str) -> list[MessageView]:
+        session = self.get_session(session_id)
+        return await self._runtime.history(session.agent_id, session_id)
 '''
 
 
@@ -255,35 +276,31 @@ class FakeRuntime:
         yield MessageComplete(run_id="R1", agent_id=agent_id, text=f"echo: {{message}}")
         yield RunEnd(run_id="R1", final_text=f"echo: {{message}}")
 
-    async def resume(self, agent_id, thread_id, decisions):
-        yield RunEnd(run_id="R2", final_text="resumed")
-
     async def cancel(self, run_id):
-        return None
-
-    async def pending_approval(self, agent_id, thread_id):
         return None
 
     async def history(self, agent_id, thread_id):
         return []
 
-    async def delete_thread(self, thread_id):
-        return None
-
 
 async def main():
     service = module.PkbService(FakeRuntime(), Path({db!r}))
-    thread = service.create_thread("librarian", title="First", channel="telegram")
-    assert [row.thread_id for row in service.list_threads("librarian")] == [thread.thread_id]
-    assert service.get_thread(thread.thread_id).origin_channel == "telegram"
+    session = service.create_session("librarian", objective="plan the week", operator="tester")
+    assert [row.session_id for row in service.list_sessions("librarian")] == [session.session_id]
+    assert service.get_session(session.session_id).state == "open"
 
-    events = [event async for event in service.stream_run(thread.thread_id, "hello")]
+    events = [event async for event in service.stream_run(session.session_id, "hello")]
     assert isinstance(events[-1], RunEnd)
     assert events[-1].final_text == "echo: hello"
 
-    assert await service.pending_approval(thread.thread_id) is None
-    await service.delete_thread(thread.thread_id)
-    assert service.list_threads() == []
+    assert service.list_sessions(state="closed") == []
+    closed = service.close_session(session.session_id)
+    assert closed.state == "closed"
+    assert [row.session_id for row in service.list_sessions(state="closed")] == [session.session_id]
+
+    ended = service.end_session(session.session_id)
+    assert ended.state == "ended"
+    assert service.list_sessions(state="closed") == []
     service.close()
 
 
@@ -358,7 +375,6 @@ def test_the_stub_service_imports_only_the_seam_and_the_standard_library_i2(tmp_
     assert {module for module in modules if module.startswith("pkb")} == {"pkb.contracts"}
 
 
-@pytest.mark.superseded
 def test_a_stub_service_compiles_and_runs_with_the_harness_banned_i2(tmp_path: Path) -> None:
     """The acceptance test for the seam: a `PkbService` over the runtime plus one SQL table.
 
@@ -366,14 +382,11 @@ def test_a_stub_service_compiles_and_runs_with_the_harness_banned_i2(tmp_path: P
     `langchain_core` outright. A single missing type in `pkb.contracts` shows up here as an
     ImportError rather than as an architectural argument two layers later.
 
-    Superseded (Task 6 rebuilds this — assigned by Task 2's review — mirroring `tests/service/test_seam.py`'s sv4 sibling):
-    ``BANNED_DRIVER`` is entirely thread-CRUD-and-gate shaped — ``create_thread(...,
-    channel="telegram")``, ``list_threads``, ``get_thread(...).origin_channel``,
-    ``pending_approval``, ``delete_thread`` — all retired by the sessions model (DESIGN.md §2: a
-    session belongs to one agent directly, channels attach rather than stamp an ``origin_channel``,
-    no gate to park on, and nothing deletes a session). The I2 principle it proves — the seam
-    compiles and runs with the harness genuinely banned — is permanent; ``STUB_SOURCE`` and
-    ``BANNED_DRIVER`` need a session-shaped rewrite once ``pkb.service.sessions`` exists.
+    Rewritten for Task 6 (assigned by Task 2's review — mirrors `tests/service/test_seam.py`'s sv4
+    sibling): ``BANNED_DRIVER`` is now session-shaped — ``create_session``, ``list_sessions``,
+    ``get_session``, ``close_session``/``end_session`` — with no thread CRUD, no ``resume``, no
+    ``pending_approval`` and no delete, per the sessions model (DESIGN.md §2: a session belongs to
+    one agent directly, no gate ever parks one, and nothing deletes a session).
     """
     stub = write_stub(tmp_path)
     driver = tmp_path / "driver.py"
@@ -388,17 +401,14 @@ def test_a_stub_service_compiles_and_runs_with_the_harness_banned_i2(tmp_path: P
     assert result.stdout.strip().endswith("OK")
 
 
-@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_the_same_stub_drives_a_real_runtime_i2(kb: Path, tmp_path: Path) -> None:
     """Compiling against the seam is not enough; the surface has to be the one that exists.
 
-    Superseded (Task 6 rebuilds this — assigned by Task 2's review — same reasons as this file's harness-banned sibling above):
-    ``channel="telegram"``, ``pending_approval``, per-agent ``list_threads``, and ``delete_thread``
-    (there is no session equivalent — "nothing deletes a session") are all thread-CRUD-and-gate
-    shaped and retired by the sessions model. The catalog/run/history assertions that do not name a
-    thread by CRUD operation survive in spirit; this whole test is entangled with the ones that do
-    not, so marked whole.
+    Rewritten for Task 6 (assigned by Task 2's review — same reasons as this file's harness-banned
+    sibling above): session-shaped, against the real ``PkbRuntime`` — no ``channel=``, no
+    ``pending_approval``, no per-agent thread listing and no delete (there is no session
+    equivalent — "nothing deletes a session").
     """
     module = load_stub(tmp_path)
     model = scripted(says("filed under Cooking"))
@@ -409,26 +419,34 @@ async def test_the_same_stub_drives_a_real_runtime_i2(kb: Path, tmp_path: Path) 
             ids = {descriptor.agent_id for descriptor in service.list_agents()}
             assert {"librarian", COOKING} <= ids
 
-            thread = service.create_thread(COOKING, title="Steak", channel="telegram")
+            session = service.create_session(COOKING, objective="Steak", operator="tester")
             events = [
-                event async for event in service.stream_run(thread.thread_id, "how do I sear")
+                event async for event in service.stream_run(session.session_id, "how do I sear")
             ]
 
             assert isinstance(events[-1], RunEnd)
             assert events[-1].final_text == "filed under Cooking"
             assert any(isinstance(event, MessageComplete) for event in events)
 
-            replayed = await service.history(thread.thread_id)
+            replayed = await service.history(session.session_id)
             assert [view.role for view in replayed] == ["human", "assistant"]
-            assert await service.pending_approval(thread.thread_id) is None
 
             # The question the checkpointer cannot answer, answered by Layer 3's own table (D-19).
-            assert [row.title for row in service.list_threads(COOKING)] == ["Steak"]
-            assert service.list_threads("librarian") == []
+            assert [row.session_id for row in service.list_sessions(COOKING)] == [
+                session.session_id
+            ]
+            assert service.list_sessions("librarian") == []
 
-            await service.delete_thread(thread.thread_id)
-            assert service.list_threads() == []
-            assert await rt.history(COOKING, thread.thread_id) == []
+            assert service.list_sessions(state="closed") == []
+            closed = service.close_session(session.session_id)
+            assert closed.state == "closed"
+            assert [row.session_id for row in service.list_sessions(state="closed")] == [
+                session.session_id
+            ]
+
+            ended = service.end_session(session.session_id)
+            assert ended.state == "ended"
+            assert service.list_sessions(state="closed") == []
         finally:
             service.close()
 
@@ -440,17 +458,14 @@ def test_the_runtime_is_the_only_name_pkb_agents_exports_5_2() -> None:
     assert package.__all__ == ["PkbRuntime", "RuntimeConfig"]
 
 
-@pytest.mark.superseded
 def test_the_service_protocols_methods_all_exist_on_the_runtime_5_2(tmp_path: Path) -> None:
     """A rename on either side is a broken seam; here it is a failing assertion instead.
 
-    Superseded (Task 6 rebuilds this): ``required`` is derived from the stub's own ``Runtime``
-    Protocol, which names ``resume`` and ``pending_approval`` — the interrupt-resume surface Task 6
-    removes from ``PkbRuntime`` entirely ("the runtime exposes no interrupt-resume surface" is one of
-    Task 6's own failing tests). Once those methods are gone, ``hasattr(PkbRuntime, "resume")`` is
-    false and this assertion fails by design. The seam-methods-exist-on-the-runtime principle
-    survives; whoever rebuilds the stub for sessions (Task 3) inherits re-asserting it over the
-    surviving member set.
+    Rewritten for Task 6: ``required`` is derived from the stub's own ``Runtime`` Protocol, reshaped
+    session-shaped alongside ``STUB_SOURCE`` — ``list_agents``, ``run``, ``cancel``, ``history``, with
+    no ``resume`` and no ``pending_approval``, the interrupt-resume surface Task 6 removes from
+    ``PkbRuntime`` entirely. Every name the stub still declares is checked against the real thing, so
+    a rename on either side is still caught here.
     """
     from pkb.agents.runtime import PkbRuntime
 
@@ -476,8 +491,8 @@ def test_every_event_survives_the_json_boundary_rt43(kb: Path, tmp_path: Path) -
     async def go() -> list[Any]:
         async with opened(kb, model) as rt:
             service = module.PkbService(rt, tmp_path / "layer3.sqlite")
-            thread = service.create_thread(COOKING)
-            events = [event async for event in service.stream_run(thread.thread_id, "hi")]
+            session = service.create_session(COOKING)
+            events = [event async for event in service.stream_run(session.session_id, "hi")]
             service.close()
             return events
 

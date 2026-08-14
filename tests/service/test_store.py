@@ -27,7 +27,6 @@ import pytest
 from pkb.agents import PkbRuntime, RuntimeConfig
 from pkb.contracts import ActionView, PendingProposal, RunEnd
 from pkb.core.scaffold import scaffold_topic
-from pkb.service.proposals import ProposalStore
 from pkb.service.runtime import RuntimeService, open_service
 from pkb.service.threads import BUSY_TIMEOUT_MS, MIGRATIONS_TABLE, ThreadStore, open_connection
 from tests.agents.conftest import TODAY, ScriptedChatModel, says, scripted
@@ -546,7 +545,11 @@ async def test_recording_the_same_proposal_twice_leaves_one_row_st14(kb: Path, d
     keeps the human's queue a set of distinct proposals rather than a count of delivery attempts.
 
     Superseded (Task 6 rebuilds this): same as the sibling test above — ``ProposalStore`` is gone.
+    Imported locally rather than at module scope (dead module `pkb.service.proposals`) so the rest
+    of this file — none of it proposal-shaped — keeps collecting.
     """
+    from pkb.service.proposals import ProposalStore
+
     async with opened(kb, db) as runtime, store(runtime) as (connection, _):
         proposals = ProposalStore(connection)
         await proposals.setup()

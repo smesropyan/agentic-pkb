@@ -1,4 +1,4 @@
-"""``create_topic`` and ``create_subtopic`` — the two gated scaffolding tools (LB-7, EX-12).
+"""``create_topic`` and ``create_subtopic`` — the two scaffolding tools (LB-7, EX-12).
 
 Creating a topic is an **agent-invoked tool**, not a transport endpoint: README's "all interactions
 are agent-mediated" means the human proposes a topic in conversation and the agent carries it out,
@@ -7,12 +7,13 @@ agent that notices an inbound item fits no existing topic; the Topic Expert owns
 :func:`create_subtopic_tool`, scope-limited to its own subtree, because splitting a topic is a
 judgment about *that* topic's contents.
 
-**Approval comes first, and not from here.** ``HumanInTheLoopMiddleware`` fires in ``after_model``,
-strictly before any tool body runs, and :func:`pkb.agents.gates.build_interrupt_on` already carries
-an entry for both tool names — so by the time the functions below execute, a human has approved,
-edited or the call never happened. The tool names are therefore load-bearing: rename either one and
-topic creation silently stops gating. Layer 1's scaffolder has no approval parameter of its own by
-design (SC-8), which is exactly why the gate has to be real.
+**Neither tool is gated (Task 6).** Before the sessions rebuild, ``HumanInTheLoopMiddleware`` fired
+in ``after_model`` with an entry for both tool names, and a human approved, edited or the call never
+happened. No graph in :mod:`pkb.agents` composes ``interrupt_on`` any longer (DESIGN.md §2.10, "the
+operator's instruction is the approval"), so a call to either tool below executes in the turn like
+any other write — :mod:`pkb.agents.gates` still carries a table entry for both tool names, but
+nothing reads it. Layer 1's scaffolder has no approval parameter of its own by design (SC-8), and
+now nothing upstream of it supplies one either.
 
 **Nothing here re-implements scaffolding.** :func:`pkb.core.scaffold_topic` and
 :func:`pkb.core.scaffold_subtopic` write the six standard paths, refuse an illegal location, refuse

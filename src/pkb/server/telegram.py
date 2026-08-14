@@ -10,25 +10,25 @@ is what lets every rule below be driven against a fake with no token and no sock
 rather than a subpackage because five built seam scans glob non-recursively, so code inside a
 ``telegram/`` package would be invisible to them.
 
-Four properties shape the whole module:
+Three properties shape the whole module. A fourth used to — "an approval is decided against the
+whole thing," the description reaching the chat before the buttons did — and is gone along with the
+buttons themselves: no tool call can raise an :class:`~pkb.contracts.InterruptEvent` any more
+(DESIGN.md §2.10 — the operator's instruction is the approval), so there is nothing left to decide
+against and nothing left to post a keyboard for.
 
 * **Structured concurrency, because the supervisor has no handle on what a task spawns.** Measured
   against the real ``_supervise``: a task that detaches a child and raises leaves it running and
   gets a second on restart — three restarts gave three live pollers, which Telegram answers with
   ``409 Conflict`` because it permits one ``getUpdates`` per token. Everything here runs in one
   :class:`asyncio.TaskGroup`, so a crash takes its children with it.
-* **Nothing is remembered in the process.** The chat's current thread, the update ledger and every
-  open approval live in SQLite. A button pressed while the daemon was down arrives up to 24 hours
-  later into an adapter with no memory of sending it, and the durable path is the *only* path — so
-  the restart case is exercised by every test rather than by an incident.
+* **Nothing is remembered in the process.** The chat's current thread and the update ledger live in
+  SQLite. A message that arrives while the daemon was down is redelivered up to 24 hours later into
+  an adapter with no memory of having seen it, and the durable path is the *only* path — so the
+  restart case is exercised by every test rather than by an incident.
 * **The pump never blocks on a Bot API call** (TG-49). Frames drain into a bounded outbox that a
   separate task sends from. ``RunHub`` drops a subscriber whose queue exceeds 256 and the drop
   closes the stream *without a terminal frame*, so one ``429`` with ``retry_after: 30`` inside the
-  pump would lose the approval the human is waiting for and make it look like an unknown outcome.
-* **An approval is decided against the whole thing.** The complete description reaches the chat
-  before the buttons do — as a document when it does not fit, because a real delete embeds the whole
-  current file and runs to ~8,000 characters against a 4,096-unit limit. Truncating puts bullets
-  60-119 behind an irreversible approve button.
+  pump would lose the reply the human is waiting for and make it look like an unknown outcome.
 
 **The addressing unit is the channel, not the chat** (§9, TG-72). A channel is ``(chat_id,
 topic_id)``, with ``topic_id == 0`` for the General area of a private chat. Bot API 9.3 put topics
@@ -54,26 +54,19 @@ import asyncio
 import contextlib
 import hashlib
 import logging
-import secrets
 import time
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Final
 
-from pkb.clients.approval import Answer, is_diff, offered, resolve, truncate
 from pkb.contracts import (
     ApprovalPendingError,
-    ApprovalRequest,
-    DecisionType,
-    InterruptEvent,
     MessageComplete,
     RunEnd,
     RunError,
-    StaleInterruptError,
     SubagentEnd,
     SubagentStart,
     ThreadBusyError,
-    librarian_thread_id,
     terminal_status,
 )
 from pkb.server.telegram_api import (
@@ -88,7 +81,6 @@ from pkb.server.telegram_api import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from pkb.contracts import ActionView
     from pkb.service import PkbService
     from pkb.service.telegram import TelegramStore
 
@@ -103,9 +95,7 @@ __all__ = [
     "Channel",
     "TelegramAdapter",
     "TelegramConfig",
-    "callback_data",
     "counter",
-    "keyboard_for",
     "parse_picker",
     "picker_callback",
     "resolve_picker",
@@ -115,62 +105,19 @@ __all__ = [
 
 _log = logging.getLogger(__name__)
 
-COMMANDS: Final = ("/new", "/threads", "/agents", "/pending", "/cancel", "/channels")
-"""The whole command surface, six of them, **each acting on the channel it was typed in** (TG-86).
+COMMANDS: Final = ("/new", "/threads", "/agents", "/cancel", "/channels")
+"""The whole command surface, five of them, **each acting on the channel it was typed in** (TG-86).
 
 **No ``/connect`` and no ``/talk``** (decision AF). A channel is bound to its agent by the topic the
 human is typing in — visible above the keyboard at the moment they hit send — and the ambiguity
 ``/connect`` created is what made a mis-sent note land in the wrong topic. An in-band agent selector
 would restore that hidden mode under a new name; a topic title cannot be invisible.
+
+**No ``/pending`` any more.** It listed every thread with a parked approval and re-posted its
+keyboard — both gone along with the gates themselves (DESIGN.md §2.10): no thread can hold a pending
+decision, so the command had nothing left to list.
 """
 
-NO_UNDO_REASONS: Final = frozenset({"delete", "topic-creation", "conflict-resolution"})
-"""Reasons that take a second tap and carry the no-undo line (TG-64).
-
-On a phone two buttons in one row *are* neighbouring keys, and a thumb on a moving train is a worse
-input device than a keyboard.
-"""
-
-_DROPPED: Final[tuple[DecisionType, ...]] = ("edit", "respond")
-"""What this channel narrows away (CL-9, TG-54). Narrowing is legitimate; widening is not.
-
-``edit`` because editing a document on a phone is impractical (arch §6), and ``respond`` because
-``validate_decisions`` **requires** a message on it — *"it becomes the tool's result"* — while
-TG-65 forbids this channel from demanding prose from a phone. A ``Respond`` button that cannot
-produce a valid decision is precisely the button TG-54 exists to stop being drawn: it would be
-refused by ``validate_decisions`` rather than by Telegram, but the human's experience is the same
-dead approval either way. Diverges from TG-54's parenthetical ``drop=("edit",)`` and agrees with
-arch §6's "narrows to approve/reject"; no shipped ``GATE_DECISIONS`` row offers ``respond``, and
-Q21(b) — a rejection with a typed reason — is explicitly deferred. An action left with nothing
-offerable becomes TG-55's hand-off, which names the thread and the TUI.
-"""
-
-_HANDLE_BYTES: Final = 4
-_VERSION: Final = "v1"
-_APPROVE, _REJECT, _CONFIRM = "a", "r", "c"
-_CANCEL: Final = "x"
-"""The confirm step's *"Cancel"*. Deliberately **not** a member of :data:`VERBS` (TG-64)."""
-
-VERBS: Final[Mapping[str, DecisionType]] = {_APPROVE: "approve", _REJECT: "reject"}
-"""One button verb → one :class:`~pkb.contracts.DecisionType`, read in **both** directions (TG-54).
-
-:func:`keyboard_for` draws from this and :meth:`TelegramAdapter._resolve` reads back through it, so
-a verb the keyboard can emit is exactly a decision the resolver can build, and a verb it cannot is
-refused rather than converted. Before it existed the two halves disagreed: the keyboard drew a
-third button for ``respond`` while the resolver was ``"approve" if verb == "a" else "reject"``, so
-pressing *Respond* submitted a **reject** — ``validate_decisions`` refused it, the ``finally``
-marked the prompt resolved and cleared every keyboard, and the approval became unanswerable from
-Telegram forever. The same silent conversion turned any verb from an older adapter version still
-sitting in the chat into a rejection of a write the human never looked at.
-
-Two entries rather than a hardcoded pair: this is the *table* both directions read, and
-:data:`_DROPPED` is what decides which of the server's decisions reach it. Adding a third here is
-one line and needs no change on either side.
-"""
-
-_VERB_FOR: Final[Mapping[DecisionType, str]] = {kind: verb for verb, kind in VERBS.items()}
-
-_OUTCOME_WORDS: Final[Mapping[DecisionType, str]] = {"approve": "approved", "reject": "rejected"}
 _OUTBOX_WARN: Final = 64
 """How deep the outbox gets before it says so (TG-48, TG-49).
 
@@ -272,40 +219,10 @@ def utf16_len(text: str) -> int:
     """Telegram's unit. Characters are **not** it (TG-44).
 
     Measured: 3,517 characters of emoji are 6,517 UTF-16 units, so a character-based budget passes a
-    message Telegram then refuses with ``message is too long`` — and the human sees *nothing*, not a
-    short diff. The shared ``truncate`` stays character-based and channel-agnostic on purpose; the
-    arithmetic that knows about Telegram lives here.
+    message Telegram then refuses with ``message is too long`` — and the human sees *nothing*, not
+    the reply it cut short. The arithmetic that knows about Telegram lives here.
     """
     return len(text.encode("utf-16-le")) // 2
-
-
-def fit(
-    text: str, limit: int = MESSAGE_LIMIT, *, marker: str = "\n… (continues)"
-) -> tuple[str, bool]:
-    """Cut ``text`` to ``limit`` **UTF-16 units**, on a line boundary, and say whether it was cut.
-
-    Searches down from a character budget rather than computing one: the ratio of characters to
-    UTF-16 units depends on the content, so the only reliable method is to cut, measure, and cut
-    again.
-
-    ``marker`` is handed **through** to :func:`~pkb.clients.approval.truncate` (TG-56, decision U).
-    That parameter was added to the shared helper for this one caller, because its default says
-    *"open the TUI for the whole diff"* and under TG-56 the whole diff is in the same chat, one
-    message up. The build shipped a ``removesuffix`` of a hand-copied literal instead, which is the
-    per-channel drift ``truncate`` exists to prevent: reword ``TRUNCATION_MARKER`` and the strip
-    silently stops matching, and the preview then tells the human to open a terminal to read what
-    is on the screen above it — the exact outcome C-35 was written to stop, with no test able to
-    see it because the rendered output is checked and the call is not.
-    """
-    if utf16_len(text) <= limit:
-        return text, False
-    budget = limit
-    while budget > 0:
-        candidate, _ = truncate(text, budget, marker=marker)
-        if utf16_len(candidate) <= limit:
-            return candidate, True
-        budget = int(budget * 0.8)
-    return text[: limit // 2] + marker, True
 
 
 def counter(position: int, total: int) -> str:
@@ -363,59 +280,6 @@ def _split_at(text: str, limit: int) -> list[str]:
     if current:
         parts.append(current)
     return parts
-
-
-def callback_data(handle: str, index: int, verb: str) -> str:
-    """``v1|<handle>|<index>|<verb>`` — and **nothing else** (TG-57).
-
-    No thread id, no interrupt id, no chat id. The budget is **64 bytes** and a derived thread id
-    alone is 60 characters, so a fan-out approval — the common case — would not fit. The handle is
-    an opaque key into the durable prompts row, which is where the real state lives.
-
-    Neither Telegram library enforces this at construction; it 400s at the server, which is to say
-    at the moment a human is waiting for an approval.
-    """
-    data = f"{_VERSION}|{handle}|{index}|{verb}"
-    if len(data.encode()) > CALLBACK_DATA_LIMIT:  # pragma: no cover - guarded by construction
-        raise ValueError(f"callback_data is {len(data.encode())} bytes, over Telegram's 64")
-    return data
-
-
-def parse_callback(data: str) -> tuple[str, int, str] | None:
-    parts = data.split("|")
-    if len(parts) != 4 or parts[0] != _VERSION or not parts[3]:
-        return None
-    try:
-        return parts[1], int(parts[2]), parts[3]
-    except ValueError:
-        return None
-
-
-def keyboard_for(action: ActionView, handle: str, index: int) -> list[list[dict[str, str]]] | None:
-    """The buttons for one action — from ``allowed_decisions``, never hardcoded (TG-54, TG-64).
-
-    ``offered(action, drop=("edit",))`` because editing a document on a phone is impractical; it
-    narrows and never widens, and it preserves the server's ordering, which decides which button a
-    hurried human presses first.
-
-    ``None`` when nothing is offerable: an empty keyboard reads as a delivery failure, while a
-    message with no buttons at least reads as a hand-off (TG-55).
-
-    Approve and reject go in **different rows** (TG-64) — on a phone, one row is one thumb.
-    """
-    kinds = [kind for kind in offered(action, drop=_DROPPED) if kind in _VERB_FOR]
-    if not kinds:
-        return None
-    labels = {"approve": "Approve", "reject": "Reject", "respond": "Respond"}
-    return [
-        [
-            {
-                "text": labels.get(kind, kind.title()),
-                "callback_data": callback_data(handle, index, _VERB_FOR[kind]),
-            }
-        ]
-        for kind in kinds
-    ]
 
 
 # -- the channel picker (§10, TG-96 … TG-101) -----------------------------------------------
@@ -1261,7 +1125,7 @@ class TelegramAdapter:
                 self.health.retired_channels = tuple(sorted({*existing, agent_id}))
 
     async def _command(self, channel: Channel, agent_id: str, text: str) -> None:
-        """Six commands, each acting on **the channel it was typed in** (TG-86).
+        """Five commands, each acting on **the channel it was typed in** (TG-86).
 
         A ``/cancel`` that reaches the wrong turn is worse than no ``/cancel``: it stops a turn the
         human wanted and leaves the one they were trying to stop writing into a tree with no undo.
@@ -1282,8 +1146,6 @@ class TelegramAdapter:
             await self._say(channel, _threads_text(threads), agent_id=agent_id)
         elif command == "/agents":
             await self._say(channel, await self._agents_text(channel, agent_id), agent_id=agent_id)
-        elif command == "/pending":
-            await self._pending(channel)
         elif command == "/cancel":
             await self._cancel(channel, agent_id)
         elif command == "/channels":
@@ -1740,11 +1602,12 @@ class TelegramAdapter:
         try:
             subscription = await self.service.start_run(thread_id, text)
         except ApprovalPendingError:
-            # TG-37: neither rotate nor retry. RT-39 exists because sending to an interrupted thread
-            # silently discards the interrupt — and on a phone the original keyboard has scrolled
-            # away, so re-posting it is the only thing that makes the state resolvable from here.
+            # TG-37: neither rotate nor retry. No gate can park a *new* interrupt any more
+            # (DESIGN.md §2.10), so this is unreachable except for a thread whose checkpoint still
+            # carries one from before that change — a truthful compile-keeper (RT-39), not a live
+            # path. There is no keyboard left to re-post for it (the approval-prompt machinery this
+            # branch used to call into is gone), so the chat is simply told, once, why nothing sent.
             await self._say(channel, _PENDING_BLOCKS.format(text=text), agent_id=agent_id)
-            await self._repost_pending(channel, thread_id)
             return
         except ThreadBusyError:
             # TG-38: the normal case on a phone, where people send three lines as three messages.
@@ -1769,6 +1632,10 @@ class TelegramAdapter:
         chat may already hold. Only the **outcome** is rendered; the frames are consumed and
         discarded, which is the difference between re-syncing and double-posting.
         """
+        # `interrupted` is never set True any more: no gate can raise an `InterruptEvent` (DESIGN.md
+        # §2.10), so the branch that used to watch for one and post its keyboard is gone. The flag
+        # stays, passed to `terminal_status` below unchanged, matching the same truthful
+        # compile-keeper `pkb.service.runtime` keeps on the event type itself.
         interrupted = False
         roster: list[str] = []
         terminal: RunEnd | RunError | None = None
@@ -1783,14 +1650,6 @@ class TelegramAdapter:
                     roster.append(event.agent_id)
                 elif isinstance(event, SubagentEnd):
                     pass  # coalesced into the single roster line below (TG-43)
-                elif isinstance(event, InterruptEvent):
-                    interrupted = True
-                    # TG-89: the **originating** channel, not the expert's. Q20 was re-ruled once
-                    # per-expert channels genuinely existed and re-affirmed with a new reason: under
-                    # decision AA most agents have no channel at all, so routing a fan-out approval
-                    # to the expert makes it undeliverable in the ordinary case — arch §8's headline
-                    # failure with an approve button on it.
-                    await self._post_approval(channel, event.request)
                 elif isinstance(event, RunEnd | RunError):
                     terminal = event
         except Exception:
@@ -1818,177 +1677,26 @@ class TelegramAdapter:
         if note:
             await self._queue(channel, note, agent_id)
 
-    # -- approvals --------------------------------------------------------------------
-
-    async def _post_approval(
-        self, channel: Channel, request: ApprovalRequest, *, prefixed: bool = False
-    ) -> None:
-        """One message per action, each carrying its own whole description (TG-56, TG-60).
-
-        The channel is recorded on the prompt row (TG-57 unchanged, the *row* gains the topic), so a
-        press that arrives after a restart still knows where the conversation was — ``callback_data``
-        holds 64 bytes and a chat id was already refused at that budget, let alone a chat id and a
-        topic id.
-        """
-        handle = secrets.token_hex(_HANDLE_BYTES)
-        await self.store.open_prompt(
-            handle,
-            channel.chat_id,
-            channel.topic_id,
-            request.thread_id,
-            request.interrupt_id,
-            len(request.actions),
-        )
-        for index, action in enumerate(request.actions):
-            await self._post_action(
-                channel,
-                handle,
-                index,
-                action,
-                thread_id=request.thread_id,
-                agent_id=request.agent_id,
-                prefixed=prefixed,
-            )
-
-    async def _post_action(
-        self,
-        channel: Channel,
-        handle: str,
-        index: int,
-        action: ActionView,
-        *,
-        thread_id: str,
-        agent_id: str,
-        prefixed: bool = False,
-    ) -> None:
-        # TG-85(b): an approval this channel will deliver into General — a retired channel, or one
-        # whose repair failed — is *outside* its agent's channel just as surely as TG-88's fallback
-        # is, and the attribution has to lead for the same reason. Asked here rather than left to
-        # `_send` because only the caller can put the line somewhere other than the very top.
-        prefixed = prefixed or self._exposed(channel, agent_id)
-        description = action.description
-        whole_text_present = True
-        if utf16_len(description) > MESSAGE_LIMIT:
-            # The whole thing arrives first, as a file. A delete embeds the entire current file and
-            # a new-file write embeds the whole proposal; truncating hides half of it behind an
-            # irreversible button.
-            try:
-                # TG-56: the upload is the *only* place the whole description exists in this chat,
-                # so its failure is not cosmetic. The build swallowed it and went on to attach the
-                # keyboard to a cut preview ending in "… (full text above)" — a marker that was now
-                # a lie — putting an irreversible Approve button under bullets 0-30 of 300. A 413,
-                # a 429 or a dropped tether is the first thing that goes wrong on a phone. A
-                # description the human cannot see never carries a button; they get the hand-off
-                # naming the thread instead.
-                #
-                # The returned `False` is the same fact reached the other way: the upload never
-                # raised, it simply ran out of channels to try. It is not reachable at today's
-                # constants and it is handled anyway, because what stands between here and a button
-                # under a description that is not there is arithmetic in another module.
-                whole_text_present = await self._send_document(
-                    channel,
-                    f"{action.tool}-{index}.diff"
-                    if is_diff(description)
-                    else f"{action.tool}-{index}.txt",
-                    description.encode("utf-8"),
-                    caption=f"{agent_id} · {action.tool} · {action.reason}",
-                    agent_id=agent_id,
-                )
-                reason = "" if whole_text_present else "it never landed in a live channel"
-            except TelegramError as exc:
-                self._note_send_failed(exc)
-                whole_text_present = False
-                reason = str(exc)
-            if not whole_text_present:
-                _log.warning(
-                    "telegram: the description for %s could not be shown in %s (%s); handing this "
-                    "approval off to the TUI rather than showing a cut one",
-                    action.tool,
-                    channel,
-                    reason,
-                )
-        else:
-            await self._say(channel, description, agent_id=agent_id, prefix=prefixed)
-
-        # TG-85(a) / defect 3: an approval names its agent, **always**, and names the derived thread
-        # whenever there is one. Measured on the shipped build, this line was `tool · reason` and
-        # nothing else — so a fan-out approval arrived as an unattributed diff with an Approve
-        # button, which under topics is an Approve button in the Librarian's channel for a write
-        # into Cooking, indistinguishable from the Librarian's own. Q20's own wording required the
-        # naming ("the originating chat, naming the expert and the derived thread") and the build
-        # never did it.
-        #
-        # Where it goes is the one place TG-66 and TG-85(b) genuinely compete, and each wins the
-        # case it was written for. Inside the agent's own channel the topic title already says whose
-        # this is, so the validation block keeps the first line: a human who cannot see that a draft
-        # already fails validation approves it and burns one of three bounded attempts. **Outside**
-        # it, the attribution is the first line, because that is what a notification preview, a
-        # forward and General's scrollback all show — and being wrong about *which expert* there is
-        # an irreversible write to the wrong topic. It is never both: one line, moved, not repeated.
-        lines = []
-        attribution = _attribution(agent_id, thread_id)
-        if prefixed:
-            lines.append(attribution)
-        label = _validation_line(description)
-        if label:
-            lines.append(label)  # TG-66: above everything, not at the bottom of 9,000 characters
-            lines.append("Approving this will still fail validation.")
-        if not prefixed:
-            lines.append(attribution)
-        lines.append(f"{action.tool} · {action.reason}")
-        if action.reason in NO_UNDO_REASONS:
-            lines.append("There is no undo for this.")
-        lines.append("")
-        if whole_text_present:
-            lines.append(fit(description, 1200, marker="\n… (full text above)")[0])
-        else:
-            lines.append(_UPLOAD_FAILED)
-
-        keyboard = keyboard_for(action, handle, index) if whole_text_present else None
-        if keyboard is None:
-            # TG-55: a hand-off, never an empty keyboard — and it has to name **where**.
-            # `validate_decisions` would reject every type, so this approval parks the thread
-            # forever and RT-39 then refuses every later message in this chat. "Open the TUI" is
-            # only actionable with the thread the approval is parked on, and a knowledge base has
-            # many; without it the chat is bricked with no visible cause, which is the outcome the
-            # rule exists to prevent. TG-56's failed upload lands here too, for the same reason
-            # stated the other way round: an approval nobody can read is one nobody may approve.
-            await self._say(
-                channel,
-                "\n".join(lines) + _NO_DECISIONS.format(agent_id=agent_id, thread_id=thread_id),
-                agent_id=agent_id,
-                attributed=True,
-            )
-            return
-        # `attributed=True`, never `prefix=`: the attribution line above is this message's agent id,
-        # hoisted to the top when `prefixed`, and a generic prefix on top of it — whether asked for
-        # or added by `_send` on noticing the message left its agent's channel — says the same thing
-        # twice on the one message that carries an irreversible button.
-        sent = await self._send(
-            channel, "\n".join(lines), keyboard, agent_id=agent_id, attributed=True
-        )
-        message_id = sent.get("message_id") if isinstance(sent, Mapping) else None
-        if isinstance(message_id, int):
-            await self.store.record_message(handle, message_id)
+    # -- button presses -----------------------------------------------------------------
 
     async def _on_callback(self, query: Mapping[str, Any]) -> None:
         """A button press. **The callback is answered first, on every path** (TG-61, TG-20, TG-62).
 
-        A resume starts a turn of 8-12 model calls — 16 s on the cloud model, 284 s on the local
-        fallback. Answer it afterwards and the button spins, the query expires, and the human, who
-        has no other feedback, presses again against an interrupt the first press already resolved.
-
-        Answered **once**, with the outcome, rather than answered blank and then again: Telegram
-        accepts one ``answerCallbackQuery`` per query, so a second call carrying the alert is simply
-        discarded and the refusal or the stale notice never reaches the phone. The only work that
-        precedes it is the durable-row read, which is one indexed statement on a local SQLite file —
-        the spinner is about the model calls, not about a microsecond.
+        Answered **once**: Telegram accepts one ``answerCallbackQuery`` per query, so a second call
+        carrying the alert is simply discarded and the refusal never reaches the phone.
 
         A press from anyone outside the allow-list is refused **with an alert** and logged. On a
-        phone a silent answer is indistinguishable from a successful one, so a stranger who presses
-        Approve on a delete would have every reason to believe the irreversible write happened; and
-        this allow-list is the system's only authentication boundary, which makes an attempt against
-        it the one event the operator has to see (decision X).
+        phone a silent answer is indistinguishable from a successful one, and this allow-list is the
+        system's only authentication boundary, which makes an attempt against it the one event the
+        operator has to see (decision X).
+
+        **The channel picker is the only grammar this bot draws any more** (TG-97). No gate can
+        raise an approval keyboard now that none can interrupt a run (DESIGN.md §2.10 — the
+        operator's instruction is the approval), so the whole approve/reject/confirm flow that used
+        to live here is gone with it — there is no prompt store left to resolve a press against, and
+        nothing this bot posts today carries any other ``callback_data``. A press carrying anything
+        else is a button from before that change, still sitting live in some chat, and
+        :data:`_UNREADABLE` is the honest answer for it: this bot cannot read that button any more.
         """
         callback_id = str(query.get("id", ""))
         sender = int(query.get("from", {}).get("id", 0))
@@ -2005,217 +1713,10 @@ class TelegramAdapter:
         data = str(query.get("data", ""))
         token = parse_picker(data)
         if token is not None:
-            # TG-97: the two grammars are disjoint, so this branch is a cost choice rather than a
-            # correctness one, and the picker's test is the cheaper of the two. The kinds are kept
-            # apart at the earliest point there is: a channel press carries an agent id and touches
-            # no durable row, while an approval press carries a handle into one.
             await self._on_picker(query, callback_id, token)
             return
 
-        parsed = parse_callback(data)
-        if parsed is None:
-            await self._answer(callback_id, _UNREADABLE, alert=True)
-            return
-        handle, index, verb = parsed
-
-        prompt = await self.store.prompt(handle)
-        if prompt is None:
-            # TG-58: **not located** is a different fact from **already answered**, and the two
-            # send the human to different places. "Already answered" tells them to stop looking;
-            # this one tells them the approval may still be parked and that the TUI can reach it.
-            # The row is the only index a press carries — `callback_data` holds 64 bytes and a
-            # handle, never an interrupt id (TG-57) — so there is nothing to scan `list_threads`
-            # *by*, and the adapter never guesses a thread.
-            await self._answer(callback_id, _NOT_LOCATED_ALERT, alert=True)
-            # The query's own channel, which is where the human is looking: a press carries the
-            # message it was attached to, and that message carries its `message_thread_id` (F-1).
-            where = _channel_of_query(query)
-            if where is not None:
-                await self._say(where, _NOT_LOCATED)
-            return
-        if prompt["resolved"]:
-            # TG-62/TG-63: a message lives in the chat forever with its buttons live. A press a week
-            # later must not answer whatever interrupt is pending now — and an alert rather than a
-            # toast, because a toast on a phone is missed and the human then believes the wrong
-            # thing about a write with no undo.
-            await self._answer(callback_id, _STALE_ALERT, alert=True)
-            await self._clear_keyboard(prompt)
-            where = _channel_of_query(query) or _channel_of_prompt(prompt)
-            await self._say(where, _STALE)
-            return
-        await self._answer(callback_id)
-
-        channel = _channel_of_prompt(prompt)
-        try:
-            # One `get_thread` per press (TG-62): the live request decides both whether this needs
-            # a second tap and what the decisions are applied to.
-            detail = await self.service.get_thread(str(prompt["thread_id"]))
-            if verb == _CANCEL:
-                # TG-64: *Cancel* on "there is no undo — confirm?" means "I have not decided", not
-                # "reject". It used to fall through as an unknown verb, be recorded as this
-                # action's answer and become a `reject` one function along — so a human backing out
-                # of a delete had just rejected the write and closed the approval, and on a
-                # multi-action approval that last press fired the whole `resume`. Nothing is
-                # recorded, the prompt stays open and the keyboards stay live.
-                await self._say(channel, _NOT_DECIDED)
-                return
-
-            if detail.pending is None or detail.pending.interrupt_id != prompt["interrupt_id"]:
-                # TG-62, checked **before** the button is validated: an approval another channel
-                # answered is not a malformed press, and the two say different things to the human.
-                await self._note_stale(prompt, callback_id)
-                return
-
-            plain = _CONFIRM_VERBS.get(verb, verb)
-            if _offered_type(detail.pending, index, plain) is None:
-                # TG-60/TG-54: validated against the **freshly-read** request, never against the
-                # count stored when the message was posted. An index past the live action list — a
-                # button from an older adapter still sitting in the chat, or an approval whose
-                # actions shrank between the post and the press — used to be recorded anyway, and
-                # `resolve` then raised "every action needs an answer", the `finally` closed the
-                # prompt and every keyboard went dead with the human's genuine taps already spent.
-                # A refusal leaves the prompt **open** and the buttons intact.
-                await self._say(channel, _CANNOT_ANSWER.format(thread_id=prompt["thread_id"]))
-                return
-            if verb == plain and _needs_confirm(detail.pending, index):
-                await self._ask_confirm(
-                    channel, handle, index, verb, agent_id=str(detail.pending.agent_id)
-                )
-                return
-
-            answers = await self.store.record_answer(handle, index, plain)
-            if len(answers) < len(detail.pending.actions if detail.pending else ()):
-                return  # TG-60: a partial set submits nothing, and the interrupt stays parked
-            await self._resolve(prompt, answers, detail.pending, callback_id)
-        except Exception as exc:
-            # The poll loop suppresses exceptions so one bad update cannot stop the bot — which
-            # means a failure here would be *silent*, and the human would press again on a keyboard
-            # that has already stopped working. Saying so is the whole difference.
-            _log.warning("telegram: a button press could not be applied", exc_info=True)
-            await self._say(channel, _PRESS_FAILED.format(reason=exc))
-
-    async def _resolve(
-        self,
-        prompt: Mapping[str, Any],
-        answers: Mapping[int, str],
-        request: ApprovalRequest | None,
-        callback_id: str = "",
-    ) -> None:
-        """Resolve against the **live** approval the server just handed back (TG-58, TG-62).
-
-        The durable row supplies the thread; the *server* supplies the request. Any in-memory map is
-        a cache and never the authority — which is what makes a press that arrives after a restart
-        work, and makes the restart case exercised by every test.
-
-        A request that is gone, or that carries a different interrupt id, is the two-channel case
-        the design expects rather than an edge: the TUI answered it at the desk while the phone
-        still had the keyboard. It is never retried — a retry either spins or applies the human's
-        taps to a **different** write — and it is reported as an alert, because a toast on a phone
-        is missed and the state the human then believes they are in is wrong. The alert is attempted
-        even though this query was already answered plainly — Telegram keeps the first answer, so
-        the chat message beside it is what actually carries the news on this particular path.
-
-        The decisions carry **no prose** (TG-65): :class:`~pkb.clients.approval.Answer` leaves
-        ``message`` ``None`` and nothing here fills it in. A phone is a bad place to demand a
-        typed reason, ``pkb.clients.approval`` deliberately holds no policy requiring one so that
-        both channels answer identically, and the harness substitutes its own "do not retry unless
-        the user asks" text. A bot that insisted would be refusing a resume the daemon accepts —
-        a client-only refusal, invisible server-side (CL-13, Q14 RULED).
-        """
-        channel = _channel_of_prompt(prompt)
-        if request is None or request.interrupt_id != prompt["interrupt_id"]:
-            await self._note_stale(prompt, callback_id)
-            return
-
-        built = {
-            index: Answer(type=VERBS[verb]) for index, verb in answers.items() if verb in VERBS
-        }
-        try:
-            resolution = resolve(request, built)
-            subscription = await self.service.resume(
-                # TG-59: the request's OWN thread. A fan-out gate parks on the expert's derived
-                # thread, and posting a delegate's decisions to the parent is a 409.
-                resolution.thread_id,
-                resolution.decisions,
-                interrupt_id=resolution.interrupt_id,
-            )
-        except StaleInterruptError:
-            # TG-62, the *race* rather than the common case: the TUI answered between this press's
-            # `get_thread` and its `resume`, so the pre-emptive check above saw a live interrupt
-            # and the daemon refused anyway. Two channels on one approval is the design, so this
-            # window is expected — and it has to land on the same **alert** the pre-emptive branch
-            # uses. It used to fall into the generic handler below, which sends a plain chat line
-            # that scrolls away, and the rule's whole rationale is that a toast on a phone is
-            # missed. Never retried: a retry applies the human's taps to a different write.
-            await self._answer(callback_id, _STALE_ALERT, alert=True)
-            await self._say(channel, _STALE)
-            return
-        except Exception as exc:
-            await self._say(channel, f"That approval could not be applied: {exc}")
-            return
-        finally:
-            await self.store.resolve_prompt(prompt["handle"])
-            await self._clear_keyboard(prompt)
-        # The outcome is a **new** message, not an edit over the description (TG-63, D6): the chat
-        # is the only surviving record of what was approved, and overwriting the text the human read
-        # before tapping destroys it.
-        #
-        # Attributed, because the channel on the prompt row may be a topic that has since been
-        # repaired or retired (TG-82). Unattributed, this one line — the record that an irreversible
-        # write just happened — could neither follow the agent to its live topic nor name it on
-        # arrival in General.
-        await self._say(channel, _outcome_text(answers), agent_id=str(request.agent_id))
-        # The resume streams into the channel the approval was **posted** in, which under TG-89 is
-        # the originating one — the human is looking at the conversation they answered from, and a
-        # fan-out's reply arriving in an expert's channel would be the outcome of one paste split
-        # across three places.
-        await self._consume(channel, str(request.agent_id), subscription)
-
-    async def _note_stale(self, prompt: Mapping[str, Any], callback_id: str) -> None:
-        """Somebody else answered it — one alert, one line, every keyboard off (TG-62, TG-63).
-
-        ``show_alert`` rather than a toast because a toast on a phone appears over the keyboard for
-        a second while the human is already scrolling, and the state they then believe they are in
-        is wrong: they think their tap landed on a write with no undo. Never retried — a retry
-        either spins or applies the human's taps to a **different** write.
-        """
-        await self._answer(callback_id, _STALE_ALERT, alert=True)
-        await self._say(_channel_of_prompt(prompt), _STALE)
-        await self.store.resolve_prompt(str(prompt["handle"]))
-        await self._clear_keyboard(prompt)
-
-    async def _ask_confirm(
-        self, channel: Channel, handle: str, index: int, verb: str, *, agent_id: str | None = None
-    ) -> None:
-        """A second tap for the three destructive reasons (TG-64) — and its id is **recorded**.
-
-        ``record_message`` matters as much as the keyboard (TG-63): without it this message is the
-        one part of the approval whose buttons are never cleared, so "Yes, do it" sits live in the
-        chat forever over a write that already happened. Every message of an approval loses its
-        keyboard at the terminal outcome, and that has to mean *every*.
-
-        ``agent_id`` is the **live** request's, and it is what makes this message obey TG-82 and
-        TG-85(b) like every other part of the approval. Sent without one it was invisible to
-        :meth:`_route_out`'s retirement check and to :func:`_prefixed`, so on a retired or
-        topic-less channel the human received a bare *"There is no undo for this. Confirm?"* with a
-        **Yes, do it** button in General, naming no expert and no write — the one message in the
-        layer where being wrong about which expert is an irreversible write to the wrong topic.
-        """
-        keyboard = [
-            [
-                {
-                    "text": "Yes, do it",
-                    "callback_data": callback_data(handle, index, _CONFIRM + verb),
-                }
-            ],
-            [{"text": "Cancel", "callback_data": callback_data(handle, index, _CANCEL)}],
-        ]
-        sent = await self._send(
-            channel, "There is no undo for this. Confirm?", keyboard, agent_id=agent_id
-        )
-        message_id = sent.get("message_id") if isinstance(sent, Mapping) else None
-        if isinstance(message_id, int):
-            await self.store.record_message(handle, message_id)
+        await self._answer(callback_id, _UNREADABLE, alert=True)
 
     async def _answer(self, callback_id: str, text: str = "", *, alert: bool = False) -> None:
         """Stop the spinner — once per press, and carrying the outcome when there is one (TG-61)."""
@@ -2223,84 +1724,6 @@ class TelegramAdapter:
             return
         with contextlib.suppress(TelegramError):
             await self.api.answer_callback(callback_id, text, show_alert=alert)
-
-    async def _clear_keyboard(self, prompt: Mapping[str, Any] | None) -> None:
-        """Every message of the approval loses its buttons — and **keeps its text** (TG-63, D6).
-
-        ``editMessageReplyMarkup`` rather than ``editMessageText``: the description is the surface
-        the human decided against, and this chat is the only place it survives. Overwriting it with
-        an outcome line answers "was this answered?" by destroying the answer to "what did I
-        approve?" — for a write that has no undo. The outcome arrives as a new message instead.
-
-        **No topic is passed, and that is a rule** (TG-90, F-6). ``editMessageReplyMarkup`` addresses
-        a message by ``chat_id`` + ``message_id`` and takes no thread parameter; only the send
-        family carries one. The natural assumption is the opposite, and acting on it puts an unknown
-        parameter on the one call that disarms an irreversible button — inside a ``finally``, where
-        a 400 is reported as a shutdown bug and the buttons stay live.
-        """
-        if prompt is None:
-            return
-        for message_id in prompt.get("message_ids", []):
-            with contextlib.suppress(TelegramError):
-                await self.api.clear_keyboard(int(prompt["chat_id"]), int(message_id))
-
-    async def _repost_pending(self, channel: Channel, thread_id: str) -> None:
-        """Re-post whatever is parked, including a fan-out gate on a child (TG-53).
-
-        Never concludes "no approval" from the parent's ``pending is None``: LB-16 parks an expert's
-        gate on its own derived thread, so the parent's is null while the child holds the interrupt.
-
-        **Every** child with a ``pending`` is re-posted, not the first (TG-53). A fan-out can gate
-        two experts at once, and stopping at the first leaves the second approval with no
-        affordance on the phone — dead buttons with nothing logged, which is the silent failure
-        this rule is about. Duplicate keyboards for one interrupt are impossible here because each
-        child carries its own.
-        """
-        detail = await self.service.get_thread(thread_id)
-        if detail.pending is not None:
-            await self._post_approval(channel, detail.pending)
-            return
-        for child in detail.children:
-            child_detail = await self.service.get_thread(child.thread_id)
-            if child_detail.pending is not None:
-                await self._post_approval(channel, child_detail.pending)
-
-    async def _pending(self, channel: Channel) -> None:
-        """``/pending`` — everything waiting, across every expert (Q19 ruled pull-only, TG-88).
-
-        The summary goes to the channel the command was typed in; each keyboard goes to **that
-        approval's agent's channel** when one exists, and to the typing channel with TG-85's agent
-        prefix when it does not.
-
-        This looks like it contradicts TG-89 and does not. A fan-out approval has an *originating*
-        channel — the human typed there seconds ago and is looking at it. A ``/pending`` approval has
-        none: it may have been raised in the TUI hours earlier, and its agent's own channel is the
-        only place with a claim on it and the place the human will look for that expert tomorrow.
-
-        Nothing here creates a channel (decision AA, Q31): creating a topic as a side effect of a
-        *listing* command is the daemon deciding what is reachable from the phone, which is the one
-        thing TG-3 has ruled against from the beginning.
-        """
-        threads = await self.service.list_threads()
-        waiting = [t for t in threads if t.pending_interrupt_id]
-        if not waiting:
-            await self._say(channel, "Nothing is waiting on you.")
-            return
-        await self._say(
-            channel,
-            "Waiting on you:\n"
-            + "\n".join(f"· {t.agent_id} — {t.title or 'untitled'}" for t in waiting),
-        )
-        for thread in waiting:
-            detail = await self.service.get_thread(thread.thread_id)
-            if detail.pending is None:
-                continue
-            home = await self._channel_of(channel.chat_id, detail.pending.agent_id)
-            # `prefixed` only on the fallback: a keyboard that reached its agent's own channel is
-            # already attributed by the topic title above it, and a prefix on every reply inside a
-            # conversation the human is already in trains them to skip the first line — which is
-            # exactly where the attribution has to be legible when it matters (decision AE).
-            await self._post_approval(home or channel, detail.pending, prefixed=home is None)
 
     async def _cancel(self, channel: Channel, agent_id: str) -> None:
         """``/cancel`` — the one place ``service.cancel`` is reachable from (TG-32, TG-39).
@@ -2499,54 +1922,6 @@ class TelegramAdapter:
             target.chat_id, text, keyboard=keyboard, topic_id=target.topic_id
         )
 
-    async def _send_document(
-        self,
-        channel: Channel,
-        filename: str,
-        content: bytes,
-        *,
-        caption: str,
-        agent_id: str | None = None,
-    ) -> bool:
-        """TG-56's overflow upload, addressed to the channel and checked like every other send.
-
-        The document is the **only** place the whole description exists in the chat, so a copy of it
-        landing in General while its keyboard lands in a topic is the split TG-80 exists to catch.
-        A stray document carries no buttons, so it is disarmed by having none: the correction line
-        is posted and the description is re-sent into the repaired channel by the retry above it.
-
-        Returns whether the whole description reached the chat, because the caller attaches an
-        irreversible button on the strength of that answer (TG-56). Exhausting the loop is not
-        reachable at today's constants — :data:`_SEND_ATTEMPTS` is exactly one more than the deaths
-        :data:`~pkb.server.telegram_api.MAX_RECREATIONS` allows, and the General send it terminates
-        on is never checked — but "unreachable" here rests on a relationship between two constants
-        in two modules, and what it buys if it ever stops holding is a keyboard under a 1,200
-        character preview ending *"… (full text above)"* when there is no full text above. Saying
-        so in the return type costs one branch and does not depend on the arithmetic.
-        """
-        for _ in range(_SEND_ATTEMPTS):
-            target = self._route_out(channel, agent_id)
-            try:
-                if target.is_general:
-                    sent = await self.api.send_document(
-                        target.chat_id, filename, content, caption=caption
-                    )
-                else:
-                    sent = await self.api.send_document(
-                        target.chat_id, filename, content, caption=caption, topic_id=target.topic_id
-                    )
-            except TelegramError as exc:
-                if not (exc.is_missing_thread and not target.is_general):
-                    # Everything else is TG-56's upload failure and belongs to the caller, which
-                    # answers it with a hand-off rather than a keyboard over a fragment.
-                    raise
-                await self._channel_died(target, agent_id, stray=None, armed=False)
-                continue
-            if target.is_general or _landed(sent) == target.topic_id:
-                return True
-            await self._channel_died(target, agent_id, stray=sent, armed=False)
-        return False
-
     # -- the deleted-topic hazard (TG-80 … TG-84) -------------------------------------
 
     def _route_out(self, channel: Channel, agent_id: str | None) -> Channel:
@@ -2574,17 +1949,6 @@ class TelegramAdapter:
             channel = self._moved[channel]
         return channel
 
-    def _exposed(self, channel: Channel, agent_id: str | None) -> bool:
-        """Will a message for this channel be delivered outside its agent's own channel (TG-85(b))?
-
-        Falling back to General is the only re-addressing that takes a message out of the topic
-        whose title attributes it — a repaired channel is still that agent's. Asked *before* the
-        send by :meth:`_post_action`, which has to decide whether the attribution line leads or
-        follows the validation label, and again inside :meth:`_send`, which is the only place that
-        knows a channel died mid-message.
-        """
-        return self._route_out(channel, agent_id).is_general and not channel.is_general
-
     async def _channel_died(
         self,
         channel: Channel,
@@ -2610,11 +1974,11 @@ class TelegramAdapter:
         **The disarm is per message; only the repair is per channel** (TG-81 over TG-84). ``known``
         says another frame already discovered this death and re-addressed the channel — which is not
         a reason to leave *this* stray armed. Two sends overlap on the ordinary path, not on an
-        exotic one: :meth:`_pump_outbox` is a separate task and a run emits its reply and its
-        approval from another, so the pump can be inside a send while ``_consume`` reaches the
-        ``InterruptEvent``. Returning early there left an Approve button live in General under the
-        wrong expert's name — the exact failure this section is arranged around, reached through the
-        one branch written to keep the *corrections* from multiplying.
+        exotic one: :meth:`_pump_outbox` is a separate task and a run can emit a queued message from
+        it while ``_consume`` is sending the reply concurrently on the same channel. Returning early
+        for a channel already known dead left a still-armed message (once, an Approve button) live in
+        General under the wrong expert's name — the exact failure this section is arranged around,
+        reached through the one branch written to keep the *corrections* from multiplying.
 
         **The repair is serialized per channel, and the check is inside the lock** (TG-82, TG-84).
         ``known`` is a check-then-act on a value only :meth:`_repair` writes, and it writes it after
@@ -2858,15 +2222,15 @@ class TelegramAdapter:
           content differs from the first, so the human ends up with two versions of a note they
           wrote once. A named loss is survivable; a duplicated write is not.
         * **started, never finished** — the agent ran and may already have written, so this must
-          **re-sync, never replay** (TG-31). Three branches, in order: a parked approval gets its
-          keyboard back (including a fan-out gate on a child, TG-53); a run still live is
-          reattached and only its outcome rendered, because ``attach`` replays from ``seq 0`` and
-          re-rendering the replay double-posts text already in the chat; and once the hub is gone,
-          the last assistant message is posted from ``ThreadDetail``, marked delivered late.
+          **re-sync, never replay** (TG-31). Two branches, in order: a run still live is reattached
+          and only its outcome rendered, because ``attach`` replays from ``seq 0`` and re-rendering
+          the replay double-posts text already in the chat; and once the hub is gone, the last
+          assistant message is posted from ``ThreadDetail``, marked delivered late.
 
-        Without the re-sync the human's approve/reject buttons are simply dead after a supervised
-        restart — the interrupt survives, no keyboard is re-posted, nothing logs it, and RT-39 then
-        refuses every later message in that chat.
+        A third branch used to come first here — a parked approval getting its keyboard back,
+        including a fan-out gate on a child (TG-53) — and is gone along with the gates themselves: no
+        thread can hold a pending decision any more (DESIGN.md §2.10), so there is nothing left to
+        re-post on a restart.
         """
         await self._report_orphans()
         for update_id, chat_id, topic_id, thread_id in await self.store.unfinished():
@@ -2887,19 +2251,10 @@ class TelegramAdapter:
     async def _resync(self, channel: Channel, thread_id: str) -> None:
         """One channel's unfinished turn, re-synced (TG-31). Never a re-run, never a ``cancel``.
 
-        Into the channel the update came from (TG-31 amended): a restart that re-posts Cooking's
-        approval keyboard into General is TG-80's failure without anyone having deleted anything.
+        Into the channel the update came from (TG-31 amended): a restart that re-posted a reply into
+        the wrong topic was TG-80's failure without anyone having deleted anything.
         """
         detail = await self.service.get_thread(thread_id)
-        parked = detail.pending is not None
-        for child in detail.children:
-            # TG-53: a fan-out gate parks on the expert's derived thread, so the parent's `pending`
-            # being null proves nothing. Concluding "no approval" from it leaves the human's
-            # buttons dead after a restart with nothing logged.
-            parked = parked or (await self.service.get_thread(child.thread_id)).pending is not None
-        if parked:
-            await self._repost_pending(channel, thread_id)  # branch (a)
-            return
         subscription = await self.service.attach(thread_id)
         if subscription is not None:
             # `detail.thread.agent_id`, not `detail.agent_id`: :class:`~pkb.service.ThreadDetail`
@@ -2909,9 +2264,9 @@ class TelegramAdapter:
             # to General, and cannot repair the channel it dies in (TG-84), which is exactly the
             # path a restart takes: `_moved` is process memory and the ledger row still names the
             # topic that was deleted while the daemon was down.
-            await self._consume(channel, _agent_of(detail), subscription, replay=True)  # branch (b)
+            await self._consume(channel, _agent_of(detail), subscription, replay=True)  # branch (a)
             return
-        await self._post_late_reply(channel, detail)  # branch (c)
+        await self._post_late_reply(channel, detail)  # branch (b)
 
     async def _post_late_reply(self, channel: Channel, detail: Any) -> None:
         """The reply the chat never got, marked as late (TG-31 branch (c)).
@@ -2982,51 +2337,6 @@ def _agent_of(detail: Any) -> str | None:
     return str(agent_id) if agent_id else None
 
 
-def _needs_confirm(request: ApprovalRequest | None, index: int) -> bool:
-    """Whether this action takes a second tap (TG-64) — read from the **live** request.
-
-    Never from the button or the durable row: the reason decides, and the reason is the server's.
-    """
-    if request is None or index >= len(request.actions):
-        return False
-    return request.actions[index].reason in NO_UNDO_REASONS
-
-
-def _offered_type(request: ApprovalRequest | None, index: int, verb: str) -> DecisionType | None:
-    """What this press means to the **live** request, or ``None`` if it means nothing (TG-54, TG-60).
-
-    The inverse of :func:`keyboard_for`, over the same :data:`VERBS` table and the same
-    ``offered(..., drop=("edit",))`` narrowing, re-derived from the request the server just handed
-    back rather than from anything the button carried. Three ways to get ``None``, and each is a
-    press that must be refused with the prompt left open rather than recorded:
-
-    * an unknown verb — a button from an adapter version that shipped a decision this one dropped;
-    * an index past the live action list — an approval whose actions shrank since it was posted;
-    * a decision the action no longer allows — the case TG-54 exists for, where the keyboard drew
-      something ``validate_decisions`` will refuse.
-    """
-    kind = VERBS.get(verb)
-    if request is None or kind is None or not 0 <= index < len(request.actions):
-        return None
-    if kind not in offered(request.actions[index], drop=_DROPPED):
-        return None
-    return kind
-
-
-def _outcome_text(answers: Mapping[int, str]) -> str:
-    """What was just sent, mechanically counted — the chat's record of an irreversible act (D6).
-
-    Counted through :data:`VERBS` rather than against ``"a"``, so a verb this table gains is
-    reported rather than silently folded into "rejected" (TG-54).
-    """
-    parts = []
-    for verb, kind in VERBS.items():
-        count = sum(1 for answer in answers.values() if answer == verb)
-        if count:
-            parts.append(f"{count} {_OUTCOME_WORDS[kind]}")
-    return "Answered: " + ", ".join(parts) + "."
-
-
 def _channel_of_message(message: Mapping[str, Any]) -> Channel:
     """The channel a message was sent in (TG-72).
 
@@ -3046,16 +2356,6 @@ def _channel_of_query(query: Mapping[str, Any]) -> Channel | None:
     if "id" not in chat:
         return None
     return Channel(int(chat["id"]), int(message.get("message_thread_id") or GENERAL))
-
-
-def _channel_of_prompt(prompt: Mapping[str, Any]) -> Channel:
-    """The channel an approval was posted in, from the durable row (TG-57).
-
-    The **row**, never ``callback_data``: the budget is 64 bytes and a chat id alone was already
-    refused at it, let alone a chat id and a topic id. A press that arrives after a restart is
-    answered in the channel it was raised in because the row remembers, not because the button does.
-    """
-    return Channel(int(prompt["chat_id"]), int(prompt.get("topic_id") or GENERAL))
 
 
 def _channel_of(update: Mapping[str, Any]) -> Channel | None:
@@ -3108,24 +2408,6 @@ def _prefixed(text: str, agent_id: str | None) -> str:
     return f"{agent_id}\n{text}" if agent_id else text
 
 
-def _attribution(agent_id: str, thread_id: str) -> str:
-    """An approval's own naming line: the expert always, the derived thread when there is one.
-
-    TG-85(a), and defect 3 — Q20's wording required *"naming the expert and the derived thread"* and
-    the shipped build named neither, sending ``tool · reason`` and nothing else. A fan-out approval
-    therefore arrived as an unattributed diff with an Approve button; with per-expert channels that
-    becomes an Approve button in the Librarian's channel for a write into Cooking, indistinguishable
-    from the Librarian's own work.
-
-    The thread id is added only when the thread is derived, because on a direct conversation it is
-    36+ characters of noise that the human cannot act on — and its presence is precisely what says
-    "this write is happening somewhere other than where you are reading".
-    """
-    if librarian_thread_id(thread_id) is not None:
-        return f"{agent_id} · {thread_id}"
-    return agent_id
-
-
 def _is_empty(message: Mapping[str, Any]) -> bool:
     """A message with no text and no attachment was not sent by a human (TG-92).
 
@@ -3159,40 +2441,6 @@ def _threads_text(threads: Sequence[Any]) -> str:
     ]
     return "Your conversations, most in need of attention first:\n" + "\n".join(rows)
 
-
-_VALIDATION_HEADER: Final = "This draft currently fails validation:"
-"""``gates._validation_label``'s exact prefix — matched, never recomputed (TG-66, RT-35).
-
-Layer 2 authors the label and Layer 1 owns validation; I2/I3 make it impossible for this module to
-re-run either, and that is the point. A prefix match cannot disagree with the server about whether
-a draft is valid.
-"""
-
-
-def _validation_line(description: str) -> str:
-    """The whole validation **block**, hoisted to the top of the button message (TG-66).
-
-    ``_validation_label`` is the header followed by ``render_findings(...)`` — one finding per
-    line, ``FM-3 …``, ``PA-7 …`` — so returning only the matching line hoisted the announcement and
-    left every rule id behind, at the bottom of a description TG-56 may have just uploaded as a
-    file. The human read "this draft currently fails validation:" with no indication of *what*
-    fails, above an Approve button, which is the failure this rule names in its own words. The
-    block ends at the first blank line, because that is exactly where ``render_findings`` stops.
-    """
-    lines = description.splitlines()
-    for start, line in enumerate(lines):
-        if line.startswith(_VALIDATION_HEADER):
-            block = [line.rstrip()]
-            for follow in lines[start + 1 :]:
-                if not follow.strip():
-                    break
-                block.append(follow.rstrip())
-            return "\n".join(block)
-    return ""
-
-
-_CONFIRM_VERBS: Final = {f"{_CONFIRM}{verb}": verb for verb in VERBS}
-"""The confirmed form of every verb (TG-64), derived from :data:`VERBS` so the two cannot drift."""
 
 _AGENT_LIST_CAP: Final = 40
 """How many agent ids one reply lists (TG-74, TG-87).
@@ -3300,7 +2548,7 @@ _CREATED: Final = "Created a new topic, {title}, for {agent_id}. Send it anythin
 _CREATE_FAILED: Final = (
     "I could not create a topic for {agent_id}: {reason}\nNothing was created and nothing changed."
 )
-_DISARMED: Final = " Its buttons no longer work, so nothing can be approved from it."
+_DISARMED: Final = " Its buttons no longer work, so nothing can be done from it."
 _STRAY: Final = (
     "The topic for {agent_id} has been deleted, so the message above this one was delivered here "
     "instead of there — Telegram accepted it without an error.{armed}\n\n"
@@ -3313,38 +2561,9 @@ _RETIRED_NOTICE: Final = (
 )
 _ATTACHMENT: Final = "I can only read text — I have not downloaded or stored the attachment."
 _EDITED: Final = "I already acted on the original — send the correction as a new message."
-_NO_DECISIONS: Final = (
-    "\n\nThis one cannot be answered from here. It is still waiting on {agent_id}, in thread "
-    "{thread_id}, and the TUI can resolve it. Until it is answered, nothing else sent to this "
-    "conversation will run."
-)
-_UPLOAD_FAILED: Final = (
-    "This one is too long for a message and the upload failed, so I cannot show you what would be "
-    "written. There are no buttons on it for that reason."
-)
-_PRESS_FAILED: Final = (
-    "I could not apply that decision: {reason}\n"
-    "Nothing was sent. The approval is still waiting and the TUI can resolve it."
-)
-_STALE: Final = (
-    "That approval was already answered — from another channel, or earlier here. Nothing was sent."
-)
-_STALE_ALERT: Final = "Already answered — from another channel, or earlier here. Nothing was sent."
-_NOT_LOCATED: Final = (
-    "That approval could not be located, so nothing was sent. It may still be waiting — the TUI "
-    "lists everything pending and can answer it."
-)
-_NOT_LOCATED_ALERT: Final = "That approval could not be located. Nothing was sent."
-_NOT_DECIDED: Final = (
-    "Nothing was answered. That approval is still waiting, and the buttons above still work."
-)
-_CANNOT_ANSWER: Final = (
-    "That button no longer matches the approval it belongs to, so nothing was sent and nothing "
-    "was recorded. It is still waiting in thread {thread_id}, and the TUI can answer it."
-)
+_PRESS_FAILED: Final = "I could not apply that: {reason}\nNothing was sent."
 _REFUSED: Final = (
-    "This knowledge base does not accept decisions from this account. Nothing was approved, "
-    "rejected or written."
+    "This knowledge base does not accept decisions from this account. Nothing was done."
 )
 _UNREADABLE: Final = "I cannot read that button any more. Open the TUI to answer this approval."
 _CONFLICT_REASON: Final = (

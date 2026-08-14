@@ -40,14 +40,13 @@ import aiosqlite
 import pytest
 
 from pkb.contracts import ActionView, ApprovalRequest, MessageComplete, RunEnd
-from pkb.server.telegram import Channel, TelegramAdapter, TelegramConfig, callback_data
+from pkb.server.telegram import Channel, TelegramAdapter, TelegramConfig
 from pkb.server.telegram_api import GENERAL, MAX_RECREATIONS, POLL_TIMEOUT, TelegramError
 from pkb.service.telegram import (
     BINDINGS_TABLE,
     CHANNELS_TABLE,
     LEDGER_TABLE,
     LEGACY_BINDINGS_TABLE,
-    PROMPTS_TABLE,
     SqliteTelegramStore,
 )
 from tests.server.stub import COOKING, GRILLING, LIBRARIAN, NOW, StubService
@@ -90,6 +89,13 @@ message a real bot sent, and nothing in a fake that defaults to ``0`` could tell
 # The pre-topics file, written exactly as the shipped build left it
 # --------------------------------------------------------------------------------------
 
+_LEGACY_PROMPTS_TABLE = "pkb_telegram_prompts"
+"""``PROMPTS_TABLE``'s old name, kept here as a literal (Task 6, DESIGN.md §2.10): the constant
+itself is deleted with the approval-prompt surface, but a pre-upgrade file genuinely had a table by
+this name and :data:`LEGACY_SCHEMA` has to go on saying so, for the same reason it copies rather than
+imports the rest of the shipped schema below.
+"""
+
 LEGACY_SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS {LEGACY_BINDINGS_TABLE} (
     chat_id    INTEGER PRIMARY KEY,
@@ -106,7 +112,7 @@ CREATE TABLE IF NOT EXISTS {LEDGER_TABLE} (
     thread_id   TEXT,
     run_id      TEXT
 );
-CREATE TABLE IF NOT EXISTS {PROMPTS_TABLE} (
+CREATE TABLE IF NOT EXISTS {_LEGACY_PROMPTS_TABLE} (
     handle       TEXT PRIMARY KEY,
     chat_id      INTEGER NOT NULL,
     thread_id    TEXT NOT NULL,
@@ -186,8 +192,9 @@ async def pre_topics_database(
             (LEGACY_UNFINISHED, CHAT, "message", "2026-08-01T09:01:30Z", thread_id, "run-legacy"),
         )
         await connection.execute(
-            f"INSERT INTO {PROMPTS_TABLE} (handle, chat_id, thread_id, interrupt_id, message_ids, "
-            f"answers_json, action_count, created_at, resolved) VALUES (?,?,?,?,?,?,?,?,0)",
+            f"INSERT INTO {_LEGACY_PROMPTS_TABLE} (handle, chat_id, thread_id, interrupt_id, "
+            f"message_ids, answers_json, action_count, created_at, resolved) "
+            f"VALUES (?,?,?,?,?,?,?,?,0)",
             (HANDLE, CHAT, thread_id, INTERRUPT, "[4001]", "{}", 1, "2026-08-01T09:02:00Z"),
         )
 
@@ -903,7 +910,7 @@ async def test_a_button_from_before_the_upgrade_still_answers_its_approval_tg58(
                 "callback_query": {
                     "id": "cbq-1",
                     "from": {"id": OWNER},
-                    "data": callback_data(HANDLE, 0, "a"),
+                    "data": f"v1|{HANDLE}|0|a",  # callback_data()'s old format; the function is gone
                     "message": {"message_id": 4001, "chat": {"id": CHAT, "type": "private"}},
                 },
             },
@@ -946,23 +953,23 @@ async def test_the_migration_adds_columns_and_rebuilds_nothing_tg28(db_path: Pat
     async with connected(db_path) as connection:
         for handle in ("aaaa", "bbbb"):
             await connection.execute(
-                f"INSERT INTO {PROMPTS_TABLE} (handle, chat_id, thread_id, interrupt_id, "
+                f"INSERT INTO {_LEGACY_PROMPTS_TABLE} (handle, chat_id, thread_id, interrupt_id, "
                 f"message_ids, answers_json, action_count, created_at, resolved) "
                 f"VALUES (?,?,?,?,?,?,?,?,0)",
                 (handle, CHAT, LEGACY_THREAD, "int-x", "[]", "{}", 1, "2026-08-01T09:03:00Z"),
             )
-        await connection.execute(f"DELETE FROM {PROMPTS_TABLE} WHERE handle = 'aaaa'")
+        await connection.execute(f"DELETE FROM {_LEGACY_PROMPTS_TABLE} WHERE handle = 'aaaa'")
 
     before = catalog(db_path)
     with sqlite3.connect(db_path) as raw:
-        rowids_before = [r[0] for r in raw.execute(f"SELECT rowid FROM {PROMPTS_TABLE}")]
+        rowids_before = [r[0] for r in raw.execute(f"SELECT rowid FROM {_LEGACY_PROMPTS_TABLE}")]
 
     async with opened(db_path):
         pass
 
     after = catalog(db_path)
     with sqlite3.connect(db_path) as raw:
-        rowids_after = [r[0] for r in raw.execute(f"SELECT rowid FROM {PROMPTS_TABLE}")]
+        rowids_after = [r[0] for r in raw.execute(f"SELECT rowid FROM {_LEGACY_PROMPTS_TABLE}")]
 
     assert rowids_before == [1, 3], "the fixture has to leave a gap, or this asserts nothing"
     assert rowids_after == rowids_before
@@ -999,7 +1006,7 @@ async def test_an_upgraded_file_and_a_fresh_one_have_the_same_columns_in_the_sam
     async with opened(fresh):
         pass
 
-    for table in (LEDGER_TABLE, PROMPTS_TABLE):
+    for table in (LEDGER_TABLE, _LEGACY_PROMPTS_TABLE):
         assert columns(db_path, table) == columns(fresh, table)
         assert columns(fresh, table)[-1][0] == "topic_id"
 
@@ -1240,7 +1247,6 @@ async def test_the_topic_columns_never_reach_the_knowledge_base_i3(tmp_path: Pat
         await store.open_channel(CHAT, COOKING_TOPIC, COOKING)
         await store.bind(CHAT, COOKING_TOPIC, TOPIC_THREAD, COOKING)
         await store.claim(1, CHAT, COOKING_TOPIC, "message")
-        await store.open_prompt(HANDLE, CHAT, COOKING_TOPIC, TOPIC_THREAD, INTERRUPT, 1)
         await store.rebind_channel(CHAT, COOKING, 31)
         await store.retire_channel(CHAT, COOKING)
 

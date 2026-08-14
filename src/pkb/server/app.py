@@ -17,10 +17,13 @@ The lifespan order is a rule, not a habit (AP-3):
 2. Layer 3's SQLite connection — **after**, because the WAL pragma is set in the saver's ``setup()``
    and a connection opened earlier talks to a rollback-journal file (AP-4). ``open_service`` does
    both, in that order, and asserts it;
-3. reconcile ``pending_interrupt_id`` against the checkpointer (AP-5);
-4. enter ``mcp_server.session_manager.run()`` — the lifespan ``streamable_http_app`` would have
+3. enter ``mcp_server.session_manager.run()`` — the lifespan ``streamable_http_app`` would have
    provided and that mounting throws away (MC-3);
-5. start the scan worker, then the Telegram task if configured.
+4. start the scan worker, then the Telegram task if configured.
+
+No startup reconciliation step (Task 6): AP-5's ``pending_interrupt_id`` repair existed because that
+column could go stale against the checkpointer across a restart. No graph composes ``interrupt_on``
+any longer, so the column is never set in the first place and there is nothing left to reconcile.
 
 Shutdown reverses it, and every in-flight run is cancelled with its subscribers told (AP-12).
 """
@@ -108,9 +111,6 @@ def create_app(open_service: ServiceFactory, *, config: ServerConfig | None = No
         async with open_service() as service:
             app.state.service = service
             health.runtime_open = True
-            repaired = await service.reconcile()
-            if repaired:
-                _log.info("reconciled %d thread rows against the checkpointer", repaired)
             async with mcp_server.session_manager.run():
                 health.mcp_mounted = True
                 workers = _start_workers(service, settings, health)
@@ -150,7 +150,6 @@ def create_app(open_service: ServiceFactory, *, config: ServerConfig | None = No
         """
         service = getattr(request.app.state, "service", None)
         counts = (0, 0)
-        pending = 0
         agents = 0
         active = 0
         subscribers = 0
@@ -162,13 +161,11 @@ def create_app(open_service: ServiceFactory, *, config: ServerConfig | None = No
             active = service.runs.active
             subscribers = service.runs.subscribers
             counts = await service.thread_counts()
-            pending = await service.proposal_count()
         return health.payload(
             agent_count=agents,
             active_runs=active,
             subscribers=subscribers,
             threads=counts,
-            proposals_pending=pending,
             unmapped_agents=unmapped,
         )
 

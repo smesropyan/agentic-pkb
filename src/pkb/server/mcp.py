@@ -7,15 +7,12 @@ Protocol, and nothing else — never ``pkb.agents``, never a harness module, nev
 
 Four rules make the difference between this being a channel and being a hole:
 
-* **Every MCP run is ``propose_only``** (MC-8). The mode is a property of the *channel*, not a tool
-  argument: no tool exposes it and no path here passes ``"interactive"``. Interactive mode needs a
-  human on the call path and there is none behind ``/mcp``, so an interactive write that gated would
-  hang forever on a decision no robot can make. The contract is that MCP sees **zero** ``interrupt``
-  events — it must never block and never poll for an approval.
-* **Propose-only is not read-only** (MC-18). The gate table is the boundary and it is the same table
-  for every channel: a plain note lands unattended, a breadth summary becomes a proposal. Every
-  result therefore has to **distinguish filed from proposed**, because conflating them makes an
-  external agent believe a summary update landed when it did not.
+* **MCP sees zero ``interrupt`` events** (MC-8). Before the sessions rebuild this was ``propose_only``
+  mode's job: a channel-level flag that auto-rejected a gate no robot could answer, because there is
+  no human on the call path behind ``/mcp`` and an interactive write that gated would hang forever on
+  a decision nobody would make. No graph composes a gate any longer (Task 6 —
+  ``pkb.agents.gates.build_interrupt_on`` is no longer called), so the contract now holds for a
+  simpler reason: nothing here ever interrupts, full stop, and there is no mode left to name.
 * **An escalation is a success with a discriminator, never an error** (MC-20). A well-behaved agent
   retries errors, and a retried escalation is an escalation ignored. The trigger is computed
   deterministically from ``status.conflict-review`` intersected with the participating topics —
@@ -69,8 +66,11 @@ __all__ = [
 
 MCP_PATH = "/mcp"
 TOOL_NAMES = ("pkb_ask", "pkb_ingest", "pkb_research_pack", "pkb_implementation_pack")
-"""Exactly four (MC-5). No ``pkb_approve`` — an external agent cannot satisfy a human gate — and no
-write tool that bypasses the agent layer."""
+"""Exactly four (MC-5). No write tool that bypasses the agent layer.
+
+No ``pkb_approve`` either, though the reason changed (Task 6): it once existed because an external
+agent could not satisfy a human gate. No graph composes a gate any longer, so there is no longer
+anything for one to approve."""
 
 _TRIM = "`*_~.,;:!?()[]{}<>\"'" + "\u201c\u201d\u2018\u2019"
 """Punctuation stripped from a token before it is matched against the catalog.
@@ -109,13 +109,6 @@ class EscalationView(BaseModel):
     agent_id: str
 
 
-class ProposalView(BaseModel):
-    proposal_id: str
-    tool: str
-    path: str
-    reason: str
-
-
 class Answered(BaseModel):
     status: Literal["answered"] = "answered"
     answer: str
@@ -123,7 +116,6 @@ class Answered(BaseModel):
     agent_id: str
     run_id: str
     experts: list[ExpertReply] = Field(default_factory=list)
-    proposals: list[ProposalView] = Field(default_factory=list)
 
 
 class Menu(BaseModel):
@@ -345,28 +337,6 @@ def build_mcp_server(
             }
         )
 
-    @server.resource(
-        "pkb://proposals",
-        description="Writes this knowledge base refused and recorded, awaiting a human.",
-        mime_type="application/json",
-    )
-    async def proposals_resource() -> str:
-        """Closes README Part 4's feedback loop: without it a project cannot learn its write landed."""
-        service = service_of()
-        proposals = await service.list_proposals()
-        return json.dumps({"proposals": [_proposal_json(p) for p in proposals]})
-
-    @server.resource(
-        "pkb://proposals/{proposal_id}",
-        description="One recorded proposal, including the rendered diff a human would approve.",
-        mime_type="application/json",
-    )
-    async def proposal_resource(proposal_id: str) -> str:
-        """A **template**, which appears only in ``list_resource_templates()`` — never in
-        ``list_resources()``. A client that calls one and not the other will not see it (MC-6)."""
-        service = service_of()
-        return json.dumps(_proposal_json(await service.get_proposal(proposal_id)))
-
     return server
 
 
@@ -416,7 +386,7 @@ async def _run_tool(
     *,
     deadline: float,
 ) -> Any:
-    """One bounded, cancellable, propose-only run, reported as one discriminated result.
+    """One bounded, cancellable run, reported as one discriminated result.
 
     ``thread_id`` on the wire — the tool argument, and every field named it below — now addresses a
     **session** (Task 5 repoints MCP's own calls from ``create_thread``/``start_run`` to
@@ -444,9 +414,7 @@ async def _run_tool(
             # than waiting on the thread era's async titling call.
             session = await service.create_session(agent_id, objective=message, operator="mcp")
             thread_id = session.session_id
-        subscription = await service.start_session_run(
-            thread_id, message, approval_mode="propose_only"
-        )
+        subscription = await service.start_session_run(thread_id, message)
     except Exception as exc:
         return _failure_from(exc, AskResult, thread_id or "")
 
@@ -488,11 +456,6 @@ async def _run_tool(
         # `structured_content` — exactly like a refusal caught before the run started.
         return _coded(AskResult, collected.error)
 
-    proposals = [
-        _proposal_view(p)
-        for p in await service.list_proposals()
-        if p.thread_id == handle.thread_id or p.thread_id.startswith(f"{handle.thread_id}::")
-    ]
     candidates = _menu_candidates(collected.final_text, service, bool(collected.experts), agent_id)
     if candidates:
         return _result(
@@ -513,7 +476,6 @@ async def _run_tool(
             agent_id=handle.agent_id,
             run_id=handle.run_id,
             experts=collected.experts,
-            proposals=proposals,
         ),
     )
 
@@ -719,36 +681,12 @@ def _failure_from(exc: BaseException, envelope: type[Any], thread_id: str) -> Ca
     return _coded(envelope, Failed(code=code, message=message, thread_id=thread_id))
 
 
-def _proposal_view(proposal: Any) -> ProposalView:
-    return ProposalView(
-        proposal_id=proposal.proposal_id,
-        tool=proposal.action.tool,
-        path=str(proposal.action.args.get("file_path", "")),
-        reason=proposal.action.reason,
-    )
-
-
-def _proposal_json(proposal: Any) -> dict[str, Any]:
-    return {
-        "proposal_id": proposal.proposal_id,
-        "agent_id": proposal.agent_id,
-        "thread_id": proposal.thread_id,
-        "created_at": proposal.created_at.isoformat().replace("+00:00", "Z"),
-        "tool": proposal.action.tool,
-        "args": dict(proposal.action.args),
-        "description": proposal.action.description,
-        "allowed_decisions": list(proposal.action.allowed_decisions),
-        "reason": proposal.action.reason,
-    }
-
-
 _INSTRUCTIONS = """\
 A Personal Knowledge Base. Ask it what the human knows, or hand it something to file.
 
-Writes follow the same standards as every other channel. A plain note and a first extraction of a
-source land unattended; changing human-approved content, adding a tag, resolving a conflict and
-rewriting an extraction the human has read all become proposals for the human instead — the result
-tells you which. You cannot approve one from here.
+Writes follow the same standards as every other channel: a plain note, a first extraction of a
+source, a tag, a conflict resolution — every one of them lands unattended, in the turn it was
+instructed in.
 
 A result with status "escalation" means material in scope is under human review. Stop; do not retry.
 """
@@ -762,8 +700,7 @@ directly. Read pkb://agents for the ids.
 _INGEST_DESCRIPTION = """\
 Hand the knowledge base material to file — an observation, a retrospective note, an article. It
 always enters at the Librarian, which decides which topics it belongs to; several may file their own
-extraction of the same material and any may decline. The result distinguishes what was filed from
-what became a proposal awaiting the human.
+extraction of the same material and any may decline.
 """
 
 _RESEARCH_DESCRIPTION = """\

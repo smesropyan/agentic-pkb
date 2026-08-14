@@ -7,14 +7,16 @@ here, in a module both may name and neither depends on:
     open_service  ->  pkb.service.runtime.open_service   (opens PkbRuntime, then Layer 3's SQLite)
     create_app    ->  pkb.server.app.create_app          (routes, SSE, MCP, workers, /health)
 
-It is also where the two sinks are attached, because ``RuntimeConfig`` is frozen and the runtime is
-built exactly once (SV-3). Neither sink is optional in a daemon:
+It is also where the **flush sink** is attached, because ``RuntimeConfig`` is frozen and the runtime
+is built exactly once (SV-3). It is not optional in a daemon: it surfaces each ``FlushReport``'s
+findings in ``/health`` and the log (AP-16). ``None`` drops broken links, orphans and
+``DERIVED_WRITE_FAILED`` on the floor — a convenience in a unit test and a defect in a daemon.
 
-* the **proposal sink** persists every ``PendingProposal`` into ``pkb_proposals`` (AP-15). Without
-  it a propose-only write is one restart from gone, and the caller was told it was proposed.
-* the **flush sink** surfaces each ``FlushReport``'s findings in ``/health`` and the log (AP-16).
-  ``None`` drops broken links, orphans and ``DERIVED_WRITE_FAILED`` on the floor — a convenience in
-  a unit test and a defect in a daemon.
+No proposal sink (Task 6). Before the sessions rebuild this module also wired a sink that persisted
+every ``PendingProposal`` into ``pkb_proposals`` (AP-15), because ``propose_only`` mode auto-rejected
+a gate no robot could answer and a caller told "proposed" deserved that record to survive a restart.
+``pkb.service.proposals`` is deleted along with every gate: no tool call ever interrupts, so nothing
+is ever proposed and there is nothing left to persist.
 
 The daemon binds **localhost**, has no auth and no multi-user namespacing, and no route carries a
 version prefix (AP-20). Arch §10 defers deployment topology deliberately; every route sits behind
@@ -146,15 +148,6 @@ def build_app(
     health = HealthState(kb_root=str(kb_root), db_path=str(db_path))
     state: dict[str, Any] = {}
 
-    def record_proposal(proposal: Any) -> None:
-        """AP-15. Synchronous, because ``RuntimeConfig``'s sink is — so it schedules the write."""
-        service = state.get("service")
-        if service is None:  # pragma: no cover - a proposal before startup cannot happen
-            return
-        import asyncio
-
-        asyncio.get_running_loop().create_task(service.proposals_store.record(proposal))
-
     def record_flush(report: Any) -> None:
         """AP-16. Findings reach ``/health`` and the log rather than the floor."""
         findings = len(getattr(report, "findings", ()) or ())
@@ -162,10 +155,7 @@ def build_app(
         if findings:
             _log.warning("flush reported %d finding(s)", findings)
 
-    runtime_config = config or RuntimeConfig(
-        proposal_sink=record_proposal,
-        flush_sink=record_flush,
-    )
+    runtime_config = config or RuntimeConfig(flush_sink=record_flush)
 
     @asynccontextmanager
     async def opener() -> AsyncIterator[Any]:

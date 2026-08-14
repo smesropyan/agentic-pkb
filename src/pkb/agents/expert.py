@@ -20,11 +20,16 @@ its own default slots — ``_gp_inheritable = [m for m in middleware if m.name i
 _gp_original_name_to_index]`` — and ours never collide. So a model that delegates a write through
 ``task(subagent_type="general-purpose")`` bypasses :class:`~pkb.agents.middleware.validation.
 KbValidationMiddleware` *and* the maintenance flush entirely: verified, the guard saw only
-``['task']`` and the file landed on disk. It *does* inherit ``permissions`` and ``interrupt_on``, so
-invariant I3 and every approval gate still hold, which is exactly why the hole is quiet. Supplying an
-explicit spec with that name suppresses the auto-add and routes our middleware through
-``_apply_custom_middleware``. :func:`general_purpose_subagent` builds it, and every graph in this
-package carries one.
+``['task']`` and the file landed on disk. It *does* inherit ``permissions``, so invariant I3 still
+holds, which is exactly why the hole is quiet. Supplying an explicit spec with that name suppresses
+the auto-add and routes our middleware through ``_apply_custom_middleware``.
+:func:`general_purpose_subagent` builds it, and every graph in this package carries one.
+
+No graph in this package passes ``interrupt_on`` to ``create_deep_agent`` at all (Task 6,
+`docs/superpowers/plans/2026-08-14-phase2-sessions.md`; DESIGN.md §2.10: "the operator's instruction
+is the approval"). A gate table still exists in :mod:`pkb.agents.gates` and :mod:`pkb.agents.approval`
+— composing it back in is Phase 3's call, not this module's — but nothing here wires it in, so a tool
+call, delegated or direct, simply executes.
 
 **The middleware order (EX-14).** ``[breadth, validation, maintenance]``. ``wrap_tool_call`` composes
 first-in-list-outermost, so validation wraps the tool call from outside; ``after_agent`` hooks run in
@@ -60,7 +65,6 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
 
-from pkb.agents.gates import GateEnv, build_interrupt_on
 from pkb.agents.middleware.breadth import KbBreadthMiddleware
 from pkb.agents.middleware.maintenance import (
     FlushSink,
@@ -357,10 +361,12 @@ def general_purpose_subagent(
     Everything else is taken verbatim from deepagents' own ``GENERAL_PURPOSE_SUBAGENT``: the name
     (which is what suppresses the auto-add), its description, and its system prompt. ``permissions``,
     ``interrupt_on`` and ``tools`` are deliberately **not** set — an unset key inherits the parent's
-    (``graph.py:664``, ``:718``, ``:725``), so I3 and the approval gates reach this path exactly as
-    they reached the auto-added version, and a divergence cannot be introduced by forgetting to
-    repeat one here. ``skills`` *is* set, because an unset one gives the subagent no skills at all
-    while the auto-add would have passed the parent's (``graph.py:757``).
+    (``graph.py:664``, ``:718``, ``:725``), so I3 reaches this path exactly as it reached the
+    auto-added version, and a divergence cannot be introduced by forgetting to repeat one here. Since
+    no graph in this package passes ``interrupt_on`` to its parent either (Task 6), the inherited
+    value is simply absent both places — the same mechanism that would propagate a gate now
+    propagates its absence. ``skills`` *is* set, because an unset one gives the subagent no skills at
+    all while the auto-add would have passed the parent's (``graph.py:757``).
     """
     return {**GENERAL_PURPOSE_SUBAGENT, "middleware": list(middleware), "skills": list(skills)}
 
@@ -425,7 +431,6 @@ def build_expert(
         skills=skills,
         permissions=kb_permissions(topic.path),
         backend=runtime.backend,
-        interrupt_on=build_interrupt_on(GateEnv(snapshot=runtime.snapshot)),
         checkpointer=runtime.checkpointer,
         store=runtime.store,
         name=topic.agent_id,
