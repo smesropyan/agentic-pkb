@@ -237,9 +237,17 @@ async def test_the_runtime_is_a_scoped_resource_not_a_singleton_rt2(kb: Path) ->
         await saver.aget_tuple({"configurable": {"thread_id": "T1"}})
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_the_run_api_is_async_only_rt3(kb: Path) -> None:
-    """A synchronous checkpointer call from the saver's own loop raises, so there is no sync API."""
+    """A synchronous checkpointer call from the saver's own loop raises, so there is no sync API.
+
+    Superseded (Phase 3 rebuilds this): the coroutine-surface check below bundles `resume` and
+    `pending_approval` — the interrupt-resume surface Task 6 removes entirely ("the runtime exposes
+    no interrupt-resume surface") — with names that survive (`cancel`, `history`, `regenerate`) and
+    `delete_thread`, which has no session equivalent at all. The no-sync-API assertions above this
+    loop are still true; a Phase 3 successor needs the retired two names dropped from the tuple.
+    """
     public = {name for name in dir(PkbRuntime) if not name.startswith("_")}
     assert not (public & {"invoke", "stream", "run_sync", "stream_sync", "resume_sync"})
     assert inspect.isasyncgenfunction(PkbRuntime.run)
@@ -354,9 +362,16 @@ async def test_execute_stays_inert_rt20(kb: Path) -> None:
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_both_ids_are_always_explicit_rt36(kb: Path) -> None:
-    """Layer 2 never invents a thread id for a user conversation, and never stores the pairing."""
+    """Layer 2 never invents a thread id for a user conversation, and never stores the pairing.
+
+    Superseded (Phase 3 rebuilds this): the signature check loops over `PkbRuntime.resume`, part of
+    the interrupt-resume surface Task 6 deletes; `PkbRuntime.run`'s half of the assertion survives
+    but the two are bundled in one loop. The `uuid4()`/`_new_run_id` source checks below are
+    unaffected and need a successor that drops `resume` from the tuple.
+    """
     for method in (PkbRuntime.run, PkbRuntime.resume):
         params = list(inspect.signature(method).parameters)
         assert params[1:3] == ["agent_id", "thread_id"], method.__name__
@@ -373,9 +388,16 @@ async def test_the_only_config_key_is_the_thread_id_rt37(kb: Path) -> None:
         assert rt.thread_config("T1") == {"configurable": {"thread_id": "T1"}}
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_an_approval_survives_a_process_boundary_rt38(kb: Path) -> None:
-    """The interrupt is durable in the checkpoint, so any client in any process can resolve it."""
+    """The interrupt is durable in the checkpoint, so any client in any process can resolve it.
+
+    Superseded (Phase 3 rebuilds this): the whole scenario — an interrupt raised, `pending_approval`
+    read back after a fresh runtime opens the same database, then resolved with `resume` and a
+    `Decision` — is the interrupt-resume surface Task 6 removes. A write now lands during the turn,
+    so there is no pending approval to survive a process boundary.
+    """
     db = kb.parent / "pkb.sqlite"
     async with opened(kb, scripted(writes(SUMMARY_PATH, NEW_SUMMARY, "w1"), says("done")), db=db):
         pass  # the first runtime only creates the file
@@ -394,9 +416,15 @@ async def test_an_approval_survives_a_process_boundary_rt38(kb: Path) -> None:
     assert "Sear hot, rest long." in (kb / SUMMARY_PATH).read_text(encoding="utf-8")
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_a_new_message_during_a_pending_approval_is_refused_rt39(kb: Path) -> None:
-    """The harness would silently discard the interrupt and run the turn as if it never existed."""
+    """The harness would silently discard the interrupt and run the turn as if it never existed.
+
+    Superseded (Phase 3 rebuilds this): `pending_approval` and `ApprovalPendingError` are the
+    interrupt-resume surface Task 6 removes — there is no pending approval a second message could
+    ever collide with once a write lands during the turn it was asked for.
+    """
     model = scripted(writes(SUMMARY_PATH, NEW_SUMMARY, "w1"), says("done"))
     async with opened(kb, model) as rt:
         await drain(rt, COOKING, "T1")
@@ -411,9 +439,15 @@ async def test_a_new_message_during_a_pending_approval_is_refused_rt39(kb: Path)
         assert after.interrupt_id == before.interrupt_id
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_a_stale_interrupt_id_is_refused_before_the_graph_rt40(kb: Path) -> None:
-    """A stale id degrades into a confusing count-mismatch error inside the graph; refuse first."""
+    """A stale id degrades into a confusing count-mismatch error inside the graph; refuse first.
+
+    Superseded (Phase 3 rebuilds this): `StaleInterruptError`, `resume` and `Decision` are the
+    interrupt-resume surface Task 6 removes — there is no interrupt id to go stale once nothing
+    ever interrupts.
+    """
     model = scripted(writes(SUMMARY_PATH, NEW_SUMMARY, "w1"), says("done"))
     async with opened(kb, model) as rt:
         await drain(rt, COOKING, "T1")
@@ -425,9 +459,15 @@ async def test_a_stale_interrupt_id_is_refused_before_the_graph_rt40(kb: Path) -
         assert "Sear hot, rest long." not in (kb / SUMMARY_PATH).read_text(encoding="utf-8")
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_a_disallowed_decision_and_a_count_mismatch_are_refused_rt40(kb: Path) -> None:
-    """`respond` reports success while skipping the tool, so no write gate ever allows it (RT-32)."""
+    """`respond` reports success while skipping the tool, so no write gate ever allows it (RT-32).
+
+    Superseded (Phase 3 rebuilds this): `InvalidDecisionError`, `resume` and `Decision` are the
+    interrupt-resume surface Task 6 removes — there is no decision to validate, disallowed or
+    miscounted, once nothing ever interrupts for one.
+    """
     model = scripted(writes(SUMMARY_PATH, NEW_SUMMARY, "w1"), says("done"))
     async with opened(kb, model) as rt:
         await drain(rt, COOKING, "T1")
@@ -438,9 +478,16 @@ async def test_a_disallowed_decision_and_a_count_mismatch_are_refused_rt40(kb: P
         assert await rt.pending_approval(COOKING, "T1") is not None
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_propose_only_records_a_proposal_and_writes_nothing_rt42(kb: Path) -> None:
-    """An MCP caller cannot satisfy a human gate, so the run completes instead of hanging."""
+    """An MCP caller cannot satisfy a human gate, so the run completes instead of hanging.
+
+    Superseded (Phase 3 rebuilds this): `approval_mode="propose_only"`, `proposal_sink` and
+    `pending_proposals()` are the parked-proposal machinery Task 6 removes wholesale — "no gates,
+    no interrupts, no parked proposals, no pending queue anywhere." The operator's instruction is
+    the approval, so a write lands during the turn regardless of caller.
+    """
     seen: list[Any] = []
     model = scripted(writes(SUMMARY_PATH, NEW_SUMMARY, "w1"), says("noted"))
     async with opened(kb, model, proposal_sink=seen.append) as rt:
@@ -565,6 +612,7 @@ async def test_a_provider_error_is_one_normalized_event_rt47(kb: Path) -> None:
         assert state.next == ("model",)
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_delete_thread_removes_the_experts_derived_threads_rt48(kb: Path) -> None:
     """A Librarian conversation is erased together with the expert threads it spawned.
@@ -580,6 +628,11 @@ async def test_delete_thread_removes_the_experts_derived_threads_rt48(kb: Path) 
     worst kind of lie in a system with no version control and no undo (D6), so `delete_thread`
     enumerates the catalog and deletes the derived ids too. The `writes` table is asserted as well:
     that is where the expert's exchange actually sits.
+
+    Superseded (Phase 3 rebuilds this): the whole scenario is the retired `<thread>::<agent>`
+    derived-thread addressing the Librarian's fan-out minted — a session belongs to one agent
+    directly, with no parent/derived split, so there is no derived id for a delete to sweep up.
+    `delete_thread` itself has no session equivalent either: nothing deletes a session.
     """
     db = kb.parent / "pkb.sqlite"
     model = scripted(
@@ -868,12 +921,18 @@ def test_concurrent_flushes_never_starve_the_lock_holder_rt51() -> None:
     assert result.stdout.strip() == "serialized"
 
 
+@pytest.mark.superseded
 def test_the_runtime_constructs_no_resume_command_of_its_own_rt33() -> None:
     """The AI never resolves its own interrupt; `approval.py` is the one construction site.
 
     AST rather than the text grep the rule sketches, for the reason the registry's audits give: the
     phrase now appears legitimately in three docstrings that *explain* the rule, and a text grep
     would teach the next author to delete the explanation rather than the breach.
+
+    Superseded (Phase 3 rebuilds this): this pins that only `approval.py` constructs a LangGraph
+    `Command(resume=...)` — gate composition wiring Task 6 removes at the composition point. With
+    no interrupt to resolve, `approval.py`'s resume construction has no successor to be the one
+    site for.
     """
     root = Path(runtime_module.__file__).parent
     offenders: list[str] = []
@@ -942,6 +1001,7 @@ async def test_the_recovered_paths_are_cleared_after_a_failure_mw27(kb: Path) ->
     assert "updated: 2026-08-06" in (kb / NOTE_PATH).read_text(encoding="utf-8")
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_an_interrupted_turn_flushes_nothing_and_the_resume_flushes_once_mw29(
     kb: Path,
@@ -953,6 +1013,11 @@ async def test_an_interrupted_turn_flushes_nothing_and_the_resume_flushes_once_m
     the pending `__interrupt__` does not survive it, so the human's decision vanishes; and flushing
     without clearing would let the resumed turn re-stamp the pre-interrupt paths on whichever day
     the human happened to answer.
+
+    Superseded (Phase 3 rebuilds this): the two-phase interrupt-then-resume flow this pins —
+    `InterruptEvent`, `pending_approval`, `resume`, `Decision` — is the surface Task 6 removes.
+    There is no pause between "flushes nothing while parked" and "flushes once on resume" once a
+    write lands during the turn it was asked for; a successor needs a scenario with no pause at all.
     """
     today = [date(2026, 8, 6)]
     reports: list[Any] = []
@@ -1072,9 +1137,15 @@ async def test_a_successful_run_flushes_exactly_once_mw28(kb: Path) -> None:
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_the_librarian_carries_the_gated_create_topic_lb7(kb: Path) -> None:
-    """Propose → interrupt → approve → six scaffold paths → the new id is routable with no restart."""
+    """Propose → interrupt → approve → six scaffold paths → the new id is routable with no restart.
+
+    Superseded (Phase 3 rebuilds this): `create_topic` interrupting and waiting on a `resume`ed
+    `Decision` is gate composition wiring Task 6 removes — the operator's instruction is the
+    approval, so the six scaffold paths land during the turn with no interrupt raised.
+    """
     model = scripted(
         calls(
             call(
@@ -1100,9 +1171,15 @@ async def test_the_librarian_carries_the_gated_create_topic_lb7(kb: Path) -> Non
         assert "topic/physics" in {agent.agent_id for agent in rt.list_agents()}
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_a_rejected_topic_creates_nothing_lb7(kb: Path) -> None:
-    """The AI never resolves its own gate; a rejection leaves the tree byte-identical."""
+    """The AI never resolves its own gate; a rejection leaves the tree byte-identical.
+
+    Superseded (Phase 3 rebuilds this): a `resume`ed `reject` `Decision` is gate composition wiring
+    Task 6 removes — there is no gate to reject once the operator's instruction is the approval and
+    `create_topic` lands during the turn unconditionally.
+    """
     model = scripted(
         calls(call(CREATE_TOPIC, {"name": "Physics", "title": "P", "description": "d"}, "t1")),
         says("understood"),

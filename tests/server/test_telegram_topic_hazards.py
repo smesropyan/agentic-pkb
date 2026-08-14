@@ -563,6 +563,7 @@ async def test_the_message_is_re_sent_whole_and_not_only_its_tail_tg80(
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 async def test_a_stray_approval_keyboard_is_disarmed_before_anything_else_tg81(
     service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
 ) -> None:
@@ -572,6 +573,11 @@ async def test_a_stray_approval_keyboard_is_disarmed_before_anything_else_tg81(
     ordering was chosen for — leaves an Approve button for an irreversible write live in General,
     attributed by nothing, for however long that takes. The response that revealed the stray already
     carries the ``message_id``, so disarming costs one call that cannot fail for want of information.
+
+    Superseded (Task 6 rebuilds this): the whole scenario is ``_post_approval`` posting a keyboard —
+    with no gates, no writes are ever parked behind an Approve button, so nothing here is armed and
+    there is nothing to disarm. The deleted-topic hazard on an *ordinary* reply is what survives (see
+    the TG-80 tests above); this file needs no successor for the disarm-first ordering itself.
     """
     bot = await make_bot(service, store, api)
     api.kill_after = 1  # the description lands; the keyboard is the stray
@@ -586,6 +592,7 @@ async def test_a_stray_approval_keyboard_is_disarmed_before_anything_else_tg81(
     assert disarm < correction < create
 
 
+@pytest.mark.superseded
 async def test_the_disarmed_message_is_the_one_the_response_named_tg81(
     service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
 ) -> None:
@@ -593,6 +600,9 @@ async def test_the_disarmed_message_is_the_one_the_response_named_tg81(
 
     Clearing anything else leaves the live button live. This is also why TG-90 matters here: the
     ``message_id`` is enough, so nothing on this path needs the topic that has just ceased to exist.
+
+    Superseded (Task 6 rebuilds this): with no gates there is no armed keyboard for a stray to carry,
+    so nothing needs disarming — see the sibling test above.
     """
     bot = await make_bot(service, store, api)
     api.kill_after = 1
@@ -604,6 +614,7 @@ async def test_the_disarmed_message_is_the_one_the_response_named_tg81(
     assert not stray.armed, "an Approve button is still live in the general chat"
 
 
+@pytest.mark.superseded
 async def test_no_message_delivered_to_the_general_chat_keeps_its_buttons_tg81(
     service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
 ) -> None:
@@ -613,6 +624,9 @@ async def test_no_message_delivered_to_the_general_chat_keeps_its_buttons_tg81(
     to be true at the end of the incident is that **nothing** in General carries a button that was
     meant for a topic — because in General, under the Librarian's name, that button is
     indistinguishable from the Librarian's own work.
+
+    Superseded (Task 6 rebuilds this): with no gates nothing the bot ever sends carries a button, so
+    the property holds vacuously and needs no successor.
     """
     bot = await make_bot(service, store, api)
     api.kill_after = 1
@@ -622,6 +636,7 @@ async def test_no_message_delivered_to_the_general_chat_keeps_its_buttons_tg81(
     assert [m.text for m in api.landed_in(GENERAL) if m.armed] == []
 
 
+@pytest.mark.superseded
 async def test_the_correction_names_the_expert_and_the_dead_buttons_tg81(
     service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
 ) -> None:
@@ -630,6 +645,10 @@ async def test_the_correction_names_the_expert_and_the_dead_buttons_tg81(
     The chat is the only surviving record of what the human was asked, so the correction has to say
     three things: whose topic went, that the message above is the one that went astray, and that its
     buttons no longer work. Without the last one the human presses a dead Approve and learns nothing.
+
+    Superseded (Task 6 rebuilds this): the "buttons no longer work" clause is about an approval
+    keyboard that no longer exists. The surviving principle — a stray ordinary reply is named and
+    explained — is covered by the TG-80/TG-81 tests that use ``_say`` instead of ``_post_approval``.
     """
     bot = await make_bot(service, store, api)
     api.kill_after = 1
@@ -658,6 +677,7 @@ async def test_the_correction_is_posted_in_general_and_carries_no_topic_tg81(
     assert corrections and all(entry["topic"] == GENERAL for entry in corrections)
 
 
+@pytest.mark.superseded
 async def test_the_stray_text_is_never_deleted_tg81(
     service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
 ) -> None:
@@ -667,6 +687,13 @@ async def test_the_stray_text_is_never_deleted_tg81(
     A message that vanishes tells them nothing and reads as a bug; one with dead buttons and a
     correction under it tells them exactly what happened. The Protocol assertion is the durable half
     — a method that does not exist cannot be called by a later change.
+
+    Superseded (Task 6 rebuilds this): mixed body — the static ``not hasattr(BotApi,
+    "delete_message")`` half is a durable Protocol fact independent of approvals and could stand
+    alone, but the second assertion depends on ``_post_approval`` having delivered the diff via a
+    stray keyboard message, which no longer happens. Marked whole because the two share one test; the
+    "no undo means the chat is the record, so nothing is ever deleted" principle survives and needs a
+    successor against an ordinary stray reply.
     """
     bot = await make_bot(service, store, api)
     api.kill_after = 1
@@ -677,6 +704,7 @@ async def test_the_stray_text_is_never_deleted_tg81(
     assert any(DIFF.splitlines()[0] in m.text for m in api.landed_in(GENERAL))
 
 
+@pytest.mark.superseded
 async def test_clearing_a_keyboard_never_takes_a_topic_tg90(
     service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
 ) -> None:
@@ -685,6 +713,12 @@ async def test_clearing_a_keyboard_never_takes_a_topic_tg90(
     one, and acting on it puts an unknown parameter on the single call that disarms an irreversible
     button — inside a ``finally``, where the failure is silent. The fake's own signature is the
     enforcement: a ``topic_id=`` here would be a ``TypeError`` mid-incident.
+
+    Superseded (Task 6 rebuilds this): mixed body — the static Protocol-signature checks are generic
+    Bot API surface and would stand alone, but the whole reason ``clear_keyboard`` is ever called is
+    the approval-keyboard disarm path this file drives via ``_post_approval``, which is retired.
+    Marked whole; if a picker keyboard (Task 7) still calls ``clear_keyboard`` on a topic hazard, that
+    needs its own test rather than a revival of this one.
     """
     for method in ("clear_keyboard", "edit_message", "answer_callback"):
         assert "topic_id" not in inspect.signature(getattr(BotApi, method)).parameters
@@ -702,6 +736,7 @@ async def test_clearing_a_keyboard_never_takes_a_topic_tg90(
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 async def test_the_approval_is_re_sent_into_the_new_topic_with_its_keyboard_tg82(
     service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
 ) -> None:
@@ -710,6 +745,11 @@ async def test_the_approval_is_re_sent_into_the_new_topic_with_its_keyboard_tg82
     Q20 rejected the outcome where an expert's approvals simply become undeliverable, so a repaired
     channel that receives the text but not the buttons is the same failure with extra steps — a
     parked interrupt that RT-39 then uses to refuse every later message in the chat.
+
+    Superseded (Task 6 rebuilds this): there is no parked interrupt and no keyboard to lose in a
+    repair — every write lands immediately. The surviving principle, "a repaired channel has to
+    receive the content that strayed, not just a marker that it strayed," is covered for ordinary
+    replies by the TG-80 tests using ``_say``.
     """
     bot = await make_bot(service, store, api)
     api.kill_after = 1
@@ -722,6 +762,7 @@ async def test_the_approval_is_re_sent_into_the_new_topic_with_its_keyboard_tg82
     assert DIFF.splitlines()[0] in "\n".join(api.texts_in(new_topic))
 
 
+@pytest.mark.superseded
 async def test_the_prompt_row_records_the_repaired_message_not_the_stray_tg63(
     service: ScriptedService,
     store: SqliteTelegramStore,
@@ -733,6 +774,10 @@ async def test_the_prompt_row_records_the_repaired_message_not_the_stray_tg63(
     If the stray's id were recorded instead, the press that answers this approval would clear a
     keyboard that was already dead and leave the real one armed — an Approve button for a write that
     already happened, sitting in the human's Cooking topic for as long as they scroll back.
+
+    Superseded (Task 6 rebuilds this): ``PROMPTS_TABLE`` is the durable record of a pending
+    approval's live message id, which is exactly the parked-interrupt bookkeeping Task 6 removes —
+    there is no press to answer later because nothing is ever parked.
     """
     bot = await make_bot(service, store, api)
     api.kill_after = 1
@@ -765,6 +810,7 @@ async def test_the_directory_follows_the_repair_and_counts_it_tg82(
     assert row["retired"] is False
 
 
+@pytest.mark.superseded
 async def test_the_recreated_topic_routes_inbound_to_the_same_expert_tg77(
     service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
 ) -> None:
@@ -773,6 +819,14 @@ async def test_the_recreated_topic_routes_inbound_to_the_same_expert_tg77(
     A directory row that moved but does not route means the human's next message in the new Cooking
     topic is answered with "this topic is not connected to an expert yet" — a repair that looks like
     one and is not.
+
+    Superseded (Task 3/7 rebuild this): the assertion pins a single ``create_thread(agent_id,
+    origin_channel="telegram")`` call — the old shape where an inbound channel message directly
+    stamps and creates a thread. Task 7 replaces it with two steps, ``create_session`` (no channel
+    argument) plus a separate ``attach(session_id, channel_ref)``, so this exact call recording has
+    no successor as written. The underlying principle — an inbound message in a *repaired* topic must
+    still reach the right expert, not "not connected" — survives and needs a new assertion against
+    the session-and-attach shape.
     """
     bot = await make_bot(service, store, api)
     kill_topics(api)
@@ -811,6 +865,7 @@ async def test_message_thread_not_found_takes_the_repair_path_tg83(
     assert api.texts_in(api.next_topic_id) == ["Filed under Cooking."]
 
 
+@pytest.mark.superseded
 async def test_message_thread_not_found_leaves_nothing_to_disarm_or_correct_tg83(
     service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
 ) -> None:
@@ -819,6 +874,11 @@ async def test_message_thread_not_found_leaves_nothing_to_disarm_or_correct_tg83
     A correction line pointing at "the message above this one" when no message went astray tells the
     human their approval landed in General when it did not — sending them to look for a keyboard
     that is exactly where it should be.
+
+    Superseded (Task 6 rebuilds this): built on ``_post_approval``, and ``api.cleared == []`` is
+    asserting the absence of a keyboard-clear that no longer exists as a concept once gates are gone.
+    The 400-means-nothing-delivered principle for an ordinary reply is covered by TG-83's other two
+    tests, which use ``_say``.
     """
     bot = await make_bot(service, store, api)
     api.missing_thread = True
@@ -1038,6 +1098,7 @@ async def test_a_failed_recreation_falls_back_to_general_rather_than_losing_the_
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 async def test_a_stray_document_is_corrected_and_follows_the_repaired_channel_tg80(
     service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
 ) -> None:
@@ -1046,6 +1107,12 @@ async def test_a_stray_document_is_corrected_and_follows_the_repaired_channel_tg
     The keyboard would then be in the topic and the only complete copy of the write in General — the
     human approves what they can see, which is a 1,200-character preview of a diff whose remainder
     is in another conversation.
+
+    Superseded (Task 6 rebuilds this): the whole scenario is an approval's oversized action
+    description sent as a document alongside its keyboard, via ``_post_approval``; there is no
+    approval and no keyboard left to split across a stray and a repair. An oversized *document* in an
+    ordinary reply going astray has no test of its own here and would need one if that path exists
+    post-refactor.
     """
     bot = await make_bot(service, store, api)
     kill_topics(api)
@@ -1111,10 +1178,17 @@ async def test_a_stale_reference_re_addresses_rather_than_creating_a_second_topi
     assert "after the restart" in api.texts_in(repaired)
 
 
+@pytest.mark.superseded
 async def test_an_exiled_approval_names_its_agent_once_not_twice_tg85(
     service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
 ) -> None:
-    """The retired-to-General path is where the two attribution mechanisms meet, and both fire."""
+    """The retired-to-General path is where the two attribution mechanisms meet, and both fire.
+
+    Superseded (Task 6 rebuilds this): built on ``_post_approval`` and checks the armed message's
+    attribution specifically; the retired-channel-attribution principle itself (TG-85) survives and
+    is covered for ordinary replies by ``test_a_retired_channel_carries_its_agent_id_on_the_first_line_tg85``
+    above, which uses ``_say``.
+    """
     bot = await make_bot(service, store, api)
     channel = Channel(CHAT, COOK_TOPIC)
     for _ in range(MAX_RECREATIONS + 1):

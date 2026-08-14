@@ -52,6 +52,22 @@ from pkb.contracts import (
     validate_decisions,
 )
 
+pytestmark = pytest.mark.superseded
+"""Superseded (Phase 5 rebuilds this): every test in this file exercises ``pkb.clients.approval`` —
+the shared helper that turns one ``ApprovalRequest``/interrupt into one ``Decision`` (CL-1 … CL-22).
+Sessions retire the whole surface it exists to serve: no gates, no interrupts, no parked approvals
+anywhere, because the operator's instruction *is* the approval and every write lands immediately.
+``ApprovalRequest``, ``Decision``, ``Answer``, ``Resolution``, ``resolve``, ``offered``,
+``edited_args``, ``validate_decisions`` and the ``GATE_DECISIONS`` table this module narrows all
+exist only to serve that retired flow — including ``truncate``/``is_diff``, whose own docstring ties
+them to rendering a gate's ``ActionView.description`` before an approve/reject decision, a screen that
+no longer exists. Nothing here is a test of ``Decision`` the *type* in isolation: every assertion
+routes through ``ApprovalRequest``, ``ActionView`` or the ``/threads/{id}/interrupt`` wire shape
+``Resolution.body()`` builds. Phase 5 rebuilds whatever ``pkb.clients`` polish sessions need — a
+truncation helper for a long record entry, perhaps — and owns writing its tests fresh rather than
+resurrecting these.
+"""
+
 PARENT_THREAD = "t-1"
 """The Librarian's thread — the one a client has open and is streaming."""
 

@@ -738,6 +738,7 @@ async def test_a_stranger_is_ignored_in_a_bound_topic_too_tg95(
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_with_threaded_mode_off_no_payload_carries_a_topic_tg75(
     service: TopicService, store: SqliteTelegramStore, api: FakeBotApi
@@ -748,6 +749,13 @@ async def test_with_threaded_mode_off_no_payload_carries_a_topic_tg75(
     possible outcome of an additive change. With ``has_topics_enabled: false`` the adapter has to be
     the pre-topics build — a message, a reply, an approval keyboard and a document, none of them
     carrying a ``message_thread_id`` on the wire.
+
+    Superseded (Task 6 rebuilds this): mixed. The migration guarantee over an ordinary message and a
+    document survives untouched — TG-75 is a Layer 5 wire fact independent of sessions. The middle
+    call, ``bot._post_approval(Channel(CHAT), approval())``, exercises the approval keyboard the
+    docstring names explicitly; the operator's instruction is the approval, so no keyboard is ever
+    posted and there is nothing left to check the topic argument of. A successor needs only the two
+    surviving calls (message, document) once ``_post_approval`` is gone.
     """
     bot = adapter(service, store, api)
     await boot(bot)
@@ -1270,6 +1278,7 @@ async def test_a_stray_approval_is_disarmed_before_anything_else_tg81(
     assert api.cleared == [{"chat_id": CHAT, "message_id": api.sent[0]["message_id"]}]
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_the_stray_message_keeps_its_text_tg81(
     service: TopicService, store: SqliteTelegramStore, api: FakeBotApi
@@ -1279,6 +1288,12 @@ async def test_the_stray_message_keeps_its_text_tg81(
     A message that vanishes tells them nothing and reads as a bug in the bot; one with dead buttons
     and a correction under it tells them exactly what happened. ``deleteMessage`` also carries its
     own 48-hour window and its own error path — a second failure mode bought for a cosmetic gain.
+
+    Superseded (Task 6 rebuilds this): the scenario is posted through ``bot._post_approval`` on an
+    ``ApprovalRequest``, which the retired approval-prompt rendering deletes outright. The generic
+    "a stray in a dead topic is never deleted or edited" property has no approval-specific content in
+    it and needs no dedicated successor: TG-80's and TG-83's sibling tests already cover the same
+    stray-handling path for an ordinary reply.
     """
     bot = await topical(service, store, api)
     cooking = await channel_for(bot, api, COOKING)
@@ -1847,6 +1862,7 @@ async def test_a_message_outside_its_agents_channel_leads_with_the_agent_id_tg85
     assert api.to(GENERAL) == [f"{COOKING}\nan expert's line"]
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_a_fanout_approval_names_the_expert_and_the_derived_thread_tg85(
     service: TopicService, store: SqliteTelegramStore, api: FakeBotApi
@@ -1856,6 +1872,12 @@ async def test_a_fanout_approval_names_the_expert_and_the_derived_thread_tg85(
     A fan-out approval therefore arrived as an unattributed diff with an Approve button — and with
     per-expert channels that is an Approve button in the **Librarian's** channel for a write into
     Cooking, indistinguishable from the Librarian's own work.
+
+    Superseded (Task 6 rebuilds this): doubly retired. ``bot._post_approval``/``ApprovalRequest`` die
+    with the approval-prompt surface, and ``expert_thread_id`` names the derived-thread
+    ``<parent>::<agent>`` addressing that dies with the parent/derived split itself — a session
+    belongs to one agent directly, so there is no derived id left to attribute a keyboard by. No
+    successor: without a keyboard there is nothing to name.
     """
     bot = await topical(service, store, api)
     derived = expert_thread_id("11111111-2222-3333-4444-555555555555", COOKING)
@@ -1866,6 +1888,7 @@ async def test_a_fanout_approval_names_the_expert_and_the_derived_thread_tg85(
     assert str(button["text"]).splitlines()[0] == f"{COOKING} · {derived}"
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_a_direct_approval_names_the_expert_and_not_the_thread_id_tg85(
     service: TopicService, store: SqliteTelegramStore, api: FakeBotApi
@@ -1874,6 +1897,11 @@ async def test_a_direct_approval_names_the_expert_and_not_the_thread_id_tg85(
 
     Its **presence** is the signal — it says "this write is happening somewhere other than where you
     are reading" — so printing it always would delete the distinction it exists to make.
+
+    Superseded (Task 6 rebuilds this): the button text asserted here is drawn by
+    ``bot._post_approval`` from an ``ApprovalRequest``, both retired with the approval-prompt
+    surface. No successor: the operator's instruction is the approval, so no keyboard is ever posted
+    for a thread id to be present or absent from.
     """
     bot = await topical(service, store, api)
     cooking = await channel_for(bot, api, COOKING)
@@ -1885,6 +1913,7 @@ async def test_a_direct_approval_names_the_expert_and_not_the_thread_id_tg85(
     assert "t-direct" not in str(button["text"])
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_a_fanout_approval_is_posted_in_the_originating_channel_tg89(
     service: TopicService, store: SqliteTelegramStore, api: FakeBotApi
@@ -1894,6 +1923,11 @@ async def test_a_fanout_approval_is_posted_in_the_originating_channel_tg89(
     Under decision AA most agents have no channel at all, so routing a fan-out approval to the
     expert makes it undeliverable in the ordinary case — arch §8's headline failure with an approve
     button on it. The human is also looking at the conversation they just typed in.
+
+    Superseded (Task 6 rebuilds this): built entirely on the interrupt/resume surface —
+    ``InterruptEvent``, ``ApprovalRequest`` and ``expert_thread_id``'s derived-thread addressing, all
+    retired together (no gates, no derived threads). No successor: a fan-out with no gate has nothing
+    to interrupt and nowhere to post a keyboard.
     """
     bot = await topical(service, store, api)
     cooking = await channel_for(bot, api, COOKING)
@@ -1917,6 +1951,7 @@ async def test_a_fanout_approval_is_posted_in_the_originating_channel_tg89(
     assert all(int(entry["topic_id"]) == GENERAL for entry in api.sent)
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_pending_sends_each_keyboard_to_its_own_agents_channel_tg88(
     service: TopicService, store: SqliteTelegramStore, api: FakeBotApi
@@ -1926,6 +1961,11 @@ async def test_pending_sends_each_keyboard_to_its_own_agents_channel_tg88(
     Its agent's own channel is the only place with a claim on it and the place the human will look
     for that expert tomorrow. This is why it does not contradict TG-89: a fan-out approval has an
     originating channel and a parked one does not.
+
+    Superseded (Task 6 rebuilds this): ``/pending`` lists parked proposals, and "no gates, no parked
+    proposals, no pending queue anywhere" retires the whole surface this test exercises via
+    ``_park``'s ``pending_interrupt_id``. No successor: the operator's instruction is the approval, so
+    nothing is ever left waiting to be listed.
     """
     bot = await topical(service, store, api)
     cooking = await channel_for(bot, api, COOKING)
@@ -1941,6 +1981,7 @@ async def test_pending_sends_each_keyboard_to_its_own_agents_channel_tg88(
     assert [text for text in api.to(grilling) if "write_file" in text]
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_pending_falls_back_to_the_typing_channel_with_a_prefix_tg88(
     service: TopicService, store: SqliteTelegramStore, api: FakeBotApi
@@ -1950,6 +1991,9 @@ async def test_pending_falls_back_to_the_typing_channel_with_a_prefix_tg88(
     So the keyboard lands where the human is, prefixed — and the prefix is the only attribution a
     notification preview shows, which is why Q31 keeps a suggestion line as the fallback if it reads
     badly in practice.
+
+    Superseded (Task 6 rebuilds this): the same ``/pending``/parked-proposal surface as its sibling
+    above — retired with the gates. No successor.
     """
     bot = await topical(service, store, api)
     _park(service, "t-cook", COOKING)
@@ -1967,6 +2011,7 @@ async def test_pending_falls_back_to_the_typing_channel_with_a_prefix_tg88(
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_new_rotates_only_the_channel_it_was_typed_in_tg86(
     service: TopicService, store: SqliteTelegramStore, api: FakeBotApi
@@ -1975,6 +2020,12 @@ async def test_new_rotates_only_the_channel_it_was_typed_in_tg86(
 
     A ``/new`` that cleared every binding in the chat would silently end conversations they cannot
     name and therefore cannot get back to — and one of those may be holding a pending approval.
+
+    Superseded (Task 7 rebuilds this): ``/new`` rotates a channel's bound thread, which is the
+    channel-is-identity model dying whole ("a channel started a thread, a thread belongs to one
+    channel, ``/new``" — retired). Several channels may now hold one session at once, so "rotate the
+    binding" is not a concept sessions have; a successor, if any, belongs to whatever `/close`-then-
+    reattach shape Task 7 gives the per-topic case.
     """
     bot = await topical(service, store, api)
     cooking = await channel_for(bot, api, COOKING)
@@ -2029,6 +2080,7 @@ async def test_threads_lists_the_agent_of_the_channel_it_was_typed_in_tg86(
     assert "t-lib" not in api.texts[-1]
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_the_command_surface_is_six_and_offers_no_agent_selector_tg86(
     service: TopicService, store: SqliteTelegramStore, api: FakeBotApi
@@ -2037,6 +2089,11 @@ async def test_the_command_surface_is_six_and_offers_no_agent_selector_tg86(
 
     A mode is invisible at the moment the human hits send; a topic title is not. Building both would
     give two answers to "which expert am I talking to?", which is one more than this design tolerates.
+
+    Superseded (Task 6/7 rebuild this): the asserted set itself names two retired commands —
+    ``/new`` (channel-is-identity rotation, Task 7) and ``/pending`` (parked-proposal listing, Task
+    6). The surviving principle — a fixed, small command surface with no hidden agent-selector mode
+    — needs a successor assertion against whatever set Task 7 lands on.
     """
     bot = await topical(service, store, api)
 
@@ -2083,6 +2140,7 @@ def test_no_edit_or_answer_call_takes_a_topic_tg90() -> None:
         assert "message_thread_id" not in parameters
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_a_keyboard_in_a_topic_is_cleared_by_chat_and_message_id_tg90(
     service: TopicService, store: SqliteTelegramStore, api: FakeBotApi, connection: Any
@@ -2091,6 +2149,10 @@ async def test_a_keyboard_in_a_topic_is_cleared_by_chat_and_message_id_tg90(
 
     The prompt row carries ``topic_id`` for **re-sends**, never for edits — so an approval whose
     topic has since been deleted still loses its buttons.
+
+    Superseded (Task 6 rebuilds this): reads the ``pkb_telegram_prompts`` row an approval keyboard
+    leaves behind, via ``bot._post_approval`` — both retired with the approval-prompt surface. No
+    successor: with no keyboard ever posted, there is no prompt row and nothing to clear.
     """
     bot = await topical(service, store, api)
     cooking = await channel_for(bot, api, COOKING)
@@ -2257,6 +2319,7 @@ async def test_the_outbox_is_one_queue_for_the_whole_chat_tg94(
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_a_description_that_never_landed_anywhere_carries_no_buttons_tg56(
     service: TopicService, store: SqliteTelegramStore, api: FakeBotApi
@@ -2274,6 +2337,10 @@ async def test_a_description_that_never_landed_anywhere_carries_no_buttons_tg56(
     checked. This asserts the seam rather than the arithmetic, because the arithmetic is what a
     later change to either constant silently breaks, and what it costs is a button under a
     description the human cannot read.
+
+    Superseded (Task 6 rebuilds this): the request under test is an ``ApprovalRequest`` posted
+    through ``bot._post_approval``, both retired with the approval-prompt surface. No successor:
+    with no keyboard, TG-56's "the upload failed, so post no buttons" rule has nothing to protect.
     """
     bot = await topical(service, store, api)
     cooking = await channel_for(bot, api, COOKING)

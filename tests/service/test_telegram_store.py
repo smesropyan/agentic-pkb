@@ -413,6 +413,7 @@ async def test_rebinding_replaces_the_thread_rather_than_stacking_one_tg27(db_pa
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_rebinding_can_move_a_chat_to_another_agents_thread_tg40(db_path: Path) -> None:
     """Rebinding to an id from ``/threads`` is the supported cross-channel resume (D3).
 
@@ -420,6 +421,13 @@ async def test_rebinding_can_move_a_chat_to_another_agents_thread_tg40(db_path: 
     thread the chat has never seen — including a derived, fan-out id — and simply become the
     current one. A store that only ever appended for the agent it first saw would make arch §8's
     headline scenario unreachable from Telegram.
+
+    Superseded (Task 7 rebuilds this): the scenario is built on ``FANOUT_THREAD``'s
+    ``<t>::<agent>`` derived-thread notation and its whole point is arch §8's cross-channel resume
+    of an approval parked on a Librarian fan-out — both retired with the interrupt surface and the
+    parent/derived id split. A channel rebinding to a different session it did not create is a
+    property Task 7's ``attach``/``detach`` still needs, but the successor test wants a session id,
+    not a derived thread shape, to prove it with.
     """
     async with opened(db_path) as store:
         await store.bind(CHAT, GENERAL, THREAD, LIBRARIAN)
@@ -471,6 +479,7 @@ async def open_two_action_prompt(store: SqliteTelegramStore) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_an_unknown_handle_resolves_to_nothing_tg58(db_path: Path) -> None:
     """A handle the store does not know must produce a hand-off, never a guessed thread.
 
@@ -478,12 +487,17 @@ async def test_an_unknown_handle_resolves_to_nothing_tg58(db_path: Path) -> None
     what a press knows. If an unknown one returned anything but ``None`` the adapter would resume an
     interrupt it inferred — applying a decision the human made about one write to whichever approval
     happens to be pending now, with no undo.
+
+    Superseded (Task 6 rebuilds this): ``prompt``/the whole handle-resolves-to-an-approval surface
+    is deleted with the interrupt/resume machinery — every write lands immediately, so no press ever
+    needs to be resolved against a parked decision.
     """
     async with opened(db_path) as store:
         assert await store.prompt("deadbeef") is None
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_a_prompt_is_readable_by_an_adapter_that_never_saw_the_message_tg58(
     db_path: Path,
 ) -> None:
@@ -494,6 +508,9 @@ async def test_a_prompt_is_readable_by_an_adapter_that_never_saw_the_message_tg5
     which interrupt to expect, how many answers make a complete set — has to come back off the disk,
     or the human's tap is answered with "I cannot find that approval" on an approval that is still
     perfectly live.
+
+    Superseded (Task 6 rebuilds this): there is no resume path and nothing is ever pending, so a
+    restarted adapter has no approval row to recover.
     """
     async with opened(db_path) as store:
         await open_two_action_prompt(store)
@@ -512,6 +529,7 @@ async def test_a_prompt_is_readable_by_an_adapter_that_never_saw_the_message_tg5
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_every_message_of_an_approval_is_remembered_tg63(db_path: Path) -> None:
     """All N keyboards must die together, so all N message ids have to be recoverable.
 
@@ -519,6 +537,10 @@ async def test_every_message_of_an_approval_is_remembered_tg63(db_path: Path) ->
     message of a multi-action approval is forgotten, the human scrolls back a week later, presses
     approve on a write that already happened, and either gets a stale alert (lucky) or answers
     whatever interrupt is pending *now* (not lucky).
+
+    Superseded (Task 6 rebuilds this): there is no keyboard to clear because there is no approval to
+    render — the operator's instruction is the approval, so nothing sits in the chat waiting to be
+    pressed.
     """
     async with opened(db_path) as store:
         await open_two_action_prompt(store)
@@ -534,6 +556,7 @@ async def test_every_message_of_an_approval_is_remembered_tg63(db_path: Path) ->
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_answers_accumulate_across_separate_calls_and_across_a_restart_tg60(
     db_path: Path,
 ) -> None:
@@ -543,6 +566,9 @@ async def test_answers_accumulate_across_separate_calls_and_across_a_restart_tg6
     the human puts the phone down. Nothing may be submitted until all of them are in — so the
     accumulator is the state that decides whether ``resolve`` is called at all, and if it is dropped
     by a restart the earlier taps are gone and the only way left to finish is the TUI.
+
+    Superseded (Task 6 rebuilds this): there is no multi-action decision to accumulate — every write
+    lands on the operator's instruction alone.
     """
     async with opened(db_path) as store:
         await open_two_action_prompt(store)
@@ -558,6 +584,7 @@ async def test_answers_accumulate_across_separate_calls_and_across_a_restart_tg6
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_the_returned_answers_are_keyed_by_action_index_not_by_a_string_tg60(
     db_path: Path,
 ) -> None:
@@ -567,6 +594,9 @@ async def test_the_returned_answers_are_keyed_by_action_index_not_by_a_string_tg
     becomes ``"0"``. The set then never matches an ``action_count`` check by index, ``decisions``
     are assembled in the wrong order — or in the worst case sorted as strings, putting action 10
     before action 2 — and the human's approve lands on a different write than the one they read.
+
+    Superseded (Task 6 rebuilds this): ``request.actions``/``Decision`` and the whole indexed-answer
+    shape belong to the interrupt surface that is deleted outright.
     """
     async with opened(db_path) as store:
         await store.open_prompt(HANDLE, CHAT, GENERAL, FANOUT_THREAD, "int-7", 12)
@@ -578,6 +608,7 @@ async def test_the_returned_answers_are_keyed_by_action_index_not_by_a_string_tg
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_answering_the_same_action_twice_replaces_rather_than_appends_tg64(
     db_path: Path,
 ) -> None:
@@ -587,6 +618,9 @@ async def test_answering_the_same_action_twice_replaces_rather_than_appends_tg64
     confirm/cancel pair, so index 0 is answered twice by design. If the second answer were appended
     the set would hold N+1 entries for N actions and never equal the freshly-read request's count —
     the approval would sit parked forever with the human staring at a confirmed button.
+
+    Superseded (Task 6 rebuilds this): a destructive write is no longer a two-tap confirm/cancel
+    parked on a gate — it is the operator's instruction, executed.
     """
     async with opened(db_path) as store:
         await store.open_prompt(HANDLE, CHAT, GENERAL, THREAD, "int-9", 1)
@@ -598,6 +632,7 @@ async def test_answering_the_same_action_twice_replaces_rather_than_appends_tg64
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_a_resolved_prompt_keeps_its_answers_and_says_it_is_resolved_tg63(
     db_path: Path,
 ) -> None:
@@ -607,6 +642,9 @@ async def test_a_resolved_prompt_keeps_its_answers_and_says_it_is_resolved_tg63(
     opposite replies: TG-62's alert saying another channel already answered it, versus TG-58's
     hand-off saying the approval could not be located. The redelivery window is 24 hours and the
     message keeps its buttons until they are removed, so a second press is the expected case.
+
+    Superseded (Task 6 rebuilds this): there is no resolved/unresolved state because there is no
+    parked decision to resolve.
     """
     async with opened(db_path) as store:
         await open_two_action_prompt(store)
@@ -623,6 +661,7 @@ async def test_a_resolved_prompt_keeps_its_answers_and_says_it_is_resolved_tg63(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_two_approvals_in_one_chat_never_share_an_accumulator_tg60(db_path: Path) -> None:
     """A chat can hold more than one parked approval, and the handle is what keeps them apart.
 
@@ -630,6 +669,9 @@ async def test_two_approvals_in_one_chat_never_share_an_accumulator_tg60(db_path
     accumulator were keyed by chat or thread instead of by the opaque handle, a tap on the Grilling
     approval would count towards the Cooking one and ``resolve`` would fire early — submitting a
     decision the human never made about a file they never saw.
+
+    Superseded (Task 6 rebuilds this): there is no fan-out gate and nothing is ever parked, so no
+    chat ever holds two approvals to keep apart.
     """
     async with opened(db_path) as store:
         await store.open_prompt(HANDLE, CHAT, GENERAL, FANOUT_THREAD, "int-7", 2)
@@ -645,6 +687,7 @@ async def test_two_approvals_in_one_chat_never_share_an_accumulator_tg60(db_path
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_two_taps_arriving_together_do_not_lose_an_answer_tg60(db_path: Path) -> None:
     """The accumulator decides whether ``resolve`` is ever called, so a dropped tap parks forever.
 
@@ -658,6 +701,10 @@ async def test_two_taps_arriving_together_do_not_lose_an_answer_tg60(db_path: Pa
     The persisted row is only half the claim: ``_on_callback`` decides on the map ``record_answer``
     *returns* (``if len(answers) < prompt["action_count"]: return``), so one of the two calls has to
     come back holding both answers or ``resolve`` is still never reached.
+
+    Superseded (Task 6 rebuilds this): there is no accumulator and no ``resolve`` to race towards —
+    the concurrent-write discipline this proves is real, but it needs a successor over whatever
+    Task 6 leaves in its place, not over the deleted answer-merge.
     """
     async with opened(db_path) as store:
         await open_two_action_prompt(store)
@@ -674,6 +721,7 @@ async def test_two_taps_arriving_together_do_not_lose_an_answer_tg60(db_path: Pa
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_two_messages_recorded_together_do_not_lose_a_keyboard_tg60(db_path: Path) -> None:
     """``record_message`` had ``record_answer``'s shape, and it loses a keyboard rather than a tap.
 
@@ -683,6 +731,9 @@ async def test_two_messages_recorded_together_do_not_lose_a_keyboard_tg60(db_pat
     human scrolls back, presses approve on a write that already happened, and either gets a stale
     alert or answers whatever interrupt is pending now. Nothing about that is visible when it
     happens, so the assertion is on the ids that survive a concurrent pair, not on a serial one.
+
+    Superseded (Task 6 rebuilds this): there is no keyboard, so no message id ever needs to be
+    remembered for one.
     """
     async with opened(db_path) as store:
         await open_two_action_prompt(store)
@@ -698,8 +749,12 @@ async def test_two_messages_recorded_together_do_not_lose_a_keyboard_tg60(db_pat
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_recording_against_an_unknown_handle_conjures_no_prompt_tg58(db_path: Path) -> None:
     """A press whose row is gone must stay unanswerable — never become an approval of its own.
+
+    Superseded (Task 6 rebuilds this): there is no prompt row and no interrupt for a stale handle to
+    conjure.
 
     ``callback_data`` is attacker-visible in the sense that it survives forever in the chat and is
     replayed by Telegram for a day. If a stale handle created a row on first use, the adapter would
@@ -719,6 +774,7 @@ async def test_recording_against_an_unknown_handle_conjures_no_prompt_tg58(db_pa
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_setup_creates_exactly_the_pkb_telegram_tables_st7(db_path: Path) -> None:
     """The bot shares one file with the checkpointer, the harness store and Layer 3's own table.
 
@@ -726,6 +782,10 @@ async def test_setup_creates_exactly_the_pkb_telegram_tables_st7(db_path: Path) 
     of taking an unprefixed name is not a failed test but a corrupted graph: ``threads``,
     ``checkpoints`` and ``writes`` are the run's memory, and a colliding ``CREATE`` or an ``ALTER``
     against one of them takes out every conversation in the knowledge base at once.
+
+    Superseded (Task 6 rebuilds this): the exact owned-table set asserted here names
+    ``PROMPTS_TABLE``, which is deleted with the approval-prompt surface — the reserved-prefix
+    principle survives and needs the successor set once Task 6/7 settle what ``setup()`` creates.
     """
     await seeded_foreign_tables(db_path)
     before = catalog(db_path)
@@ -778,6 +838,7 @@ async def test_a_full_bot_session_leaves_the_foreign_tables_byte_identical_st7(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_setup_over_an_existing_file_keeps_every_row_the_bot_already_wrote_st7(
     db_path: Path,
 ) -> None:
@@ -787,6 +848,10 @@ async def test_setup_over_an_existing_file_keeps_every_row_the_bot_already_wrote
     ``_supervise`` restart, i.e. a crash loop that never gets as far as polling. A ``DROP`` first
     would be worse and quieter: the ledger empties, so every update Telegram still holds is claimed
     again and every parked approval becomes a handle nobody can resolve.
+
+    Superseded (Task 6 rebuilds this): the final assertion reads back a surviving prompt row, which
+    has no successor once approvals are gone; the ledger/binding halves of "setup never loses a row"
+    survive and need a rebuild without it.
     """
     async with opened(db_path) as store:
         await store.claim(42, CHAT, GENERAL, "message")
@@ -901,6 +966,7 @@ async def test_the_store_is_hammered_while_a_run_streams_and_never_locks_tg28(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_a_whole_approval_cycle_leaves_the_knowledge_base_byte_identical_tg28(
     tmp_path: Path,
 ) -> None:
@@ -911,6 +977,10 @@ async def test_a_whole_approval_cycle_leaves_the_knowledge_base_byte_identical_t
     structural half is about *imports*, and this is about the tree. The database deliberately lives
     **outside** ``kb_root`` (``<kb>/../pkb.sqlite``), which is the whole reason a Layer 3 table can
     hold a transport's bookkeeping at all.
+
+    Superseded (Task 6 rebuilds this): the walk this drives is named for and built around a full
+    approval cycle (``open_prompt`` … ``resolve_prompt``), which no longer exists. I3 itself is
+    permanent and needs a successor walk over whatever a full Telegram turn becomes.
     """
     kb_root = tmp_path / "kb"
     (kb_root / "topics" / "Cooking").mkdir(parents=True)

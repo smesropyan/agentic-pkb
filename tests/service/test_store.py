@@ -505,6 +505,7 @@ def proposal(proposal_id: str) -> PendingProposal:
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_a_proposal_survives_closing_and_reopening_the_service_st14(
     kb: Path, db: Path
 ) -> None:
@@ -515,6 +516,9 @@ async def test_a_proposal_survives_closing_and_reopening_the_service_st14(
     anywhere records that it evaporated: the caller has an id for a proposal that no longer exists
     and no error to show for it. So the daemon's sink writes here (AP-15) and ``list_proposals``
     reads back out of the same file, across processes.
+
+    Superseded (Task 6 rebuilds this): ``ProposalStore`` is deleted outright — the operator's
+    instruction is the approval, so nothing is ever proposed to survive a restart.
     """
     async with open_service(kb, db, config=config()) as service:
         assert isinstance(service, RuntimeService)
@@ -533,12 +537,15 @@ async def test_a_proposal_survives_closing_and_reopening_the_service_st14(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_recording_the_same_proposal_twice_leaves_one_row_st14(kb: Path, db: Path) -> None:
     """The sink is fire-and-forget, so it can be called again — a retry must not double the queue.
 
     ``RuntimeConfig.proposal_sink`` is synchronous and the daemon schedules the write as a task, so
     nothing upstream can tell whether a proposal was already recorded. ``INSERT OR IGNORE`` is what
     keeps the human's queue a set of distinct proposals rather than a count of delivery attempts.
+
+    Superseded (Task 6 rebuilds this): same as the sibling test above — ``ProposalStore`` is gone.
     """
     async with opened(kb, db) as runtime, store(runtime) as (connection, _):
         proposals = ProposalStore(connection)

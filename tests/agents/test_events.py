@@ -253,6 +253,7 @@ async def test_run_end_carries_the_root_agents_final_text_rt43(kb: Path) -> None
     assert events[-1] == RunEnd(run_id="run-1", final_text="All done.")
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_a_resumed_delegation_still_names_the_delegate_rt44(kb: Path) -> None:
     """The path a delegated approval actually takes: interrupt, human approves, resume.
@@ -260,6 +261,11 @@ async def test_a_resumed_delegation_still_names_the_delegate_rt44(kb: Path) -> N
     Nothing in the resumed stream replays the `task` call, and the delegate's namespace opens with
     a `HumanInTheLoopMiddleware.after_model` chunk that carries no metadata — so a naive normalizer
     labels the expert's write, and its own `subagent.end`, as the Librarian's.
+
+    Superseded (Phase 3 rebuilds this): its whole vehicle is the interrupt/resume surface —
+    `normalize_interrupts`, `Decision`, `to_resume_command` — retired with the gates (DESIGN.md §2:
+    no gates, no parked proposals anywhere). The attribution-survives-a-resume principle needs a
+    non-gate vehicle once there is a delegated action that pauses for something other than a gate.
     """
     graph = build_librarian(kb, delegating_script(), GATE)
     config = {"configurable": {"thread_id": "T-resume"}}
@@ -295,9 +301,14 @@ async def test_a_resumed_delegation_still_names_the_delegate_rt44(kb: Path) -> N
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_a_delegated_interrupt_yields_exactly_one_event_rt41(kb: Path) -> None:
-    """`subgraphs=True` emits `__interrupt__` twice — subgraph namespace and root — with one id."""
+    """`subgraphs=True` emits `__interrupt__` twice — subgraph namespace and root — with one id.
+
+    Superseded (Phase 3 rebuilds this): the subject is `InterruptEvent` normalization itself, the
+    interrupt-resume surface DESIGN.md §2 retires wholesale (no gates, no parked proposals anywhere).
+    """
     events = await collect(build_librarian(kb, delegating_script(), GATE), "T-interrupt")
 
     interrupts = [e for e in events if isinstance(e, InterruptEvent)]
@@ -308,9 +319,14 @@ async def test_a_delegated_interrupt_yields_exactly_one_event_rt41(kb: Path) -> 
     assert [a.tool for a in interrupts[0].request.actions] == ["write_file"]
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_two_gated_writes_in_one_message_yield_one_event_rt41(kb: Path) -> None:
-    """All interruptible calls in one AIMessage batch into a single interrupt with two actions."""
+    """All interruptible calls in one AIMessage batch into a single interrupt with two actions.
+
+    Superseded (Phase 3 rebuilds this): the batching guarantee is stated over `InterruptEvent`, the
+    interrupt-resume surface DESIGN.md §2 retires wholesale (no gates, no parked proposals anywhere).
+    """
     model = scripted(
         calls(
             call("write_file", {"file_path": "/kb/Cooking/notes/a.md", "content": "A"}, "w1"),
@@ -355,8 +371,16 @@ def test_an_unidentifiable_subgraph_is_drained_not_dropped_rt44() -> None:
     assert normalizer.drain() == []
 
 
+@pytest.mark.superseded
 def test_the_same_interrupt_id_is_never_reported_twice_rt41() -> None:
-    """The dedupe is by id and spans namespaces — feeding both emissions yields one event."""
+    """The dedupe is by id and spans namespaces — feeding both emissions yields one event.
+
+    Superseded (Phase 3 rebuilds this): its vehicle is `EventNormalizer`'s `__interrupt__` dedupe,
+    part of the interrupt-resume surface DESIGN.md §2 retires wholesale. SS-13's sibling
+    `test_identical_events_are_not_coalesced_ss13` (server-side, `MessageDelta`) already shows the
+    no-dedup-at-the-transport principle surviving with a non-interrupt vehicle; this file's own
+    dedup-by-id rule needs an analogous non-interrupt vehicle if anything here still needs one.
+    """
     from langgraph.types import Interrupt
 
     payload = {

@@ -497,6 +497,7 @@ async def test_new_in_one_topic_leaves_every_other_channel_alone_tg27(db_path: P
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_the_ledger_and_the_prompt_row_carry_the_topic_beside_the_chat_tg29(
     db_path: Path,
 ) -> None:
@@ -506,6 +507,10 @@ async def test_the_ledger_and_the_prompt_row_carry_the_topic_beside_the_chat_tg2
     and the only action the notice supports — re-send it — needs the conversation it belonged to. The
     same holds for a parked approval: ``/pending`` and TG-82's repair both need to know which channel
     a keyboard belongs to, and ``callback_data`` has 64 bytes and cannot carry it (TG-57).
+
+    Superseded (Task 6 rebuilds this): the prompt-row half dies with the approval-prompt surface —
+    the ledger's own "the topic travels beside the chat" half survives and keeps its own coverage in
+    ``test_telegram_store.py``'s ledger tests, so nothing here needs a lone successor.
     """
     async with opened(db_path) as store:
         await store.claim(41, CHAT, COOKING_TOPIC, "message")
@@ -806,6 +811,7 @@ async def test_a_retirement_in_one_chat_does_not_silence_the_same_expert_in_anot
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_a_pre_topics_database_keeps_its_binding_its_ledger_and_its_approval_tg28(
     db_path: Path,
 ) -> None:
@@ -816,6 +822,11 @@ async def test_a_pre_topics_database_keeps_its_binding_its_ledger_and_its_approv
     the prompt is a keyboard sitting live in the chat that a human may press hours later, and its
     ``message_ids`` are the only way those buttons are ever taken off. Every one of them becomes a
     **General** row, because a chat that had no topics had exactly one channel and this is it.
+
+    Superseded (Task 6 rebuilds this): the approval leg (the ``prompt`` row and its fields) has no
+    successor once the approval-prompt table is gone; the binding-survives-an-upgrade and the
+    ledger-survives-an-upgrade legs are real migration-durability properties that need a rebuild
+    without it, not a deletion.
     """
     await pre_topics_database(db_path)
 
@@ -862,6 +873,7 @@ async def test_an_upgraded_deployment_resumes_its_conversation_rather_than_start
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_a_button_from_before_the_upgrade_still_answers_its_approval_tg58(
     db_path: Path,
 ) -> None:
@@ -872,6 +884,9 @@ async def test_a_button_from_before_the_upgrade_still_answers_its_approval_tg58(
     approval that is perfectly live — and because the row is the only index a press carries
     (``callback_data`` holds 64 bytes, TG-57), there is nothing else to find it by. The row's new
     ``topic_id`` defaulting to General is what puts the reply back where the keyboard is.
+
+    Superseded (Task 6 rebuilds this): there is no keyboard left over from a previous version to
+    answer, because there is no approval-prompt surface left to post one.
     """
     await pre_topics_database(db_path)
     api = FakeBotApi()
@@ -905,6 +920,7 @@ async def test_a_button_from_before_the_upgrade_still_answers_its_approval_tg58(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_the_migration_adds_columns_and_rebuilds_nothing_tg28(db_path: Path) -> None:
     """ST-3 measured what a long transaction on this connection costs, so the upgrade is three
     short statements and never a table rewrite.
@@ -920,6 +936,11 @@ async def test_the_migration_adds_columns_and_rebuilds_nothing_tg28(db_path: Pat
     ``handle``, so its rows carry implicit rowids with gaps wherever an approval was resolved and
     cleaned up, and ``INSERT INTO new SELECT … FROM old`` renumbers them from 1. The gap surviving
     is the one thing only an in-place alter can do.
+
+    Superseded (Task 6 rebuilds this): the proof vehicle *is* ``PROMPTS_TABLE`` — its rowid-gap
+    shape is the whole reason this table rather than another was chosen — and it is deleted with the
+    approval-prompt surface. The no-rebuild-on-``ADD COLUMN`` principle is permanent and needs a
+    successor proven against a table Task 6 leaves standing, such as the ledger.
     """
     await pre_topics_database(db_path)
     async with connected(db_path) as connection:
@@ -955,6 +976,7 @@ async def test_the_migration_adds_columns_and_rebuilds_nothing_tg28(db_path: Pat
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_an_upgraded_file_and_a_fresh_one_have_the_same_columns_in_the_same_order_tg28(
     db_path: Path, tmp_path: Path
 ) -> None:
@@ -964,6 +986,10 @@ async def test_an_upgraded_file_and_a_fresh_one_have_the_same_columns_in_the_sam
     whatever order the schema literal declares. Let those disagree and every positional read is
     correct on one half of the deployments and silently transposed on the other — a chat id read as
     a topic id, which is a message filed by the wrong expert.
+
+    Superseded (Task 6 rebuilds this): the loop below checks ``PROMPTS_TABLE`` beside
+    ``LEDGER_TABLE`` and cannot be split without editing it — the ledger's half of "same columns,
+    same order" survives and needs a rebuild that drops the deleted table from the loop.
     """
     await pre_topics_database(db_path)
     async with opened(db_path):
@@ -1022,12 +1048,17 @@ async def test_a_rotated_thread_is_not_resurrected_by_the_next_restart_tg28(db_p
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_setup_on_an_upgraded_file_is_safe_to_run_on_every_start_tg28(db_path: Path) -> None:
     """SQLite has no ``ADD COLUMN IF NOT EXISTS``, and a second attempt is a hard error.
 
     That error would land on the daemon's *second* boot rather than its first — the worst possible
     place to learn about it, because the deployment looked healthy for a whole session and now
     crash-loops with a schema error nobody changed anything to cause.
+
+    Superseded (Task 6 rebuilds this): the last assertion reads back a surviving prompt row, which
+    has no successor once the approval-prompt table is gone; the binding half of "setup is safe to
+    repeat" survives and needs a rebuild without it.
     """
     await pre_topics_database(db_path)
 

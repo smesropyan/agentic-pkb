@@ -209,6 +209,7 @@ def test_every_event_kind_round_trips_to_an_equal_event_dc1() -> None:
     )
 
 
+@pytest.mark.superseded
 def test_the_nested_approval_survives_the_round_trip_dc1() -> None:
     """The one frame a human acts on carries a whole object graph, and all of it must survive.
 
@@ -218,6 +219,10 @@ def test_the_nested_approval_survives_the_round_trip_dc1() -> None:
     which buttons exist, and ``thread_id`` is where the resume must be posted. A shallow decode that
     left ``request`` as a raw ``dict`` would still satisfy a type check on ``Frame`` and would fail
     only in the modal, on an irreversible write (D6).
+
+    Superseded (Phase 5 rebuilds this): its vehicle is ``InterruptEvent``/``ApprovalRequest``, both
+    retired with the interrupt/resume surface — no gate ever raises, so there is no nested object
+    graph left for a frame to carry.
     """
     request = approval()
     decoded = decode(encoder().event(InterruptEvent(run_id=RUN, request=request)))
@@ -327,6 +332,7 @@ def test_a_key_driven_decoder_destroys_subagent_end_dc2() -> None:
     assert decoded.event == SubagentEnd(run_id=RUN, agent_id=COOKING, status="failed")
 
 
+@pytest.mark.superseded
 def test_field_driven_stripping_keeps_the_terminal_status_off_the_dataclass_dc2() -> None:
     """The mirror image: ``run.end`` carries a ``status`` no dataclass has a slot for.
 
@@ -334,6 +340,13 @@ def test_field_driven_stripping_keeps_the_terminal_status_off_the_dataclass_dc2(
     because ``astream`` returns normally when a graph interrupts. Keeping only keys that are fields
     of the target class is what lets one decoder handle both meanings without a per-event special
     case, and it is why a tenth event kind needs no client change at all.
+
+    Superseded (Phase 5 rebuilds this): the whole "parked-or-done" rationale is the interrupt/resume
+    surface — no gate means no run is ever left waiting, so ``status`` collapses to "completed" and
+    there is no ``"interrupted"`` value left for this to prove flows through. The generic "envelope
+    fields never land on the dataclass" shape is covered on the ``subagent.end`` arm by
+    `test_a_key_driven_decoder_destroys_subagent_end_dc2`, which needs no interrupt to make its
+    point.
     """
     enc = encoder()
     enc.event(InterruptEvent(run_id=RUN, request=approval()))
@@ -422,6 +435,7 @@ def test_an_unknown_event_name_is_skipped_and_the_stream_survives_dc4(
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_the_envelope_reaches_the_client_beside_the_event_dc5() -> None:
     """``thread_id``, ``seq``, ``status`` and ``code`` belong to no dataclass, and all four matter.
 
@@ -430,6 +444,11 @@ def test_the_envelope_reaches_the_client_beside_the_event_dc5() -> None:
     finished, and whether it stopped because somebody cancelled it. Layer 3's own suite found and
     fixed that bug server-side; returning a bare event re-introduces it one layer up, where it
     renders a thread waiting on a human as "done" and nobody ever goes back to it.
+
+    Superseded (Phase 5 rebuilds this): mixed — the first half exercises ``"interrupted"`` via a
+    prior ``InterruptEvent``, and the second half derives a fan-out frame's ``thread_id`` from
+    ``expert_thread_id``, the derived-thread scheme retired along with the parent/derived split.
+    ``seq`` and ``run_id`` surviving beside the event is real and needs a session-shaped successor.
     """
     enc = encoder()
     enc.event(InterruptEvent(run_id=RUN, request=approval()))
@@ -485,6 +504,7 @@ def test_only_run_end_and_run_error_are_terminal_dc14() -> None:
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_all_four_run_statuses_reach_the_client_dc6() -> None:
     """Four, not three — and two of them ride on ``run.error``, which §5.3's wording hides.
 
@@ -493,6 +513,10 @@ def test_all_four_run_statuses_reach_the_client_dc6() -> None:
     three-way match either raises or falls through to "done" on **every** provider failure — the
     most common failure a human will actually see, and the one where showing "done" over a turn that
     filed nothing is worst.
+
+    Superseded (Phase 5 rebuilds this): pins ``RUN_STATUSES`` at four values, exercising
+    ``"interrupted"`` via a parked ``InterruptEvent`` — both retired with the gate. Three statuses
+    (``completed``, ``cancelled``, ``error``) survive and need a successor golden without the fourth.
     """
     completed = encoder()
     parked = encoder()
@@ -582,6 +606,7 @@ def test_seq_orders_one_response_and_means_nothing_across_two_dc16() -> None:
     assert (original.seq, replayed.seq) == (1, 0)
 
 
+@pytest.mark.superseded
 def test_an_attach_stream_carries_no_handle_and_a_delegate_agent_dc17() -> None:
     """``routes.attach`` passes ``started=False``, so frame 0 of an attach is whatever came next.
 
@@ -590,6 +615,10 @@ def test_an_attach_stream_carries_no_handle_and_a_delegate_agent_dc17() -> None:
     frame's ``agent_id`` on a fan-out is the *delegate*: a client that titles the pane from it
     labels a Librarian turn "Cooking", and the run's own agent has to come from
     ``GET /threads/{id}`` instead.
+
+    Superseded (Phase 5 rebuilds this): the "delegate agent" half is a fan-out frame's ``thread_id``
+    derived via ``expert_thread_id`` — the parent/derived split, retired outright. "No handle on an
+    attach" is a real, surviving property of `run.started` and needs a session-shaped successor.
     """
     enc = encoder()
     frames = [
@@ -611,6 +640,7 @@ def test_an_attach_stream_carries_no_handle_and_a_delegate_agent_dc17() -> None:
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_the_interrupt_frame_and_the_thread_detail_parse_identically_cl19() -> None:
     """One approval, two routes into a client, and they must not be able to disagree.
 
@@ -619,6 +649,12 @@ def test_the_interrupt_frame_and_the_thread_detail_parse_identically_cl19() -> N
     phone at lunch (arch §8, D3). Two parsers are two answers to "what am I approving", and the
     second one is always the one nobody tests — so the modal opened from history would render
     different args, or route the resume to a different thread, from the one opened live.
+
+    Superseded (Phase 5 rebuilds this): the whole "§ one parser for both routes an approval reaches a
+    client by (CL-19)" section — ``decode_request`` exists only to parse ``ApprovalRequest``/
+    ``pending_interrupt``, and nothing is ever pending once the operator's instruction is the
+    approval. `pkb.clients.approval`'s own tests (a separate file, not in scope here) cover the
+    decision-helper half of this same retirement.
     """
     request = approval()
     frame = decode(encoder().event(InterruptEvent(run_id=RUN, request=request)))
@@ -636,6 +672,7 @@ def test_the_interrupt_frame_and_the_thread_detail_parse_identically_cl19() -> N
     assert (from_detail.thread_id, from_detail.interrupt_id) == (request.thread_id, "i-1")
 
 
+@pytest.mark.superseded
 def test_the_parser_keeps_arguments_as_opaque_strings_cl19() -> None:
     """``args`` crosses JSON as strings and comes back as strings — no helpful re-typing.
 
@@ -668,6 +705,7 @@ def test_the_parser_keeps_arguments_as_opaque_strings_cl19() -> None:
     assert request.actions[0].allowed_decisions == ("approve", "reject")
 
 
+@pytest.mark.superseded
 def test_a_decision_outside_the_literal_is_dropped_cl19() -> None:
     """``allowed_decisions`` is typed ``tuple[DecisionType, ...]`` and the wire cannot be trusted.
 

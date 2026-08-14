@@ -287,6 +287,7 @@ def button_data(api: AuditBotApi, verb: str) -> str:
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 async def test_a_stray_keyboard_is_disarmed_even_when_the_death_is_already_known_tg81(
     service: StubService, store: SqliteTelegramStore, api: AuditBotApi
 ) -> None:
@@ -300,6 +301,12 @@ async def test_a_stray_keyboard_is_disarmed_even_when_the_death_is_already_known
     the death already recorded, and an early return leaves an **Approve button for an irreversible
     write live in General under Cooking's name** — indistinguishable, in scrollback, from the
     Librarian's own work, on a system with no undo (D6).
+
+    Superseded (Task 6 rebuilds this): the race is driven entirely through ``bot._post_approval`` on
+    an ``ApprovalRequest``, retired with the approval-prompt surface. No successor: with no keyboard
+    ever posted, there is no button to disarm. The dedup-vs-correction distinction this race exposed
+    (``_channel_died``'s early return) may still matter for a future channel-carrying keyboard — the
+    picker's, say — but that is a new test against new code, not this one.
     """
     bot = await make_bot(service, store, api)
     await store.open_channel(CHAT, COOK_TOPIC, COOKING)
@@ -316,6 +323,7 @@ async def test_a_stray_keyboard_is_disarmed_even_when_the_death_is_already_known
     assert [m.text for m in api.landed_in(GENERAL) if m.armed] == []
 
 
+@pytest.mark.superseded
 async def test_the_second_stray_is_explained_and_the_repair_is_still_not_repeated_tg84(
     service: StubService, store: SqliteTelegramStore, api: AuditBotApi
 ) -> None:
@@ -326,6 +334,12 @@ async def test_the_second_stray_is_explained_and_the_repair_is_still_not_repeate
     correction. The *repair* stays once per channel: TG-84 exists because a fan-out with eight queued
     frames must not produce eight ``createForumTopic`` calls and eight notifications at exactly the
     moment something needs approving.
+
+    Superseded (Task 6 rebuilds this): same race as its sibling above, through ``bot._post_approval``
+    on an ``ApprovalRequest``. No successor: no keyboard, no "armed stray" case to explain. TG-84's
+    once-per-channel repair itself is exercised without a keyboard elsewhere in
+    ``test_telegram_topics.py`` (``test_a_dead_channel_is_never_addressed_twice_tg84``), which is
+    unaffected.
     """
     bot = await make_bot(service, store, api)
     await store.open_channel(CHAT, COOK_TOPIC, COOKING)
@@ -350,6 +364,7 @@ async def test_the_second_stray_is_explained_and_the_repair_is_still_not_repeate
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 async def test_the_confirm_step_is_addressed_and_named_like_the_approval_it_belongs_to_tg85(
     service: StubService,
     store: SqliteTelegramStore,
@@ -363,6 +378,10 @@ async def test_the_confirm_step_is_addressed_and_named_like_the_approval_it_belo
     exposure line (TG-85(b)). On a retired channel the human therefore received a bare *"There is no
     undo for this. Confirm?"* with a live **Yes, do it** button in General, naming no expert and no
     write — beside the Librarian's messages, for a delete in Cooking's tree.
+
+    Superseded (Task 6 rebuilds this): the two-tap confirm step is the interrupt/decision surface by
+    definition — the operator's instruction is the approval, so there is no second tap to confirm.
+    No successor: this scenario cannot recur once every write lands immediately.
     """
     await store.open_channel(CHAT, COOK_TOPIC, COOKING)
     await store.retire_channel(CHAT, COOKING)  # TG-82: given up on before this daemon started
@@ -385,6 +404,7 @@ async def test_the_confirm_step_is_addressed_and_named_like_the_approval_it_belo
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 async def test_an_approvals_outcome_follows_its_agent_to_the_repaired_topic_tg84(
     service: StubService,
     store: SqliteTelegramStore,
@@ -399,6 +419,11 @@ async def test_an_approvals_outcome_follows_its_agent_to_the_repaired_topic_tg84
     already moved, so re-address and create nothing"* — can only fire for a send that names its
     expert; unattributed, this line was pinned to General for the life of the daemon and every later
     message on that prompt's channel with it.
+
+    Superseded (Task 6 rebuilds this): the "outcome of a press" is a decision on an
+    ``ApprovalRequest``, resolved through ``store.open_prompt`` and ``bot._on_callback`` — the whole
+    interrupt/decision surface. No successor: with every write landing immediately, there is no press
+    and no decision outcome to re-address after a restart.
     """
     await store.open_channel(CHAT, COOK_TOPIC, COOKING)
     await store.rebind_channel(CHAT, COOKING, LIVE_TOPIC)  # the repair the last process performed
@@ -469,6 +494,7 @@ async def drain(bot: TelegramAdapter) -> None:
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 async def test_only_the_send_family_ever_carries_a_topic_out_of_this_module_tg90(
     service: StubService, store: SqliteTelegramStore, api: AuditBotApi
 ) -> None:
@@ -478,6 +504,16 @@ async def test_only_the_send_family_ever_carries_a_topic_out_of_this_module_tg90
     exactly one place it may leave the process (``_api_send``) plus ``send_document``'s keyword. If a
     third appears, TG-80's comparison has to appear beside it or the new call is a silent relocation
     nobody checks.
+
+    Superseded (Task 6 rebuilds this): mixed. The opening static grep over ``telegram.py`` (exactly
+    two ``topic_id=target.topic_id`` call sites) is generic and survives untouched. Reaching a
+    ``clear_keyboard`` call to check its shape requires a keyboard to disarm, and the only one this
+    file can produce is an ``ApprovalRequest`` posted through ``bot._post_approval`` and pressed via
+    ``bot._on_callback`` — both retired with the approval-prompt surface, and inseparable from the
+    static half without touching the assertion. TG-90's "no edit/clear call ever takes a topic"
+    property is pinned statically elsewhere too (``test_no_edit_or_answer_call_takes_a_topic_tg90``
+    in ``test_telegram_topics.py``, unaffected); a dynamic successor needs a different keyboard
+    source once one exists.
     """
     source = Path("src/pkb/server/telegram.py").read_text(encoding="utf-8")
     call_sites = [
@@ -497,6 +533,7 @@ async def test_only_the_send_family_ever_carries_a_topic_out_of_this_module_tg90
     assert all("topic" not in entry for entry in api.of("clear_keyboard"))
 
 
+@pytest.mark.superseded
 async def test_a_press_from_a_relocated_message_still_resolves_the_rows_thread_tg57(
     service: StubService,
     store: SqliteTelegramStore,
@@ -509,6 +546,10 @@ async def test_a_press_from_a_relocated_message_still_resolves_the_rows_thread_t
     in comes from the durable row and the thread from the row's ``thread_id`` — never from where the
     human happened to be standing. A stray relocated into General is exactly the case where those two
     disagree, and resolving by the query's location would answer the wrong interrupt.
+
+    Superseded (Task 6 rebuilds this): the button press resolves an ``ApprovalRequest`` to a
+    ``resume`` call against ``PROMPTS_TABLE`` — the interrupt/resume surface entire. No successor:
+    with no keyboard and no ``resume``, there is no press to relocate.
     """
     await store.open_channel(CHAT, COOK_TOPIC, COOKING)
     api.topics[CHAT] = set()  # deleted before the approval is posted

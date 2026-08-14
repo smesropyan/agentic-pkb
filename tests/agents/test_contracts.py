@@ -358,12 +358,22 @@ def test_the_stub_service_imports_only_the_seam_and_the_standard_library_i2(tmp_
     assert {module for module in modules if module.startswith("pkb")} == {"pkb.contracts"}
 
 
+@pytest.mark.superseded
 def test_a_stub_service_compiles_and_runs_with_the_harness_banned_i2(tmp_path: Path) -> None:
     """The acceptance test for the seam: a `PkbService` over the runtime plus one SQL table.
 
     Run in a subprocess whose `sys.meta_path` refuses `deepagents`, `langgraph`, `langchain` and
     `langchain_core` outright. A single missing type in `pkb.contracts` shows up here as an
     ImportError rather than as an architectural argument two layers later.
+
+    Superseded (Task 3/6 rebuild this, mirroring `tests/service/test_seam.py`'s sv4 sibling):
+    ``BANNED_DRIVER`` is entirely thread-CRUD-and-gate shaped — ``create_thread(...,
+    channel="telegram")``, ``list_threads``, ``get_thread(...).origin_channel``,
+    ``pending_approval``, ``delete_thread`` — all retired by the sessions model (DESIGN.md §2: a
+    session belongs to one agent directly, channels attach rather than stamp an ``origin_channel``,
+    no gate to park on, and nothing deletes a session). The I2 principle it proves — the seam
+    compiles and runs with the harness genuinely banned — is permanent; ``STUB_SOURCE`` and
+    ``BANNED_DRIVER`` need a session-shaped rewrite once ``pkb.service.sessions`` exists.
     """
     stub = write_stub(tmp_path)
     driver = tmp_path / "driver.py"
@@ -378,9 +388,18 @@ def test_a_stub_service_compiles_and_runs_with_the_harness_banned_i2(tmp_path: P
     assert result.stdout.strip().endswith("OK")
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_the_same_stub_drives_a_real_runtime_i2(kb: Path, tmp_path: Path) -> None:
-    """Compiling against the seam is not enough; the surface has to be the one that exists."""
+    """Compiling against the seam is not enough; the surface has to be the one that exists.
+
+    Superseded (Task 3/6 rebuild this, same reasons as this file's harness-banned sibling above):
+    ``channel="telegram"``, ``pending_approval``, per-agent ``list_threads``, and ``delete_thread``
+    (there is no session equivalent — "nothing deletes a session") are all thread-CRUD-and-gate
+    shaped and retired by the sessions model. The catalog/run/history assertions that do not name a
+    thread by CRUD operation survive in spirit; this whole test is entangled with the ones that do
+    not, so marked whole.
+    """
     module = load_stub(tmp_path)
     model = scripted(says("filed under Cooking"))
 
@@ -421,8 +440,18 @@ def test_the_runtime_is_the_only_name_pkb_agents_exports_5_2() -> None:
     assert package.__all__ == ["PkbRuntime", "RuntimeConfig"]
 
 
+@pytest.mark.superseded
 def test_the_service_protocols_methods_all_exist_on_the_runtime_5_2(tmp_path: Path) -> None:
-    """A rename on either side is a broken seam; here it is a failing assertion instead."""
+    """A rename on either side is a broken seam; here it is a failing assertion instead.
+
+    Superseded (Task 6 rebuilds this): ``required`` is derived from the stub's own ``Runtime``
+    Protocol, which names ``resume`` and ``pending_approval`` — the interrupt-resume surface Task 6
+    removes from ``PkbRuntime`` entirely ("the runtime exposes no interrupt-resume surface" is one of
+    Task 6's own failing tests). Once those methods are gone, ``hasattr(PkbRuntime, "resume")`` is
+    false and this assertion fails by design. The seam-methods-exist-on-the-runtime principle
+    survives; whoever rebuilds the stub for sessions (Task 3) inherits re-asserting it over the
+    surviving member set.
+    """
     from pkb.agents.runtime import PkbRuntime
 
     module = load_stub(tmp_path)

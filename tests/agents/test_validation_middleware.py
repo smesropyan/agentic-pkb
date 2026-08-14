@@ -694,11 +694,22 @@ def test_the_escalation_still_runs_the_after_agent_chain_mw16(kb: Path) -> None:
     assert "sear.md" in index
 
 
+@pytest.mark.superseded
 def test_the_escalation_survives_the_hitl_hook_sharing_the_chain_mw15(kb: Path) -> None:
     """The graph an expert actually compiles has `interrupt_on`, which appends
     `HumanInTheLoopMiddleware` — whose `after_model` shares the chain with this one and runs first
     (reverse-registration order). The jump has to end the run from that position too, or the
-    escalation would work in this suite and loop in production."""
+    escalation would work in this suite and loop in production.
+
+    Superseded (Phase 3 rebuilds this): the premise — "the graph an expert actually compiles has
+    `interrupt_on`" — is exactly what Task 6 deletes at the composition point; production graphs no
+    longer wire `HumanInTheLoopMiddleware` in at all, so there is no shared `after_model` position
+    left to survive from. The underlying claim this test protects (the attempt-bound escalation
+    still ends the run cleanly) is already covered gate-free by
+    `test_the_run_escalates_to_the_human_instead_of_looping_mw15`; this test's specific worry — a
+    second `after_model` hook sharing the chain — has no successor because the hook it shared with
+    is gone.
+    """
     spy = FlushSpy(kb)
     model = scripted(
         *(calls(write(NOTE_PATH, NO_FRONTMATTER, f"c{i}")) for i in range(1, 6)),

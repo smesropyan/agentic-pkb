@@ -278,6 +278,7 @@ def test_an_empty_knowledge_base_still_compiles_a_working_librarian_lb6(empty_kb
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_topic_creation_is_gated_and_then_scaffolds_through_layer_one_lb7(kb: Path) -> None:
     """LB-7: propose → interrupt → `scaffold_topic` under the lock. Nothing is created unattended.
 
@@ -286,6 +287,14 @@ def test_topic_creation_is_gated_and_then_scaffolds_through_layer_one_lb7(kb: Pa
     only thing standing between a model's idea and six new files. It stays on the Librarian because a
     gap is what the Librarian is uniquely placed to notice: it is the one agent that sees the whole
     catalog and nothing else.
+
+    Superseded (Phase 3 rebuilds this): the whole mechanism pinned here — `state.interrupts`,
+    `HumanInTheLoopMiddleware`'s review config, and resuming via
+    `Command(resume={"decisions": [{"type": "approve"}]})` — is the gate/interrupt surface Task 6
+    removes outright ("the operator's instruction is the approval — gates and proposals removed").
+    Under sessions a `create_topic` call lands during the turn like any other write; LB-7's actual
+    safety claim, that topic creation is never unattended, needs a session-scoped successor once
+    Task 6/7 land, because nothing here proves an un-gated `create_topic` still behaves safely.
     """
     log: list[ScaffoldResult] = []
     model = scripted(
@@ -320,8 +329,15 @@ def test_topic_creation_is_gated_and_then_scaffolds_through_layer_one_lb7(kb: Pa
     assert (kb / "Physics" / "notes" / "summary.md").is_file()
 
 
+@pytest.mark.superseded
 def test_a_rejected_topic_proposal_creates_nothing_lb7(kb: Path) -> None:
-    """LB-7: `reject` is a real answer — the human declines and the tree is untouched."""
+    """LB-7: `reject` is a real answer — the human declines and the tree is untouched.
+
+    Superseded (Phase 3 rebuilds this): `reject` is only meaningful as an interrupt-resume decision,
+    and Task 6 deletes that surface along with the `create_topic` gate it exercises here — there is
+    no resume path to reject once writes land unparked. Whatever operator-declines-an-idea flow
+    sessions provide instead needs its own test; nothing here carries over.
+    """
     log: list[ScaffoldResult] = []
     model = scripted(
         calls(call("create_topic", {"name": "Physics", "title": "P", "description": "d"}, "t2")),

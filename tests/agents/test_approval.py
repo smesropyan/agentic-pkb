@@ -68,6 +68,25 @@ GATE = {
     }
 }
 
+pytestmark = pytest.mark.superseded
+"""Superseded (Phase 3 rebuilds this): every test in this file exercises the interrupt/resume
+surface directly — `normalize_interrupt(s)`, `validate_decisions`, `to_resume_command`,
+`propose_only_command`, `ApprovalRequest`, `Decision`, `InvalidDecisionError`, `StaleInterruptError`
+— all retired with the gates (DESIGN.md §2: no gates, no parked proposals, no pending queue
+anywhere; the operator's instruction is the approval). Task 6 turns the gate composition off at the
+point `build_expert`/`build_librarian` call into `create_deep_agent`, so nothing in production ever
+produces an `Interrupt` for this module to normalize; RT-30's own delete-gate rule ("approving
+removes it, rejecting leaves it") has no gate left to drive it through, and RT-42's propose-only mode
+is one of the three named-retired approval modes (`propose_only`/`interactive`) outright. Whole-file
+marked because every test here is centrally about the approval/gate mechanism — normalizing an
+interrupt, validating a decision, building a resume command, or driving RT-30's delete gate end to
+end — not merely a test that happens to construct one alongside other machinery. §5.1's own
+principle (one shared decision validator, reachable from the seam with the harness banned) is
+permanent, but its subject — a `Decision` against an `ApprovalRequest` — is exactly what is retired,
+so it has nothing left to validate until a successor approval shape exists, if one ever does; the
+plan is silent beyond "the operator's instruction is the approval."
+"""
+
 NOTE_REL = "Cooking/notes/reverse-sear.md"
 NOTE_PATH = f"{KB_MOUNT}{NOTE_REL}"
 VALID_NOTE = """---

@@ -933,6 +933,7 @@ async def test_a_double_tap_on_one_row_creates_one_topic_tg101(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_drawing_a_keyboard_writes_no_row_tg97(
     service: TopicService, store: SqliteTelegramStore, api: PickyBotApi, connection: Any
 ) -> None:
@@ -941,6 +942,11 @@ async def test_drawing_a_keyboard_writes_no_row_tg97(
 
     An approval needs the row because a live interrupt on a specific thread is 97 bytes (P-28) and
     cannot be re-derived. An agent id is a catalog name and fits.
+
+    Superseded (Task 6 rebuilds this): ``pkb_telegram_prompts`` is the approval-prompt table and
+    dies with the interrupt/resume surface, so the query this test runs has no table to hit. The
+    contrast it draws — the picker indexes nothing durable, an approval had to — no longer has a
+    second side; a successor needs no table at all to prove the picker writes nothing of its own.
     """
     bot = await topical(service, store, api)
 

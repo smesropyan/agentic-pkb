@@ -517,6 +517,7 @@ async def test_a_streaming_response_holds_no_body_until_it_is_asked_dc12() -> No
             assert response.json()["code"] == "thread_busy"
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_three_conditions_share_409_and_only_the_code_tells_them_apart_dc12() -> None:
     """Wait, render the approval, refetch — three reactions behind one status code.
@@ -525,6 +526,14 @@ async def test_three_conditions_share_409_and_only_the_code_tells_them_apart_dc1
     the time; one that branched on ``detail`` would break the first time a message was reworded. The
     codes come from ``pkb.contracts``' own table, so the daemon, the MCP adapter and this client
     cannot disagree about what a refusal is called.
+
+    Superseded (Phase 5 rebuilds this): mixed — two of the three codes are the interrupt/resume
+    surface retired outright (``ApprovalPendingError``: a thread parked on an approval;
+    ``StaleInterruptError``: an interrupt id that no longer matches what is pending), and sessions
+    never park, so neither condition exists to distinguish. ``ThreadBusyError`` and the trailing
+    404-on-unknown-thread check are ordinary run/lookup concerns that survive; marked whole because
+    the loop and the ``set(seen) == {...}`` assertion cannot be split without touching the test body.
+    A successor needs a session-shaped 409 table with at most one retired arm removed.
     """
     service = ScriptedRuns([RunEnd(RUN, "filed")])
     async with daemon(service) as client:
@@ -554,6 +563,7 @@ async def test_three_conditions_share_409_and_only_the_code_tells_them_apart_dc1
         )
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_only_thread_busy_is_retryable_and_the_body_says_so_dc13() -> None:
     """Retryability is a fact the daemon states, never one the client infers from a status.
@@ -561,6 +571,11 @@ async def test_only_thread_busy_is_retryable_and_the_body_says_so_dc13() -> None
     All three 409s would look retryable to a client reasoning from the number. Retrying an
     ``approval_pending`` spins forever against a thread waiting on the very human doing the
     retrying, which is a UI that appears to hang for a reason the human is holding in their hand.
+
+    Superseded (Phase 5 rebuilds this): the same mixed loop as the sibling DC-12 test — two of the
+    three codes (``approval_pending``, ``stale_interrupt``) are the retired interrupt/resume surface
+    and never fire once nothing parks. ``thread_busy``'s retryable-true fact survives; marked whole
+    because the loop cannot be split without touching the test body.
     """
     service = ScriptedRuns([RunEnd(RUN, "filed")])
     async with daemon(service) as client:
@@ -733,6 +748,7 @@ async def test_the_client_stops_reading_at_the_first_terminal_frame_dc14() -> No
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_an_attach_stream_carries_no_run_started_dc17() -> None:
     """``routes.attach`` passes ``started=False``, so frame 0 of an attach is whatever is happening.
@@ -741,6 +757,12 @@ async def test_an_attach_stream_carries_no_run_started_dc17() -> None:
     thread the frames belong to — has to come from the envelope of any frame instead. A client that
     waited for ``run.started`` before enabling cancel would leave the button dead for exactly the
     run a human wants to stop.
+
+    Superseded (Phase 5 rebuilds this): the scenario is a Librarian thread whose fan-out produces a
+    frame from ``COOKING``, and the assertion pins ``replayed.thread_id == expert_thread_id(...)`` —
+    the derived-thread `<parent>::<agent>` addressing retired wholesale with the parent/derived
+    split. The "no run.started on attach" principle likely survives; it needs a session-shaped
+    scenario, not this fan-out one, to prove it again.
     """
     delta = MessageDelta(RUN, COOKING, "sear it")
     service = ScriptedRuns([delta, RunEnd(RUN, "filed")], hold_after=1)
@@ -763,6 +785,7 @@ async def test_an_attach_stream_carries_no_run_started_dc17() -> None:
         await collect(live)
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_the_runs_own_agent_comes_from_the_thread_not_the_attached_frame_dc17() -> None:
     """On a fan-out the first attached frame belongs to the *delegate*, not to the run.
@@ -770,6 +793,10 @@ async def test_the_runs_own_agent_comes_from_the_thread_not_the_attached_frame_d
     ``SseEncoder`` stamps each frame with the agent that emitted it and derives that agent's own
     thread (SS-10), so a client that titled the pane from the first frame it attached to would label
     a Librarian turn "Cooking" and file the human's next message against the wrong conversation.
+
+    Superseded (Phase 5 rebuilds this): the whole scenario is a Librarian fan-out to a delegate on
+    its own SS-10-derived thread — retired entirely, no parent/derived split in the session model, so
+    there is no delegate frame on a different agent's derived thread to mislabel.
     """
     service = ScriptedRuns(
         [MessageDelta(RUN, COOKING, "sear it"), RunEnd(RUN, "filed")], hold_after=1
@@ -817,6 +844,7 @@ async def test_a_finished_run_has_no_tail_while_the_thread_keeps_its_history_dc1
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_every_route_the_tui_uses_keeps_its_ids_byte_for_byte_dc19() -> None:
     """Agent ids contain ``/``; derived thread ids contain ``::`` **and** ``/``.
@@ -827,6 +855,11 @@ async def test_every_route_the_tui_uses_keeps_its_ids_byte_for_byte_dc19() -> No
     the captured id while ``GET``/``PATCH``/``DELETE /threads/{id}`` do not, so one stray slash 404s
     on some verbs and quietly works on others. What the route handler received is the assertion,
     because that is the string that will be used to look up a checkpoint.
+
+    Superseded (Phase 5 rebuilds this): the whole subject is byte-preservation of the derived-thread
+    `<parent>::<agent>` id — `expert_thread_id` and the parent/derived split it mints for both retire
+    with sessions. The underlying "an opaque id survives every route unmangled" principle likely
+    survives for a plain session id; it needs its own test once `/sessions` routes land.
     """
     service = ScriptedRuns([RunEnd(RUN, "filed")])
     async with daemon(service) as client:
@@ -859,6 +892,7 @@ async def test_every_route_the_tui_uses_keeps_its_ids_byte_for_byte_dc19() -> No
     assert received["list_threads"] == (GRILLING,)
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_the_client_never_mints_a_thread_id_dc20() -> None:
     """``POST /agents/{id}/threads`` is the only way a thread comes into existence (SV-10).
@@ -866,6 +900,13 @@ async def test_the_client_never_mints_a_thread_id_dc20() -> None:
     A client that generated an id would create a conversation the daemon has no row for: every
     subsequent call against it 404s, and the human's first message vanishes. The request carries the
     title and the origin channel and nothing else — the id in the reply is the server's.
+
+    Superseded (Phase 5 rebuilds this): mixed — the "the client mints no id" principle (SV-10) very
+    likely survives for session creation, but the body-shape assertion
+    ``json.loads(body) == {"title": None, "origin_channel": "tui"}`` pins ``origin_channel`` as a
+    field of the creation request, which is the channel-is-identity model sessions retire (channels
+    attach afterward instead). Marked whole because the equality check cannot be narrowed without
+    touching the test body; a successor needs a session-creation body shape with no ``origin_channel``.
     """
     recorder = Recorder(thread_created)
     async with serving(recorder, lifespan="off") as base_url:
@@ -903,6 +944,7 @@ async def test_cancelling_an_unknown_run_is_a_silent_204_ro18() -> None:
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_every_route_the_transport_declares_answers_on_the_real_daemon_dc19() -> None:
     """Thirteen call sites, no more — and each one reaches a route that exists.
@@ -911,6 +953,16 @@ async def test_every_route_the_transport_declares_answers_on_the_real_daemon_dc1
     names), so a renamed path or a moved verb reaches the client as a 404 in whichever screen
     happens to open first. Exercising all of them against the real ``create_app`` is the only thing
     that keeps the two halves honest.
+
+    Superseded (Phase 5 rebuilds this): mixed — four of the thirteen call sites are retired outright:
+    ``client.proposals()`` (``/proposals``, deleted with ``proposals.py``), the ``origin_channel``
+    assertion on thread creation (channel-is-identity, retired), ``client.resolve(...)`` / the
+    recorded ``"resume"`` call (``/threads/{id}/interrupt``, retired with the gates), and
+    ``client.delete_thread(...)`` — "nothing deletes a session" (arch), no ``DELETE /sessions/{id}``
+    at all. The remaining call sites — agents, health, create/list/rename/get a thread, run, cancel,
+    attach — are ordinary CRUD/streaming concerns that survive under ``/sessions``. Marked whole
+    because one straight-line script exercises all thirteen; a successor needs the same shape rebuilt
+    against the session routes with the four retired calls dropped.
     """
     service = ScriptedRuns([MessageDelta(RUN, LIBRARIAN, "filing"), RunEnd(RUN, "filed")])
     async with daemon(service) as client:
@@ -942,6 +994,7 @@ async def test_every_route_the_transport_declares_answers_on_the_real_daemon_dc1
         assert await client.threads() == []
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_the_interrupt_route_is_addressed_by_the_requests_own_thread_dc19() -> None:
     """A fan-out's approval parks on the **expert's** derived thread, not the one being watched.
@@ -949,6 +1002,11 @@ async def test_the_interrupt_route_is_addressed_by_the_requests_own_thread_dc19(
     The human is reading the Librarian's stream, so a client that posted the decisions to the thread
     it is streaming would resume a checkpoint with nothing pending — a 409 for a perfectly valid
     approval, on the one frame a human actually acts on.
+
+    Superseded (Phase 5 rebuilds this): both halves of the scenario retire together — the
+    ``/threads/{id}/interrupt`` route and ``client.resolve`` die with the gates, and the "expert's
+    derived thread" it resolves against is the parent/derived split retired with sessions. Nothing
+    parks any more, so there is no approval left to be addressed to the wrong thread.
     """
     service = ScriptedRuns([RunEnd(RUN, "filed")])
     async with daemon(service) as client:

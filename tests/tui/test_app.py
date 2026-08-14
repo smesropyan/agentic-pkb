@@ -554,6 +554,7 @@ def test_no_client_module_opens_reads_or_writes_anything_tu4() -> None:
         assert "Path" not in identifiers(path), f"{path.name} names a filesystem path type"
 
 
+@pytest.mark.superseded
 def test_a_full_approval_session_leaves_the_knowledge_base_byte_identical_tu4(kb: Path) -> None:
     """The strongest form of TU-4: hash the tree around a session that decides a real write.
 
@@ -561,6 +562,13 @@ def test_a_full_approval_session_leaves_the_knowledge_base_byte_identical_tu4(kb
     any of them — a cache file, a scratch export, a log next to the notes, a rewritten mtime — and
     it exercises the one screen most likely to be tempted into "let me just read the file to show a
     better diff" (TU-39).
+
+    Superseded (Phase 5 rebuilds this): the "session" driven here is a full decide-through-the-modal
+    cycle over :class:`ApprovalModal`, which dies with the interrupt/resume surface — the operator's
+    instruction is the approval, so nothing parks and there is no modal to open. The weaker,
+    identifier-only form of TU-4 survives as
+    `test_no_client_module_opens_reads_or_writes_anything_tu4`; the strong byte-identity form needs
+    a session-write-shaped successor once Phase 5 rebuilds client polish.
     """
     description = existing_file_description(kb)
     before = digest(kb)
@@ -667,6 +675,7 @@ def test_no_agent_id_is_percent_encoded_or_reassembled_tu9() -> None:
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_the_thread_list_keeps_the_servers_order_tu10() -> None:
     """Pending-first is the design's answer to the scenario the architecture is built around.
@@ -675,6 +684,11 @@ async def test_the_thread_list_keeps_the_servers_order_tu10() -> None:
     pending row is the **oldest** by ``updated_at`` and its title sorts last. A TUI that re-sorted by
     recency or by title would bury the exact row the human came back to answer — and it would look
     entirely reasonable doing it, which is why this is asserted rather than eyeballed.
+
+    Superseded (Phase 5 rebuilds this): "pending-first" is sorted on `pending_interrupt_id`, and
+    sessions have no gates, no parked proposals and no pending queue anywhere — nothing is ever
+    parked, so there is no signal left to sort first on. A successor ordering (if any) needs a
+    session-shaped "needs attention" signal that does not exist yet.
     """
     service = Service()
     service.rows = {
@@ -685,6 +699,7 @@ async def test_the_thread_list_keeps_the_servers_order_tu10() -> None:
         assert rows(app) == ["● Zucchini", "  Almonds"]
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_a_routed_row_is_marked_from_kind_not_from_a_string_scan_tu11() -> None:
     """A conversation *with* Cooking and the work the Librarian *routed* to Cooking are different.
@@ -693,6 +708,11 @@ async def test_a_routed_row_is_marked_from_kind_not_from_a_string_scan_tu11() ->
     resumes a different thread from "continue with the Cooking expert". ``kind`` exists (ST-6) so
     telling them apart is a field lookup rather than a client sniffing an id for ``::`` — a client
     that sniffs is one server-side id change away from mislabelling every row.
+
+    Superseded (Phase 5 rebuilds this): "routed" is the derived-thread `<parent>::<agent>` addressing
+    the Librarian's fan-out used to park a sub-agent's work under the parent's thread — retired
+    entirely, no parent/derived split in the session model. There is no `kind == "routed"` left to
+    distinguish.
     """
     service = Service()
     service.rows = {
@@ -706,12 +726,17 @@ async def test_a_routed_row_is_marked_from_kind_not_from_a_string_scan_tu11() ->
         assert app.threads[1]["kind"] == "user"
 
 
+@pytest.mark.superseded
 def test_routedness_is_never_detected_by_searching_for_a_double_colon_tu11() -> None:
     """The literal that must not appear, asserted over the syntax tree.
 
     ``pkb.tui`` explains the rule in prose, so a text grep hits its own documentation. What matters
     is that no *code* in the package contains ``::``: derivation belongs to
     ``contracts.expert_thread_id`` and detection to ``Thread.kind``.
+
+    Superseded (Phase 5 rebuilds this): guards against sniffing the derived-thread `<t>::<agent>` id
+    scheme, which is retired along with `expert_thread_id` and fan-out addressing — there is no more
+    derived id for code to be tempted into parsing.
     """
     for path in sources("pkb/tui"):
         for text in literals(path):
@@ -795,6 +820,7 @@ async def test_a_closed_port_renders_the_start_command_and_stops_tu7() -> None:
             assert app.is_running
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_the_needs_you_view_is_one_keystroke_and_unfiltered_tu12() -> None:
     """When an expert gates *inside* a fan-out, the human does not know which expert was reached.
@@ -803,6 +829,10 @@ async def test_the_needs_you_view_is_one_keystroke_and_unfiltered_tu12() -> None
     before they can see the approval is the failure RO-8 was written to close, so the unfiltered
     list is one binding away from wherever they are — and it must not carry the agent filter that
     was in force when they pressed it.
+
+    Superseded (Phase 5 rebuilds this): the whole scenario is a gate firing *inside* a fan-out and
+    parking on the expert's derived thread — no gates, no interrupts, no derived threads in the
+    session model, so there is nothing pending to jump to.
     """
     service = Service()
     service.rows = {
@@ -821,6 +851,7 @@ async def test_the_needs_you_view_is_one_keystroke_and_unfiltered_tu12() -> None
         assert rows(app)[0] == "● Gated (routed)"
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_an_unbadged_row_whose_detail_is_pending_still_raises_the_modal_tu13() -> None:
     """Badge from the column, decide from the detail — and the false negative is the dangerous one.
@@ -829,6 +860,10 @@ async def test_an_unbadged_row_whose_detail_is_pending_still_raises_the_modal_tu
     discovered, because nobody opens a thread they cannot see is waiting. Opening is the repair
     path, so a client that short-circuited the read on an unbadged row would make the one state that
     cannot heal itself permanent.
+
+    Superseded (Phase 5 rebuilds this): `pending_interrupt_id` and the modal it raises both die with
+    the interrupt/resume surface — a session is never "pending" on a human, so there is no stale flag
+    to guard against.
     """
     service = Service()
     service.rows = {THREAD: thread(THREAD, pending=None)}
@@ -860,6 +895,7 @@ async def test_opening_an_idle_thread_reads_the_detail_then_attaches_tu14() -> N
     assert not any(name == "start_run" for name, _ in service.calls)
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_a_new_thread_is_stamped_tui_and_a_telegram_thread_still_runs_tu17() -> None:
     """D3's promise is that a thread started in one channel is finishable from another.
@@ -867,6 +903,11 @@ async def test_a_new_thread_is_stamped_tui_and_a_telegram_thread_still_runs_tu17
     One ``if origin_channel == …`` deletes that guarantee in exactly the case the design is proudest
     of, and deletes it invisibly: the thread simply does not offer the action, with nothing on
     screen to say why.
+
+    Superseded (Phase 5 rebuilds this): `origin_channel` as a stamped identity field on a thread is
+    retired — the whole channel-is-identity model dies, replaced by channels attaching to a session
+    rather than one channel owning it. The underlying promise (any channel can continue a
+    conversation) survives and needs a session-shaped assertion once channels attach.
     """
     service = Service(events=[RunEnd(run_id="run-1", final_text="filed")])
     service.rows = {"t-tg": thread("t-tg", title="From my phone", origin="telegram")}
@@ -885,8 +926,13 @@ async def test_a_new_thread_is_stamped_tui_and_a_telegram_thread_still_runs_tu17
         assert ("start_run", ("t-tg", "carry on")) in service.calls
 
 
+@pytest.mark.superseded
 def test_origin_channel_is_written_but_never_branched_on_tu17() -> None:
-    """The prohibition, over the syntax tree: the name appears as a value, never as a condition."""
+    """The prohibition, over the syntax tree: the name appears as a value, never as a condition.
+
+    Superseded (Phase 5 rebuilds this): `origin_channel` itself is retired along with the
+    channel-is-identity model, so there is no such field left to guard against branching on.
+    """
     for path in sources("pkb/tui"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
@@ -898,6 +944,7 @@ def test_origin_channel_is_written_but_never_branched_on_tu17() -> None:
                     ), f"{path.name} branches on origin_channel"
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_the_conversation_and_the_expert_offers_come_from_the_detail_payload_tu19() -> None:
     """Replay is authoritative on open, and ``children`` is where an expert's branch survives.
@@ -906,6 +953,10 @@ async def test_the_conversation_and_the_expert_offers_come_from_the_detail_paylo
     plus the merged reply, because the experts' work lives in their own checkpoints. A UI whose live
     view is richer than its replayed view teaches the human that reopening loses information — when
     the detail is one click away, in a row the offer links to (TU-18).
+
+    Superseded (Phase 5 rebuilds this): "expert offers" resolve to a `children` row addressed by the
+    derived-thread id `expert_thread_id` mints for a fan-out — the whole parent/derived split is
+    retired, so there is no derived thread left for an offer to point at.
     """
     service = Service(children=[{"thread_id": DERIVED, "agent_id": COOKING, "title": "Cooking"}])
     service.rows = {THREAD: thread(THREAD)}
@@ -926,12 +977,17 @@ async def test_the_conversation_and_the_expert_offers_come_from_the_detail_paylo
         assert [(entry.agent_id, entry.thread_id) for entry in offers] == [(COOKING, DERIVED)]
 
 
+@pytest.mark.superseded
 def test_an_expert_offer_is_never_recovered_from_the_reply_text_tu18() -> None:
     """Parsing the merged reply would make ``merge_reply``'s rendering a wire protocol.
 
     The offer's target is an envelope field (live) or a ``children`` row (after a reload). Text is
     never one of the two: once the reply scrolls away the live frames are gone, and a client reading
     prose for an agent id would silently offer a thread that does not exist.
+
+    Superseded (Phase 5 rebuilds this): the "expert offer" feature it guards is built entirely on
+    `SubagentStart` and the derived-thread `children` list from a fan-out — both retired with the
+    parent/derived split, so there is no offer left to protect from a text-scraped reconstruction.
     """
     for path in sources("pkb/tui"):
         assert "final_text" not in identifiers(path), path.name
@@ -939,12 +995,20 @@ def test_an_expert_offer_is_never_recovered_from_the_reply_text_tu18() -> None:
         assert "findall" not in names and "search" not in names, path.name
 
 
+@pytest.mark.superseded
 def test_a_scan_thread_is_filtered_with_the_seams_own_helper_tu20() -> None:
     """Maintenance is not a conversation, and the client asks the seam rather than spelling it out.
 
     A ``scan:`` row that reached the sidebar would offer a thread every list is meant to exclude,
     and a client with its own ``startswith("scan:")`` is a second answer to a question ``contracts``
     already answers — the drift that makes one channel show a row another hides.
+
+    Superseded (Phase 5 rebuilds this): mixed — the `is_scan_thread` half uses `DERIVED`, a
+    retired derived-thread id, as its non-scan example; the second half asserts `PkbClient.proposals`
+    / `dismiss_proposal` exist and nothing named `apply*` does, which is the parked-proposal surface
+    (`ProposalStore`, `/proposals`) retired outright. Marked whole rather than split, since both
+    halves depend on retired design. A successor for "maintenance is not a conversation" needs
+    whatever background-scan surface, if any, Phase 5 gives sessions.
     """
     from pkb.tui import app as app_module
 
@@ -981,6 +1045,7 @@ def burst_script(interrupt_at: int = 2, total: int = BURST) -> list[Any]:
     return events
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_an_interrupt_opens_the_modal_while_the_pump_keeps_consuming_tu22_tu23() -> None:
     """The two worker rules, in the one flow where breaking either is unrecoverable.
@@ -992,6 +1057,13 @@ async def test_an_interrupt_opens_the_modal_while_the_pump_keeps_consuming_tu22_
 
     So: the modal is open, and every one of the frames that arrived *after* the interrupt has
     already been folded into the view.
+
+    Superseded (Phase 5 rebuilds this): the whole scenario is built on `InterruptEvent` raising
+    `ApprovalModal` mid-stream and a scripted `resume` answering it — the interrupt/resume surface
+    dies outright. "One pump keeps consuming while a worker waits on something else" is a real
+    principle that survives, but needs a non-approval trigger; the burst-without-an-interrupt half
+    is covered separately by `test_switching_threads_leaves_exactly_one_pump_running_tu38` and
+    `test_the_pump_is_a_textual_worker_and_never_a_bare_task_tu22`.
     """
     service = Service(events=burst_script())
     service.rows = {THREAD: thread(THREAD)}
@@ -1113,10 +1185,17 @@ async def test_a_stream_that_raises_leaves_the_app_alive_with_its_transcript_tu3
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_a_new_file_description_carries_no_colour_and_a_diff_colours_only_its_hunks_tu40(
     kb: Path,
 ) -> None:
     """The golden, over both real ``describe_write`` shapes.
+
+    Superseded (Phase 5 rebuilds this): `diff_text` is `pkb.tui.modal`'s only caller of
+    `describe_write`/`GateReason`, and it exists solely to render `ApprovalModal`'s body — which
+    dies with the interrupt/resume surface (no gates, so nothing is ever described for approval).
+    The colour-only-inside-a-real-hunk hazard this golden protects against is real and would need a
+    successor renderer if Phase 5 gives sessions any diff display at all.
 
     Measured with the real lexer below: ``rich``'s ``diff`` grammar paints ``- Pull at 130F`` in a
     *new-file* proposal the **same** colour it paints a genuine deletion inside a real hunk. Markdown
@@ -1165,6 +1244,7 @@ def _style_at(description: str, needle: str) -> Any:
     return spans[-1].style
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_a_bracketed_kb_path_renders_instead_of_killing_the_app_tu41(kb: Path) -> None:
     """The single most likely production crash in this layer, and it is one keyword away.
@@ -1173,6 +1253,11 @@ async def test_a_bracketed_kb_path_renders_instead_of_killing_the_app_tu41(kb: P
     on a closing tag with no opener — which a KB-relative POSIX path in square brackets is. The
     exception kills the app, not the widget, and every field this modal shows carries paths and free
     model text.
+
+    Superseded (Phase 5 rebuilds this): the crash guarded against is specific to `ApprovalModal`
+    rendering a KB path in square brackets, and the modal dies with the interrupt/resume surface.
+    The `Content.from_markup` hazard itself is real and generic — whatever screen next renders a raw
+    KB-relative path needs an equivalent guard.
     """
     hazard = "[/kb/Cooking/notes]"
     with pytest.raises(MarkupError):
@@ -1190,6 +1275,7 @@ async def test_a_bracketed_kb_path_renders_instead_of_killing_the_app_tu41(kb: P
         assert any(hazard in str(label.content) for label in screen.query(Label))
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_the_modal_body_equals_the_description_with_the_kb_deleted_tu39(kb: Path) -> None:
     """The bytes the human approves are the bytes the server rendered, and nothing else.
@@ -1199,6 +1285,11 @@ async def test_the_modal_body_equals_the_description_with_the_kb_deleted_tu39(kb
     showing it — the human would approve an irreversible write from a fragment — and recomputing it
     here is impossible anyway: the tree is deleted before the modal is built, exactly as it would be
     on a TUI running on another host.
+
+    Superseded (Phase 5 rebuilds this): `ApprovalModal` dies with the interrupt/resume surface, so
+    there is no approval body left to render byte-identically. The "render exactly what the server
+    sent, never recompute" principle is real and would need a successor wherever a session's record
+    shows a write.
     """
     proposal = new_file_description(kb)
     diff = existing_file_description(kb)
@@ -1222,12 +1313,17 @@ async def test_the_modal_body_equals_the_description_with_the_kb_deleted_tu39(kb
     assert rendered == diff + "\n"
 
 
+@pytest.mark.superseded
 def test_the_modal_computes_no_diff_of_its_own_tu39() -> None:
     """A second diff renderer is a second answer to "what am I approving".
 
     The displayed diff is context-limited (``n=3``), so bytes reconstructed from it would differ
     subtly from what the human read — the one thing an approval must never do — and under I2 this
     package could not read the tree correctly to build a better one.
+
+    Superseded (Phase 5 rebuilds this): "what am I approving" presumes an approval to compute a diff
+    for; `ApprovalModal` dies with the interrupt/resume surface and takes this prohibition's subject
+    with it.
     """
     for path in sources("pkb/tui"):
         names = identifiers(path)
@@ -1236,6 +1332,7 @@ def test_the_modal_computes_no_diff_of_its_own_tu39() -> None:
         assert "SequenceMatcher" not in names, path.name
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_a_destructive_reason_carries_the_no_undo_warning_and_its_slug_tu45() -> None:
     """The reason is the most consequential framing of the action, and it is already ordered.
@@ -1243,6 +1340,12 @@ async def test_a_destructive_reason_carries_the_no_undo_warning_and_its_slug_tu4
     Re-wording the slug makes it unsearchable and unstable across channels; with no version control
     in the first draft, a delete approved by mistake is simply gone, and the modal is the last place
     that can say so out loud.
+
+    Superseded (Phase 5 rebuilds this): built entirely around `ApprovalModal` and `GateReason`,
+    both of which die with the interrupt/resume surface — the operator's instruction is the
+    approval, so there is no modal left to warn from. The underlying worry (an irreversible write
+    with no confirmation of what it does) is real and needs a successor wherever sessions surface a
+    destructive write.
     """
     async with offline_app() as (app, pilot):
         for reason in GateReason:
@@ -1260,6 +1363,7 @@ async def test_a_destructive_reason_carries_the_no_undo_warning_and_its_slug_tu4
             await pilot.pause()
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_the_validation_label_is_lifted_above_the_diff_tu46(kb: Path) -> None:
     """The label exists so the human can reject or edit *instead of* approving a doomed draft.
@@ -1268,6 +1372,10 @@ async def test_the_validation_label_is_lifted_above_the_diff_tu46(kb: Path) -> N
     (MW-14) on content the human endorsed. Buried under a two-hundred-line diff it is a label nobody
     reads, and the mechanism buys nothing. Detection is a prefix match on the server's own text —
     never a re-run of ``validate_content``, which this package cannot do.
+
+    Superseded (Phase 5 rebuilds this): HITL — the interrupt/resume surface — is what this label
+    warns *before*, and it is retired outright along with `ApprovalModal`. The operator's instruction
+    is the approval, so there is no "spend one of three attempts" scenario left to guard against.
     """
     invalid = describe_write(
         GateReason.BREADTH_APPROVAL,
@@ -1294,6 +1402,7 @@ async def test_the_validation_label_is_lifted_above_the_diff_tu46(kb: Path) -> N
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_controls_are_built_from_allowed_decisions_and_never_widened_tu42() -> None:
     """A delete gates as ``('approve','reject')`` — there is no ``edit`` and no ``respond``.
@@ -1302,6 +1411,10 @@ async def test_controls_are_built_from_allowed_decisions_and_never_widened_tu42(
     four literal decision types would offer ``edit`` on a delete, where the server answers 400 — a
     failure the human caused by pressing a button the TUI drew. Where ``edit`` is missing the modal
     says why, rather than leaving a hole.
+
+    Superseded (Phase 5 rebuilds this): "gates as" presumes a gate; approve/edit/reject decisions and
+    `ApprovalModal` both die with the interrupt/resume surface, so there is no `allowed_decisions` set
+    left to build controls from.
     """
     async with offline_app() as (app, pilot):
         screen = ApprovalModal(approval(action(tool="delete", allowed=("approve", "reject"))))
@@ -1322,6 +1435,7 @@ async def test_controls_are_built_from_allowed_decisions_and_never_widened_tu42(
         assert isinstance(app.screen, ApprovalModal), "a refused decision must not dismiss"
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_a_two_action_approval_submits_one_resolution_in_order_tu43() -> None:
     """RT-41 batches every interruptible call of one message into a single interrupt.
@@ -1329,6 +1443,10 @@ async def test_a_two_action_approval_submits_one_resolution_in_order_tu43() -> N
     Two writes in one approval is therefore the normal case, and answering them one at a time makes
     the second stale against the interrupt the first already resolved — a 409 on an answer the human
     definitely gave, with no way to tell afterwards which half was applied.
+
+    Superseded (Phase 5 rebuilds this): the batched interrupt this test resolves is the interrupt/
+    resume surface itself — writes land immediately now, one at a time, with no batch to answer as
+    one `Resolution`.
     """
     first = action(args={"file_path": "Cooking/notes/a.md", "content": "a"})
     second = action(args={"file_path": "Cooking/notes/b.md", "content": "b"})
@@ -1348,6 +1466,7 @@ async def test_a_two_action_approval_submits_one_resolution_in_order_tu43() -> N
     assert len(resolution.body()["decisions"]) == 2
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_the_editor_opens_one_field_per_arg_including_a_tool_with_no_path_tu44() -> None:
     """One key→string editor covers all five gated tools; a document editor covers exactly one.
@@ -1356,6 +1475,10 @@ async def test_the_editor_opens_one_field_per_arg_including_a_tool_with_no_path_
     no ``file_path`` — only ``name``/``title``/``description``, which is the whole point of that
     gate. And the fields are seeded from ``args``, never from the rendered description: the diff is
     context-limited, so content reconstructed from it would differ from what the human read.
+
+    Superseded (Phase 5 rebuilds this): "one field per arg" is the ``edit`` decision's editor inside
+    `ApprovalModal`, and `edit` dies with the interrupt/resume surface — the operator writes directly
+    rather than editing a parked proposal.
     """
     args = {"name": "Braising", "title": "Braising", "description": "Low and slow, in liquid."}
     description = (
@@ -1379,14 +1502,21 @@ async def test_the_editor_opens_one_field_per_arg_including_a_tool_with_no_path_
         assert "file_path" not in args
 
 
+@pytest.mark.superseded
 def test_the_modal_never_reconstructs_content_from_the_description_tu44() -> None:
-    """The prohibition itself: no parser of the server's rendered text lives in this package."""
+    """The prohibition itself: no parser of the server's rendered text lives in this package.
+
+    Superseded (Phase 5 rebuilds this): the prohibition is scoped to `ApprovalModal`'s edit path,
+    which dies with the interrupt/resume surface — there is no modal-side reconstruction of content
+    left to forbid.
+    """
     for path in sources("pkb/tui"):
         names = identifiers(path)
         assert "proposed_content" not in names, path.name
         assert "apply_patch" not in names, path.name
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_escape_dismisses_without_deciding_and_sends_nothing_tu47() -> None:
     """An escape that quietly submitted a reject would file nothing and say the human refused.
@@ -1394,6 +1524,10 @@ async def test_escape_dismisses_without_deciding_and_sends_nothing_tu47() -> Non
     Afterwards that is indistinguishable from a considered refusal, and the agent will not retry.
     Durable parking is the design's promise: the interrupt stays in the checkpoint, answerable from
     any channel, and the modal has to be able to get out of the way without spending it.
+
+    Superseded (Phase 5 rebuilds this): "durable parking" is exactly the interrupt/resume surface
+    that is retired — no gates, no parked proposals, no pending queue anywhere, so there is nothing
+    left in a checkpoint for an escape to leave untouched.
     """
     answers: list[Any] = []
     async with offline_app() as (app, pilot):
@@ -1407,6 +1541,7 @@ async def test_escape_dismisses_without_deciding_and_sends_nothing_tu47() -> Non
     assert not any(isinstance(answer, Resolution) for answer in answers)
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_an_approval_with_no_live_run_opens_from_the_detail_payload_tu48() -> None:
     """The scenario the whole daemon architecture exists for.
@@ -1414,6 +1549,10 @@ async def test_an_approval_with_no_live_run_opens_from_the_detail_payload_tu48()
     The human comes back hours later, from a different channel, to an approval raised this morning.
     There is no stream to attach to and no local state — one ``GET /threads/{id}`` has to be enough,
     and answering it starts a fresh stream on the request's own thread.
+
+    Superseded (Phase 5 rebuilds this): "an approval raised this morning" cannot happen once nothing
+    parks — the operator's instruction is the approval, so there is no cold-open detail payload to
+    resume from and no derived thread (`DERIVED`) for the resume to target.
     """
     service = Service()
     service.rows = {THREAD: thread(THREAD, pending="i-1")}
@@ -1430,12 +1569,20 @@ async def test_an_approval_with_no_live_run_opens_from_the_detail_payload_tu48()
         assert ("resume", (DERIVED, "i-1")) in service.calls
 
 
+@pytest.mark.superseded
 def test_the_binding_tables_are_golden_and_approve_is_not_next_to_reject_tu50() -> None:
     """A golden list makes a rebind a reviewed diff rather than a surprise.
 
     There is no undo, so approve and reject must not be keys a finger can confuse, and the modal
     must not be dismissible by accident. The table also documents the surface step 5 has to offer
     through a different affordance — a Telegram keyboard has no ``escape``.
+
+    Superseded (Phase 5 rebuilds this): mixed — `bindings_of(ApprovalModal)`'s whole golden list and
+    the approve/reject adjacency check die with the modal itself, and `PkbApp`'s own table pins
+    ``"P" -> "proposals"``, which dies with the parked-proposal surface. Marked whole rather than
+    split, since the file-level golden nature of the assertion resists a clean per-binding split.
+    `PkbApp`'s remaining bindings (``p``/``n``/``R``/``c``/``q``) need a fresh golden once Phase 5
+    settles what the session-era keymap actually is.
     """
     assert bindings_of(PkbApp) == [
         ("p", "pending"),
@@ -1493,21 +1640,31 @@ async def test_two_servers_in_one_process_both_stream_p14b() -> None:
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_a_routed_thread_offers_no_rename_tu16() -> None:
     """A dead control teaches the human to distrust every other one.
 
     `PATCH` on a derived thread is refused server-side (SV-28): its generated title states where it
     came from, and the human never named it. Offering the rename anyway means the first time they
     try it, the UI does nothing and gives no reason.
+
+    Superseded (Phase 5 rebuilds this): "derived thread" is the `<parent>::<agent>` fan-out
+    addressing retired outright — there is no more thread whose title states where it was routed
+    from, and `/name` on a session is a real, always-offered command rather than a refused `PATCH`.
     """
     assert "R" in {binding[0] for binding in PkbApp.BINDINGS}
 
 
+@pytest.mark.superseded
 def test_a_scan_proposal_is_labelled_and_is_not_a_link_tu20() -> None:
     """`scan:` threads are filtered out of every list by rule (RT-58), so a link is a dead end.
 
     A background maintenance write is not a conversation the human can open, and on a knowledge base
     that has been running a while the majority of the proposals list may be exactly that.
+
+    Superseded (Phase 5 rebuilds this): `proposal_line` renders a row of the parked-proposal list —
+    `ProposalStore` and `/proposals` are retired outright, so there is no proposals list left for a
+    `scan:` row to be labelled inside.
     """
     ordinary = proposal_line(
         {
@@ -1530,6 +1687,7 @@ def test_a_scan_proposal_is_labelled_and_is_not_a_link_tu20() -> None:
     assert "Cooking/notes/summary.md" in ordinary
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_the_proposals_pane_says_what_it_actually_covers_tu21() -> None:
     """It is **not** "what agents wanted to write", and the difference is not pedantry.
@@ -1539,6 +1697,10 @@ async def test_the_proposals_pane_says_what_it_actually_covers_tu21() -> None:
     no proposal, and no entry in this list. A human reading "what agents wanted to write" would
     conclude they had seen everything an agent did, which is the opposite of true. A false belief
     about coverage is worse than no view at all.
+
+    Superseded (Phase 5 rebuilds this): the gate table and the proposals pane it describes are both
+    retired with the interrupt/resume surface — every write lands immediately, so there is no
+    "what needed your approval" pane left to be honest about its coverage of.
     """
     stub = StubService()
     client = PkbClient(base_url="http://127.0.0.1:1")

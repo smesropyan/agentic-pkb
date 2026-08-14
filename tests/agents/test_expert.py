@@ -302,12 +302,19 @@ def test_the_prompt_is_layered_with_the_documented_separator_ex4(kb: Path) -> No
     )
 
 
+@pytest.mark.superseded
 @pytest.mark.parametrize("hostile", [False, True], ids=["default", "hostile-expert-md"])
 def test_an_expert_md_changes_the_persona_and_nothing_else_ex5(kb: Path, hostile: bool) -> None:
     """EX-5: permissions, middleware, gates and the flush are attached by the factory, in code.
 
     The mechanical half of the system is not addressable from a file inside the knowledge base, so a
     prompt that says "you may edit any file" changes exactly nothing about what lands on disk.
+
+    Superseded (Phase 3 rebuilds this): the `set(kwargs["interrupt_on"]) == {5 tool names}`
+    assertion pins the gate composition Task 6 deletes at the composition point — `build_expert`
+    stops passing `interrupt_on` at all. The permissions/middleware/refused-write assertions around
+    it (I3 holds regardless of what a hostile `expert.md` says) survive and need a successor test
+    without the gate check; both param cases fail for the same reason, so marked whole.
     """
     if hostile:
         (kb / COOKING / "expert.md").write_text(HOSTILE_EXPERT)
@@ -478,11 +485,17 @@ def test_the_prompt_kwarg_and_the_model_are_explicit_ex9(kb: Path) -> None:
     assert "memory" not in kwargs
 
 
+@pytest.mark.superseded
 def test_every_expert_is_built_with_its_full_configuration_ex10(kb: Path) -> None:
     """EX-10: a `CompiledSubAgent` inherits nothing, so every graph carries the whole configuration.
 
     Omitting one piece on a sub-topic would open the derived-write path for the delegated route only
     — the one route no direct-connection test exercises.
+
+    Superseded (Phase 3 rebuilds this): `tuple(sorted(k["interrupt_on"]))` reads a kwarg Task 6
+    stops passing to `create_deep_agent` entirely, so this line raises `KeyError` rather than merely
+    failing. The permissions/middleware/backend/checkpointer/scope assertions around it survive and
+    need a successor without the `interrupt_on` line; marked whole because they cannot be split.
     """
     runtime = FakeRuntime(kb)
     with captured() as seen:
@@ -576,11 +589,16 @@ def fetch_url(url: str) -> str:
     return f"contents of {url}"
 
 
+@pytest.mark.superseded
 def test_the_experts_topic_tool_is_gated_ex12(kb: Path) -> None:
     """EX-12: `create_subtopic` reaches the human before it scaffolds anything (SC-8, LB-7's twin).
 
     The gate table is keyed on the tool *name*, so registering a tool called `create_subtopic` is the
     whole of the wiring — and a rename in `pkb.agents.tools.topics` would silently un-gate it.
+
+    Superseded (Phase 3 rebuilds this): with no `interrupt_on` composed at all, `create_subtopic`
+    never interrupts — `state.interrupts` is empty and the model's call simply executes. The whole
+    subject here is the gate; no non-gate assertion survives to keep.
     """
     model = scripted(
         calls(call("create_subtopic", {"parent": COOKING, "name": "Sous Vide"}, "s1")),
@@ -596,8 +614,15 @@ def test_the_experts_topic_tool_is_gated_ex12(kb: Path) -> None:
     assert request["review_configs"][0]["allowed_decisions"] == ["approve", "edit", "reject"]
 
 
+@pytest.mark.superseded
 def test_a_retrieval_tool_is_purely_additive_ex13(kb: Path) -> None:
-    """EX-13: extra tools carry no filesystem write capability and change nothing else."""
+    """EX-13: extra tools carry no filesystem write capability and change nothing else.
+
+    Superseded (Phase 3 rebuilds this): `set(plain["interrupt_on"]) == set(extended["interrupt_on"])`
+    reads a kwarg Task 6 stops passing, so this raises `KeyError` rather than failing cleanly. The
+    tools/permissions/middleware-equality assertions around it survive and need a successor without
+    the `interrupt_on` comparison; marked whole because they cannot be split.
+    """
     runtime = FakeRuntime(kb)
     with captured() as seen:
         build(kb, scripted(says("ok")), COOKING, runtime=runtime)
@@ -637,11 +662,19 @@ def test_the_middleware_order_is_load_bearing_ex14(kb: Path) -> None:
     assert after_agent_nodes == ["KbMaintenanceMiddleware.after_agent"]
 
 
+@pytest.mark.superseded
 def test_no_custom_middleware_name_collides_with_a_core_member_ex15(kb: Path) -> None:
     """EX-15: `_apply_custom_middleware` merges by `.name` and a collision *replaces* in place.
 
     A middleware accidentally named `FilesystemMiddleware` would not be appended — it would silently
     take the core member's slot, and with it every file tool and the whole permission layer.
+
+    Superseded (Phase 3 rebuilds this): `create_deep_agent` only adds `HumanInTheLoopMiddleware` when
+    `interrupt_on` resolves to something — verified against `kb_permissions` (no `mode="interrupt"`
+    rule) and Task 6's removal of the explicit `interrupt_on` kwarg, so
+    `"HumanInTheLoopMiddleware.after_model" in graph.nodes` becomes false. The name-collision-guard
+    principle and the permission-layer-still-alive write check survive; marked whole because they
+    cannot be split from the trailing node check.
     """
     core = {
         "FilesystemMiddleware",

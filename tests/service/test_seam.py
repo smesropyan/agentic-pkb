@@ -375,8 +375,16 @@ def test_every_layer3_module_imports_with_the_harness_banned_sv30() -> None:
     assert result.stdout.strip().endswith("OK")
 
 
+@pytest.mark.superseded
 def test_the_real_service_runs_against_a_fake_runtime_with_the_harness_banned_sv4() -> None:
     """Importing is half of it; the class has to *work*, which is why this drives it (SV-4, SV-30).
+
+    Superseded (Task 3/5 rebuild this): the embedded ``_DRIVE_THE_REAL_SERVICE`` script is entirely
+    thread-CRUD-shaped — ``create_thread(..., origin_channel=...)``, ``list_threads``, ``get_thread``,
+    ``delete_thread`` — entangled with the ``start_run``/events check that survives. The SV-4/SV-30
+    architectural principle (the seam works end to end with the harness banned) is permanent and
+    needs a session-shaped driver script; nothing in this plan currently owns rewriting it, so
+    whoever touches the seam next should notice this gap rather than leave it silently uncovered.
 
     ``RuntimeService`` is constructor-injected with a structural ``Runtime``, so the fake below —
     built from ``pkb.contracts`` and nothing else — is a complete substitute. If a single method
@@ -563,6 +571,7 @@ def _protocol_members(protocol: type) -> set[str]:
     return {name for name in vars(protocol) if not name.startswith("_")} | set(annotated)
 
 
+@pytest.mark.superseded
 def test_the_service_depends_on_a_structural_runtime_not_a_concrete_one_sv4() -> None:
     """The injected dependency is a Protocol written out here, never ``PkbRuntime`` imported.
 
@@ -570,6 +579,10 @@ def test_the_service_depends_on_a_structural_runtime_not_a_concrete_one_sv4() ->
     parameter with the real class and the module has a module-scope harness import, and the class
     can no longer be constructed on a machine without the harness. Structural also means Layer 2 can
     add a method without Layer 3 seeing it, and Layer 3 states exactly the nine calls it makes.
+
+    Superseded (Task 6 rebuilds this): the pinned member set includes ``resume`` and
+    ``pending_approval`` — the interrupt-resume surface Task 6 removes from the ``Runtime`` protocol
+    entirely. The structural-Protocol principle survives; the exact nine-member set does not.
     """
     parameter = inspect.signature(RuntimeService.__init__).parameters["runtime"]
     assert parameter.annotation is Runtime or parameter.annotation == "Runtime"
@@ -597,6 +610,7 @@ def test_the_service_depends_on_a_structural_runtime_not_a_concrete_one_sv4() ->
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_runs_are_addressed_by_thread_never_by_agent_sv6() -> None:
     """Cross-channel resume is a one-field handoff, and only because of this.
 
@@ -605,6 +619,12 @@ def test_runs_are_addressed_by_thread_never_by_agent_sv6() -> None:
     every client has to carry a pair, keep it consistent, and get it right — and a client that
     guesses wrong runs the Librarian's graph on an expert's checkpoint, which D-6 measured reading
     the other conversation's messages verbatim with no error anywhere.
+
+    Superseded (Task 3/5/6 rebuild this): the second loop's method list mixes ``start_run`` (whose
+    addressed-by-thread-not-by-agent principle survives against ``session_id``) with ``resume``
+    (dies with the gate), ``create_thread``/``get_thread`` (thread CRUD, dies) and ``delete_thread``
+    (no successor — "nothing deletes a session"). Marked whole; the surviving principle needs an
+    analogous assertion once sessions land.
     """
     for owner in (PkbService, RuntimeService):
         for method in ("start_run", "resume"):
@@ -636,6 +656,7 @@ def _minting_sites(sources: dict[Path, ast.Module]) -> list[str]:
     return sites
 
 
+@pytest.mark.superseded
 def test_create_thread_takes_no_id_parameter_sv10() -> None:
     """**Layer 3 mints every user thread id, and only Layer 3.**
 
@@ -645,6 +666,11 @@ def test_create_thread_takes_no_id_parameter_sv10() -> None:
     checkpointer keys on ``thread_id`` alone: they silently merge into one checkpoint with no error
     anywhere (SV-11, D-6). ``mint_thread_id`` taking no arguments is that stated mechanically —
     there is nothing a caller could pass in for an id to be derived from.
+
+    Superseded (Task 3 rebuilds this): ``create_thread``/``mint_thread_id`` are replaced by
+    ``SessionStore.create``/a session-id minter; the minting-sites assertion also pins
+    ``threads.py:mint_thread_id`` and ``threads.py:mint_run_id`` by file, both moving. The
+    no-caller-supplied-id principle survives and Task 3 owns re-asserting it.
     """
     for owner in (PkbService, RuntimeService):
         parameters = set(inspect.signature(owner.create_thread).parameters)

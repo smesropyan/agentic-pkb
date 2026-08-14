@@ -162,12 +162,17 @@ def identifiers(path: Path) -> set[str]:
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_the_name_table_covers_the_union_exactly_ss3() -> None:
     """One table, next to the union it names, with a row for every member.
 
     The nine names are arch §5's, verbatim, and they are the only vocabulary a client has. A member
     of ``AgentEvent`` with no row would not be a compile error anywhere — it would be an event that
     silently stops arriving, which is indistinguishable from a model that stopped emitting it.
+
+    Superseded (Task 6 rebuilds this): the pinned list names ``"interrupt"`` literally. Once
+    ``InterruptEvent`` leaves the ``AgentEvent`` union with the interrupt-resume surface, the union
+    has eight members and this exact list is wrong by one — Task 6 owns re-pinning it.
     """
     assert set(EVENT_NAMES) == set(get_args(AgentEvent))
     assert sorted(EVENT_NAMES.values()) == sorted(
@@ -495,6 +500,7 @@ def test_frame_zero_is_run_started_with_exactly_the_run_handle_ss8() -> None:
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_run_end_after_an_interrupt_is_interrupted_ss9() -> None:
     """A run that gated and then "ended" is waiting on a human, not done.
 
@@ -502,6 +508,9 @@ def test_run_end_after_an_interrupt_is_interrupted_ss9() -> None:
     either way and Layer 2 cannot tell the two apart. Only the transport saw the ``interrupt`` frame
     go past. Get this wrong and a client says "done" over a thread parked on an approval — the human
     never answers it, and the write never lands.
+
+    Superseded (Task 6 rebuilds this): the whole "parked is not complete" section — no gate means no
+    run is ever left waiting on an approval, so the ``interrupted`` status has nothing to name.
     """
     enc = encoder()
     enc.started()
@@ -511,11 +520,15 @@ def test_run_end_after_an_interrupt_is_interrupted_ss9() -> None:
     assert enc.interrupted is True
 
 
+@pytest.mark.superseded
 def test_run_end_without_an_interrupt_is_completed_ss9() -> None:
     """The other arm — and it must not be reachable by accident.
 
     If "interrupted" were the default the symptom would be a TUI that never marks anything finished;
     asserting both arms is what keeps the flag a fact about this stream rather than a constant.
+
+    Superseded (Task 6 rebuilds this): the interrupted/completed pair this test exists to
+    distinguish collapses to just "completed" once no run ever gates.
     """
     enc = encoder()
     enc.started()
@@ -524,6 +537,7 @@ def test_run_end_without_an_interrupt_is_completed_ss9() -> None:
     assert enc.interrupted is False
 
 
+@pytest.mark.superseded
 def test_the_interrupted_flag_belongs_to_one_stream_ss9() -> None:
     """A gate on one run says nothing about the next one.
 
@@ -570,17 +584,22 @@ def test_a_cancelled_run_says_cancelled_on_its_terminal_frame_ss9_ap11() -> None
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_an_event_from_the_runs_own_agent_keeps_the_run_thread_ss10() -> None:
     """The Librarian's own frames belong to the conversation the human opened.
 
     The derivation has to be total, and this is the arm that must never invent anything: deriving a
     thread for the run's own agent would give the Librarian a child thread of itself.
+
+    Superseded (Task 3/7 rebuild this): the whole "§ the derived thread (SS-10)" section — a session
+    belongs to one agent directly, with no parent/derived split for ``thread_for_event`` to compute.
     """
     frame = encoder().event(MessageDelta(run_id=RUN, agent_id=LIBRARIAN, text="hm"))
     assert payload(frame)["thread_id"] == THREAD
     assert thread_for_event(SAMPLES[0], HANDLE, CATALOG) == THREAD
 
 
+@pytest.mark.superseded
 def test_an_event_from_a_catalog_agent_gets_the_derived_thread_ss10() -> None:
     """A routed expert really does run on its own addressable thread (LB-14, D-6).
 
@@ -598,6 +617,7 @@ def test_an_event_from_a_catalog_agent_gets_the_derived_thread_ss10() -> None:
         assert body["agent_id"] == COOKING
 
 
+@pytest.mark.superseded
 def test_an_experts_own_general_purpose_delegate_keeps_the_parent_thread_ss10() -> None:
     """``general-purpose`` is not a catalog id, and it must not be given a thread of its own.
 
@@ -611,6 +631,7 @@ def test_an_experts_own_general_purpose_delegate_keeps_the_parent_thread_ss10() 
     assert "general-purpose" not in CATALOG
 
 
+@pytest.mark.superseded
 def test_an_interrupt_uses_its_own_nested_thread_and_agent_ss10() -> None:
     """The gate belongs to the expert that raised it, not to the stream you are reading.
 
@@ -627,6 +648,7 @@ def test_an_interrupt_uses_its_own_nested_thread_and_agent_ss10() -> None:
     assert body["request"]["interrupt_id"] == "i-1"
 
 
+@pytest.mark.superseded
 def test_an_interrupt_is_believed_even_when_it_disagrees_with_the_derivation_ss10() -> None:
     """The nested request is authoritative; Layer 3 does not second-guess where a gate parked.
 
@@ -640,11 +662,15 @@ def test_an_interrupt_is_believed_even_when_it_disagrees_with_the_derivation_ss1
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_every_fanout_frame_carries_its_experts_thread_ss10() -> None:
     """Over a whole fan-out: each expert's frames on its own thread, the Librarian's on the parent.
 
     The per-arm tests pin the derivation; this pins that nothing on a real stream escapes it —
     which is what a client relies on when it groups a fan-out into per-expert panes.
+
+    Superseded (Task 3/7 rebuild this): same derived-thread scheme as the rest of SS-10, plus an
+    ``InterruptEvent`` in its script — both retired.
     """
     frames = await stream_frames(
         [
@@ -755,12 +781,17 @@ async def test_subagent_frames_bracket_a_branch_rather_than_nesting_ss12() -> No
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_two_events_with_one_interrupt_id_produce_two_frames_ss13() -> None:
     """The transport does not deduplicate. Layer 2's normalizer already did (RT-41).
 
     One ``Interrupt.id`` can surface under two namespaces, and Layer 2 collapses that. A second pass
     here could only diverge from the first — and the divergence would be invisible: a frame the
     transport swallowed looks exactly like an event Layer 2 never emitted.
+
+    Superseded (Task 6 rebuilds this): its vehicle is ``InterruptEvent``/``interrupt_id``, both
+    retired. SS-13's no-dedup rule is generic and needs a non-interrupt vehicle once this is gone —
+    ``test_identical_events_are_not_coalesced_ss13`` below already covers it with ``MessageDelta``.
     """
     enc = encoder()
     first = enc.event(InterruptEvent(run_id=RUN, request=approval(interrupt_id="i-9")))
@@ -831,6 +862,7 @@ def test_a_cancelled_run_is_not_a_failure_ap11() -> None:
     assert (body["code"], body["status"]) == ("cancelled", "cancelled")
 
 
+@pytest.mark.superseded
 def test_run_status_has_four_values_and_the_seam_names_them_ss9() -> None:
     """SS-9 enumerated three; `status_for` always returned a fourth (C-14).
 
@@ -838,6 +870,9 @@ def test_run_status_has_four_values_and_the_seam_names_them_ss9() -> None:
     because a cancelled run never emits `run.end` at all — Layer 2 re-raises `CancelledError`
     without a terminal event. A client matching three ways either raises or falls through to "done"
     on every provider failure, which is the most common failure a human sees.
+
+    Superseded (Task 6 rebuilds this): pins ``RUN_STATUSES`` at four values including
+    ``"interrupted"`` and exercises it via ``InterruptEvent`` — both retired with the gate.
     """
     assert set(RUN_STATUSES) == {"completed", "interrupted", "cancelled", "error"}
 

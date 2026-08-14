@@ -32,6 +32,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+import pytest
 from sse_starlette import ServerSentEvent
 
 import pkb.clients.sse as clients_sse
@@ -315,12 +316,17 @@ def test_no_module_in_the_client_packages_reads_final_text_tu25() -> None:
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_a_branch_belongs_to_the_thread_its_envelope_names_tu26() -> None:
     """The server derives the expert's thread against the catalog; the client only reads it.
 
     ``expert_thread_id`` is gated on the catalog server-side (LB-14, SS-10). A client re-deriving
     from ``agent_id`` would agree here and disagree in the case below — which is why the assertion
     is that the branch carries the *envelope's* value, not that it carries a correct-looking one.
+
+    Superseded (Phase 5 rebuilds this): the assertion pins ``branches[COOKING].thread_id`` to
+    ``expert_thread_id`` — the derived-thread `<parent>::<agent>` addressing retired with the
+    parent/derived split. There is no derived thread for a branch to carry.
     """
     view = fed([SubagentStart(run_id=RUN, agent_id=COOKING)])
 
@@ -328,6 +334,7 @@ def test_a_branch_belongs_to_the_thread_its_envelope_names_tu26() -> None:
     assert view.branches[COOKING].thread_id != THREAD
 
 
+@pytest.mark.superseded
 def test_a_general_purpose_delegation_stays_on_the_parent_thread_tu26() -> None:
     """An expert's *internal* delegation is not an expert, and must not get a pane of its own.
 
@@ -335,6 +342,10 @@ def test_a_general_purpose_delegation_stays_on_the_parent_thread_tu26() -> None:
     the parent thread. A client that built a thread id from ``agent_id`` would invent one, split a
     single conversation across two panes, and offer "continue with the general-purpose expert" —
     a link to a thread that does not exist.
+
+    Superseded (Phase 5 rebuilds this): the assertion pins ``branches[COOKING].thread_id`` to
+    ``expert_thread_id`` alongside the parent-thread case — the derived-thread scheme both arms
+    compare against is retired with the parent/derived split.
     """
     view = fed(
         [
@@ -353,6 +364,7 @@ def test_a_general_purpose_delegation_stays_on_the_parent_thread_tu26() -> None:
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_the_terminal_frame_closes_a_branch_that_never_ended_tu27() -> None:
     """The branch that raised the approval is the one that never sends ``subagent.end``.
 
@@ -360,6 +372,14 @@ def test_the_terminal_frame_closes_a_branch_that_never_ended_tu27() -> None:
     bracket is never closed. A UI that clears a spinner only on ``subagent.end`` therefore spins
     forever on **precisely the branch the human has to look at**, next to two that finished cleanly
     — which reads as "still working", so nobody opens it.
+
+    Superseded (Phase 5 rebuilds this): mixed — the scenario gates ``COOKING`` with an
+    ``InterruptEvent`` and asserts ``view.pending`` (the pending-approval state slice) resolves to
+    its ``expert_thread_id`` — both the interrupt surface and the derived-thread addressing it parks
+    on are retired outright; nothing gates, so nothing leaves a branch open this way. The general
+    "an un-ended branch still closes on the terminal frame" principle for ``GRILLING``/``BAKING``
+    likely survives; marked whole because one script drives all three branches and cannot be split
+    without touching the test body.
     """
     view = fed(
         [
@@ -425,6 +445,7 @@ def test_an_end_whose_start_was_never_seen_still_records_a_branch_tu27() -> None
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_the_four_terminal_states_are_reached_and_are_distinct_tu31() -> None:
     """``completed | interrupted | cancelled | error``, each from the frame that really carries it.
 
@@ -432,6 +453,13 @@ def test_the_four_terminal_states_are_reached_and_are_distinct_tu31() -> None:
     ``run.error``, because a cancelled run never emits ``run.end`` at all. A three-way match — which
     is what SS-9 as written invites — either raises or falls through to "done" on every provider
     failure, i.e. on the most common failure a human will actually see.
+
+    Superseded (Phase 5 rebuilds this): mixed — the ``"interrupted"`` arm is built from an
+    ``InterruptEvent``, the retired gate surface, and a session never reaches it because nothing
+    parks. ``completed``, ``cancelled`` and ``error`` survive as three of the four states; marked
+    whole because the ``endings`` dict and the ``set(reached) == set(RUN_STATUSES)`` assertion cannot
+    be split without touching the test body. A successor needs a three-state table once
+    ``RUN_STATUSES`` itself drops ``interrupted``.
     """
     endings = {
         "completed": [RunEnd(run_id=RUN, final_text="filed")],
@@ -538,6 +566,7 @@ def test_ended_never_overwrites_a_terminal_state_it_already_saw_tu33() -> None:
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_the_cancel_target_moves_to_the_resumed_run_tu36() -> None:
     """A resume mints a **new** run id, and cancelling the old one fails silently.
 
@@ -545,6 +574,11 @@ def test_the_cancel_target_moves_to_the_resumed_run_tu36() -> None:
     is a deliberate 204 — so a client caching the pre-interrupt id gets a cancel button that does
     nothing and reports success, over a run that keeps writing. Re-keying on every ``run.started``
     is the only thing standing between the human and that.
+
+    Superseded (Phase 5 rebuilds this): the scenario is built on an ``InterruptEvent`` and
+    ``RuntimeService.resume`` — both retired with the gates, so there is no post-approval resume to
+    mint a fresh run id from. The re-key-on-``run.started`` principle plausibly survives for an
+    ordinary second turn on the same session; it needs a non-interrupt scenario to prove it again.
     """
     view = fed(
         [
@@ -635,12 +669,17 @@ def test_the_waiting_note_is_silent_when_there_is_nothing_to_wait_for_tu30() -> 
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_an_offer_targets_the_thread_the_envelope_named_tu18() -> None:
     """The link is an ordinary POST to the derived thread, and its id arrives on the wire.
 
     Recovering it from the merged reply would make ``merge_reply``'s *rendering* a wire protocol —
     a heading change in Layer 2 would silently break every "continue with Cooking" link, and the
     breakage is a link to a thread id that does not exist rather than an error anyone sees.
+
+    Superseded (Phase 5 rebuilds this): "continue with the expert" resolves to an
+    ``expert_thread_id`` derived thread — the whole parent/derived split is retired, so there is no
+    derived thread left for an offer to target.
     """
     view = fed(
         [
@@ -658,12 +697,17 @@ def test_an_offer_targets_the_thread_the_envelope_named_tu18() -> None:
     assert all(offer.text == "" for offer in view.offers)
 
 
+@pytest.mark.superseded
 def test_children_reproduce_the_offers_after_a_reload_tu18() -> None:
     """Live frames are gone once the reply scrolls away; ``children`` is where parentage survives.
 
     This is the second of the offer's two sources and the reason text is never one: reopening a
     Librarian thread hours later replays only the merged reply, so without ``children`` the human's
     route back into the expert's own conversation is a paragraph they have to read and retype.
+
+    Superseded (Phase 5 rebuilds this): built entirely on the ``children`` list's ``thread_id``
+    (``expert_thread_id``) and ``parent_thread_id`` fields — the parent/derived thread split
+    retired wholesale, so there is no derived child row for ``offers_from_children`` to read.
     """
     live = fed(
         [

@@ -207,6 +207,7 @@ def proposal(proposal_id: str) -> PendingProposal:
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_the_served_paths_are_exactly_the_pinned_set_ro1(service: StubService) -> None:
     """A route nobody gave a rule id is a surface a client will start depending on.
 
@@ -216,6 +217,11 @@ def test_the_served_paths_are_exactly_the_pinned_set_ro1(service: StubService) -
     at all — so ``app.routes`` holds seven entries for an app that serves seventeen paths, and every
     route the pkb router owns is invisible to the obvious expression. A rule that pins the surface
     has to see the surface.
+
+    Superseded (Task 5 rebuilds this): ``PKB_PATHS`` pins the thread-era surface verbatim —
+    ``/threads``, ``/threads/{thread_id:path}/interrupt``, ``/proposals`` and
+    ``/proposals/{proposal_id}`` all die with Task 5/6, replaced by ``/sessions`` and its
+    sub-routes. Task 5 owns re-pinning the surface for the new set.
     """
     app = create_app(opener_for(service))
 
@@ -227,6 +233,7 @@ def test_the_served_paths_are_exactly_the_pinned_set_ro1(service: StubService) -
     assert route_paths(app).count("/threads/{thread_id:path}") == 3
 
 
+@pytest.mark.superseded
 def test_an_agent_id_keeps_its_slashes_ro2(service: StubService, client: TestClient) -> None:
     """``topic/cooking/grilling`` is one opaque id, not three path segments.
 
@@ -235,6 +242,10 @@ def test_an_agent_id_keeps_its_slashes_ro2(service: StubService, client: TestCli
     — a grilling thread would silently be created against ``grilling`` or against ``topic/cooking``:
     the wrong expert, with the wrong prompt and the wrong write permissions, and nothing in the
     response would say so.
+
+    Superseded (Task 5 rebuilds this): the route is ``POST /agents/{id}/threads``, deleted with the
+    rest of the thread-CRUD surface; Task 5 needs an analogous slash-preserving assertion against
+    ``POST /agents/{id}/sessions``.
     """
     response = client.post(f"/agents/{GRILLING}/threads", json={})
 
@@ -243,6 +254,7 @@ def test_an_agent_id_keeps_its_slashes_ro2(service: StubService, client: TestCli
     assert response.json()["thread"]["agent_id"] == GRILLING
 
 
+@pytest.mark.superseded
 def test_a_percent_encoded_agent_id_resolves_to_the_same_agent_ro2(
     service: StubService, client: TestClient
 ) -> None:
@@ -252,6 +264,9 @@ def test_a_percent_encoded_agent_id_resolves_to_the_same_agent_ro2(
     so percent-encoding is not an escape hatch that isolates the id — it is the same id spelled
     twice. RO-2 allows either "same agent" or 404; what it forbids is the third outcome, where one
     spelling reaches ``topic/cooking`` and the other reaches something else.
+
+    Superseded (Task 5 rebuilds this): same route, ``POST /agents/{id}/threads`` — see the sibling
+    test above.
     """
     response = client.post("/agents/topic%2Fcooking/threads", json={})
 
@@ -282,6 +297,7 @@ def test_the_events_suffix_is_not_swallowed_by_the_greedy_route_ro3(
     assert not [call for call in service.calls if call[0] == "get_thread"]
 
 
+@pytest.mark.superseded
 def test_the_runs_and_interrupt_suffixes_are_not_swallowed_either_ro3(
     service: StubService, client: TestClient
 ) -> None:
@@ -292,6 +308,11 @@ def test_the_runs_and_interrupt_suffixes_are_not_swallowed_either_ro3(
     the bare ``x`` with the suffix stripped by *routing*, not carried into the checkpointer as part
     of the id — a run keyed on ``x/runs`` writes its checkpoints to a thread no client can ever
     fetch again.
+
+    Superseded (Task 5/6 rebuild this): mixed subject — the ``/runs`` half is a route-ordering
+    hazard that survives and needs an analogous assertion against ``/sessions/{id}/runs``; the
+    ``/interrupt`` half dies outright with Task 6, nothing to rebuild it against. Marked whole
+    because one body asserts both.
     """
     client.post(f"/threads/{THREAD}/runs", json={"message": "how long for brisket?"})
     client.post(
@@ -303,6 +324,7 @@ def test_the_runs_and_interrupt_suffixes_are_not_swallowed_either_ro3(
     assert ("resume", (THREAD, "i-1")) in service.calls
 
 
+@pytest.mark.superseded
 def test_a_derived_thread_id_survives_the_url_ro3(service: StubService, client: TestClient) -> None:
     """``<uuid>::topic/cooking`` has to come back out of the URL exactly as it went in.
 
@@ -310,6 +332,9 @@ def test_a_derived_thread_id_survives_the_url_ro3(service: StubService, client: 
     precisely the id a human returning from a phone has to be able to fetch. It contains ``::`` and
     at least one ``/``; a route that split on ``/`` or a client-side "clean up the id" step would
     make the one thread the design is proudest of unreachable.
+
+    Superseded (Task 3/7 rebuild this): the parent/derived-thread fan-out this id shape encodes is
+    retired outright — a session belongs to one agent directly, and channels attach instead.
     """
     response = client.get(f"/threads/{DERIVED}")
 
@@ -351,6 +376,7 @@ def test_the_agent_catalog_is_served_verbatim_ro4(client: TestClient) -> None:
     }
 
 
+@pytest.mark.superseded
 def test_create_thread_is_201_with_a_location_header_ro5(
     service: StubService, client: TestClient
 ) -> None:
@@ -361,6 +387,10 @@ def test_create_thread_is_201_with_a_location_header_ro5(
     by accident. The body's ``title`` and ``origin_channel`` are optional; ``origin_channel``
     defaults to ``http`` rather than being rejected, because provenance is a label, never a
     permission (RO-22).
+
+    Superseded (Task 5 rebuilds this): thread creation and ``origin_channel`` both die; a session
+    is created with an objective and no channel field (channels attach separately, Task 7). The
+    201-plus-``Location`` principle needs an analogous test against ``POST /agents/{id}/sessions``.
     """
     response = client.post(
         f"/agents/{COOKING}/threads", json={"title": "Brisket", "origin_channel": "tui"}
@@ -374,12 +404,16 @@ def test_create_thread_is_201_with_a_location_header_ro5(
     assert client.get(response.headers["location"]).status_code == 200
 
 
+@pytest.mark.superseded
 def test_an_unknown_agent_is_404_unknown_agent_ro5(client: TestClient) -> None:
     """A typo'd topic must not mint a thread against an expert that does not exist.
 
     The registry is the authority on which agents exist (RG-13). Creating the row first and
     discovering the agent later would leave a conversation nobody can ever run, and a 400 would tell
     a client the *request* was malformed when the request was fine and the id was not.
+
+    Superseded (Task 5 rebuilds this): the route is thread-creation; the unknown-agent-before-row
+    principle needs an analogous test against ``POST /agents/{id}/sessions``.
     """
     response = client.post("/agents/topic/atlantis/threads", json={})
 
@@ -387,12 +421,16 @@ def test_an_unknown_agent_is_404_unknown_agent_ro5(client: TestClient) -> None:
     assert response.json()["code"] == "unknown_agent"
 
 
+@pytest.mark.superseded
 def test_an_unknown_thread_is_404_not_an_empty_200_ro10(client: TestClient) -> None:
     """An id nobody created is a 404, decided by the threads table.
 
     The checkpointer cannot decide this: an unknown thread id yields *empty graph state*, not an
     error, so a ``get_thread`` that trusted it would answer 200 with an empty conversation for every
     typo — indistinguishable, at the client, from a thread whose history was lost.
+
+    Superseded (Task 5 rebuilds this): ``GET /threads/{id}`` dies with the rest of the thread-CRUD
+    surface; the not-a-row-is-404 principle needs an analogous test against ``GET /sessions/{id}``.
     """
     response = client.get("/threads/nobody-made-this")
 
@@ -400,6 +438,7 @@ def test_an_unknown_thread_is_404_not_an_empty_200_ro10(client: TestClient) -> N
     assert response.json()["code"] == "unknown_thread"
 
 
+@pytest.mark.superseded
 def test_every_message_created_at_is_null_ro10(service: StubService, client: TestClient) -> None:
     """The field is always present and always null — so no client can be tempted to sort on it.
 
@@ -407,6 +446,11 @@ def test_every_message_created_at_is_null_ro10(service: StubService, client: Tes
     key would make clients ``KeyError``; inventing a time — ``now()`` at read, say — would produce a
     history that reorders itself every time it is fetched. Nullable and always null is the honest
     encoding: per-thread times come from the table.
+
+    Superseded (Task 5/6 rebuild this): the route is ``GET /threads/{id}``, and the body it asserts
+    on also carries ``pending_interrupt`` (Task 6 removes it) and ``children`` (the derived-thread
+    fan-out Task 3/7 remove). The null-``created_at`` principle needs an analogous test against
+    whatever ``GET /sessions/{id}`` returns for its record.
     """
     service.messages = [
         MessageView(role="human", text="how long for brisket?", created_at=None),
@@ -423,6 +467,7 @@ def test_every_message_created_at_is_null_ro10(service: StubService, client: Tes
     assert body["pending_interrupt"] is None and body["children"] == []
 
 
+@pytest.mark.superseded
 def test_patch_sets_a_title_ro19(service: StubService, client: TestClient) -> None:
     """A human's title is permanent, and an empty one is a 400 rather than an erasure.
 
@@ -430,6 +475,10 @@ def test_patch_sets_a_title_ro19(service: StubService, client: TestClient) -> No
     overrides that, and SV-27 makes the override stick. Accepting ``""`` or whitespace would let a
     mis-sent request blank a title with no undo (D6), and the human would have no way to tell their
     title from one the model never wrote.
+
+    Superseded (Task 5 rebuilds this): ``PATCH /threads/{id}`` dies; the successor is
+    ``POST /sessions/{id}/name``, a differently-verbed route that also renames the file and
+    retitles every attached channel — not a like-for-like rename of this test.
     """
     response = client.patch(f"/threads/{THREAD}", json={"title": "  Brisket timing  "})
 
@@ -443,12 +492,16 @@ def test_patch_sets_a_title_ro19(service: StubService, client: TestClient) -> No
     assert service.rows[THREAD].title == "Brisket timing"
 
 
+@pytest.mark.superseded
 def test_delete_thread_is_204_ro16(service: StubService, client: TestClient) -> None:
     """204 with no body, and the id passed through untouched so the cascade finds its children.
 
     Deleting erases checkpoints and every derived expert thread (SV-24) and there is no undo (D6),
     so the id the service is handed has to be the id the human asked for, character for character —
     a normalized or truncated one would cascade over a *different* subtree.
+
+    Superseded (Task 5 rebuilds this): not a rename — ``DELETE /sessions/{id}`` does not exist at
+    all, by design ("nothing deletes a session"). There is no successor for this test.
     """
     response = client.delete(f"/threads/{DERIVED}")
 
@@ -457,6 +510,7 @@ def test_delete_thread_is_204_ro16(service: StubService, client: TestClient) -> 
     assert ("delete_thread", (DERIVED,)) in service.calls
 
 
+@pytest.mark.superseded
 def test_proposals_are_listed_and_dismissed_ro19(service: StubService, client: TestClient) -> None:
     """Without retrieval the propose-only path records into a void; without dismiss the queue grows.
 
@@ -499,6 +553,7 @@ def test_an_empty_message_is_400_ro11(service: StubService, client: TestClient) 
     assert not [call for call in service.calls if call[0] == "start_run"]
 
 
+@pytest.mark.superseded
 def test_approval_mode_is_not_settable_over_http_ro11(
     service: StubService, client: TestClient
 ) -> None:
@@ -509,6 +564,9 @@ def test_approval_mode_is_not_settable_over_http_ro11(
     refuses its own writes and files nothing, and the human sees a turn that "worked" and a knowledge
     base that did not change. Ignoring the field would be worse than rejecting it: the client would
     believe the mode took effect.
+
+    Superseded (Task 6 rebuilds this): ``approval_mode`` has no meaning once gates are gone — the
+    operator's instruction is the approval, so there is no gate for a mode to auto-reject.
     """
     response = client.post(
         f"/threads/{THREAD}/runs", json={"message": "file this", "approval_mode": "propose_only"}
@@ -519,6 +577,7 @@ def test_approval_mode_is_not_settable_over_http_ro11(
     assert service.modes == []  # never reached the service, so no mode was chosen at all
 
 
+@pytest.mark.superseded
 def test_an_interrupt_without_an_interrupt_id_is_400_ro12(
     service: StubService, client: TestClient
 ) -> None:
@@ -540,6 +599,7 @@ def test_an_interrupt_without_an_interrupt_id_is_400_ro12(
     assert not [call for call in service.calls if call[0] == "resume"]
 
 
+@pytest.mark.superseded
 def test_an_interrupt_posted_to_the_parent_is_never_redirected_ro14() -> None:
     """An approval is resolved on the thread that owns it — and Layer 3 does not "help".
 
@@ -565,6 +625,7 @@ def test_an_interrupt_posted_to_the_parent_is_never_redirected_ro14() -> None:
     assert [call for call in service.calls if call[0] == "resume"] == [("resume", (THREAD, "i-1"))]
 
 
+@pytest.mark.superseded
 def test_validation_happens_before_the_stream_opens_ro13(
     service: StubService, client: TestClient
 ) -> None:
@@ -575,6 +636,10 @@ def test_validation_happens_before_the_stream_opens_ro13(
     error. RO-13 therefore orders the work: read the interrupt, validate the decisions, *then*
     become a stream. The second assertion is the one with teeth — a route that validated after
     calling ``resume`` would still return 400 here while having already advanced the graph.
+
+    Superseded (Task 6 rebuilds this): entirely about the ``/interrupt`` route, deleted outright.
+    The validate-before-stream principle for ``/runs`` is a separate, surviving assertion —
+    ``test_an_empty_message_is_400_ro11`` above.
     """
     for body in (
         {"decisions": [{"type": "approve"}]},  # no interrupt_id
@@ -590,6 +655,7 @@ def test_validation_happens_before_the_stream_opens_ro13(
     assert not [call for call in service.calls if call[0] == "resume"]
 
 
+@pytest.mark.superseded
 def test_a_forged_decision_type_is_refused_ro15(service: StubService, client: TestClient) -> None:
     """A client may narrow the decisions it offers; it may never invent one.
 
@@ -610,6 +676,7 @@ def test_a_forged_decision_type_is_refused_ro15(service: StubService, client: Te
     assert not [call for call in service.calls if call[0] == "resume"]
 
 
+@pytest.mark.superseded
 def test_a_widened_decision_is_refused_by_the_service_ro15() -> None:
     """The re-validation behind the route reaches the wire as 400, not as a 500 or a stream.
 
@@ -647,15 +714,20 @@ class UnmappedAgentError(PkbAgentError):
         (UnknownAgentError("no agent answers to 'topic/atlantis'"), 404, "unknown_agent"),
         (UnknownThreadError("no thread '3f0c9a1e'"), 404, "unknown_thread"),
         (ThreadBusyError("a run is already active on thread '3f0c9a1e'"), 409, "thread_busy"),
-        (
+        pytest.param(
             ApprovalPendingError("thread '3f0c9a1e' is waiting on an approval"),
             409,
             "approval_pending",
+            marks=pytest.mark.superseded,
+            # Superseded (Task 6 rebuilds this): no gate means nothing is ever "waiting on an
+            # approval" — the error type itself is retired with the interrupt-resume surface.
         ),
-        (
+        pytest.param(
             StaleInterruptError("interrupt 'i-0' is no longer the pending one"),
             409,
             "stale_interrupt",
+            marks=pytest.mark.superseded,
+            # Superseded (Task 6 rebuilds this): no interrupt exists to go stale.
         ),
         (InvalidDecisionError("expected 2 decisions, got 1"), 400, "invalid_decision"),
     ],
@@ -670,6 +742,10 @@ def test_each_typed_error_maps_to_one_status_and_code_ro20(
     ``stale_interrupt`` says refetch the interrupt: identical status codes, opposite client
     reactions. A route building its own ``HTTPException`` would be a second place this mapping
     lives, and the two would drift the first time an error message was reworded.
+
+    Two of the six cases (``approval_pending``, ``stale``) are marked superseded individually —
+    see their ``pytest.param`` above — the other four are generic error-code mapping that survives
+    the route rename to ``/sessions/{id}/runs``.
     """
     service = seed(RaisingService(events=SCRIPT))
     service.error = error
@@ -762,6 +838,7 @@ def _decision_points(tree: ast.AST) -> Iterator[ast.AST]:
             yield node
 
 
+@pytest.mark.superseded
 def test_origin_channel_never_decides_anything_ro22() -> None:
     """D3's promise — a thread started in the TUI is finishable from Telegram — is one ``if`` away
     from being deleted, in exactly the case the design is proudest of.
@@ -776,6 +853,10 @@ def test_origin_channel_never_decides_anything_ro22() -> None:
     "tui"`` on one line and ``if allowed`` on the next is the same check wearing a hat. The one
     boolean-context use that survives is ``fields.get("origin_channel") or "http"`` in
     ``create_thread`` — a default for a *label* being written, which decides no permission.
+
+    Superseded (Task 7 rebuilds this): ``origin_channel`` disappears from the data model outright —
+    a session carries no channel field, channels attach through a separate registry. Task 7 needs an
+    analogous structural assertion that channel identity never decides anything about a session.
     """
     offenders: list[str] = []
     mentions = 0
@@ -805,7 +886,15 @@ def test_origin_channel_never_decides_anything_ro22() -> None:
     ("method", "path", "body"),
     [
         ("POST", f"/threads/{THREAD}/runs", {"message": "how long for brisket?"}),
-        ("POST", f"/threads/{THREAD}/interrupt", {"interrupt_id": "i-1", "decisions": []}),
+        pytest.param(
+            "POST",
+            f"/threads/{THREAD}/interrupt",
+            {"interrupt_id": "i-1", "decisions": []},
+            marks=pytest.mark.superseded,
+            # Superseded (Task 6 rebuilds this): the /interrupt route is deleted outright, along
+            # with the interrupt-resume surface — the "runs" and "events" cases below cover the
+            # SSE-header principle for the routes that survive the rename.
+        ),
         ("GET", f"/threads/{THREAD}/events", None),
     ],
     ids=["runs", "interrupt", "events"],

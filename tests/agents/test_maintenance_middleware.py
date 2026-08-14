@@ -817,10 +817,20 @@ async def test_aflush_pending_refuses_an_empty_set_mw28(
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_an_interrupted_turn_flushes_once_on_resume_mw29(
     kb: Path, middleware: KbMaintenanceMiddleware, reports: list[FlushReport]
 ) -> None:
-    """Zero flushes while the human thinks, exactly one when they answer (MW-29)."""
+    """Zero flushes while the human thinks, exactly one when they answer (MW-29).
+
+    Superseded (Phase 3 rebuilds this): MW-29's whole premise is the `interrupt_on` composition and
+    `agent.get_state(config).interrupts`/`Command(resume=...)` surface, all of which Task 6 deletes
+    at the composition point — a write now lands mid-turn with nothing to park on, so there is no
+    "while the human thinks" interval left to flush zero times during. The one-flush-per-turn
+    guarantee this test also exercises is already pinned gate-free by
+    `test_one_flush_per_turn_carries_every_touched_path_mw20`; nothing here needs a successor unless
+    Phase 3 reintroduces some other kind of pause.
+    """
     model = scripted(
         calls(
             write_call("/kb/Cooking/notes/searing.md", note("Searing", "Crust on a steak"), "c1")

@@ -697,6 +697,7 @@ async def test_three_updates_leave_one_run_and_two_silences_tg20(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_a_stranger_pressing_a_button_resolves_nothing_decision_x(
     service: ScriptedService,
     store: SqliteTelegramStore,
@@ -726,6 +727,7 @@ async def test_a_stranger_pressing_a_button_resolves_nothing_decision_x(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_a_stranger_pressing_a_button_is_told_why_decision_x(
     service: ScriptedService,
     store: SqliteTelegramStore,
@@ -909,6 +911,7 @@ async def test_a_fan_out_sends_one_roster_line_and_no_tool_lines_tg43(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_four_runs_end_four_distinguishable_ways_tg50(
     store: SqliteTelegramStore, journal: Journal
 ) -> None:
@@ -918,6 +921,12 @@ async def test_four_runs_end_four_distinguishable_ways_tg50(
     SSE encoder for wire clients and do not exist on the dataclasses this adapter receives. A client
     that matches three states therefore renders "done" for every provider failure, and over an
     interrupted run "done" means a parked, irreversible write that nobody is ever asked about.
+
+    Superseded (Task 6 rebuilds this): the ``"interrupted"`` arm — ``InterruptEvent``, the parked
+    ``ApprovalRequest``, "decision" in the transcript — has no successor once no gate ever raises;
+    ``completed``, ``cancelled`` and ``error`` stay real outcomes a run can end in. Marked whole
+    because the one assertion, ``len(set(transcripts.values())) == 4``, binds all four arms
+    together — a three-state rebuild needs its own test rather than a trimmed loop here.
     """
     request = approval()
     scripts: dict[str, list[AgentEvent]] = {
@@ -1068,6 +1077,7 @@ async def test_the_subscription_close_is_called_not_awaited_tg52(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_a_pending_approval_reposts_the_keyboard_and_quotes_the_message_tg37(
     store: SqliteTelegramStore,
     api: FakeBotApi,
@@ -1096,6 +1106,7 @@ async def test_a_pending_approval_reposts_the_keyboard_and_quotes_the_message_tg
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_a_pending_approval_neither_rotates_nor_retries_tg37(
     store: SqliteTelegramStore, api: FakeBotApi, journal: Journal
 ) -> None:
@@ -1118,6 +1129,7 @@ async def test_a_pending_approval_neither_rotates_nor_retries_tg37(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_a_fan_out_gate_parked_on_a_child_is_still_reposted_tg53(
     store: SqliteTelegramStore, api: FakeBotApi, journal: Journal
 ) -> None:
@@ -1175,6 +1187,7 @@ async def test_a_busy_thread_reads_as_progress_and_is_never_retried_tg38(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_a_nine_thousand_character_description_arrives_whole_before_the_buttons_tg56(
     service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
 ) -> None:
@@ -1201,6 +1214,7 @@ async def test_a_nine_thousand_character_description_arrives_whole_before_the_bu
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_the_validation_label_leads_the_button_message_tg66(
     service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
 ) -> None:
@@ -1223,6 +1237,7 @@ async def test_the_validation_label_leads_the_button_message_tg66(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_a_clean_description_gets_no_validation_line_tg66(
     service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
 ) -> None:
@@ -1245,6 +1260,7 @@ async def test_a_clean_description_gets_no_validation_line_tg66(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_a_fresh_adapter_resolves_a_press_it_never_sent_tg58(
     service: ScriptedService,
     store: SqliteTelegramStore,
@@ -1275,6 +1291,7 @@ async def test_a_fresh_adapter_resolves_a_press_it_never_sent_tg58(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_an_approval_the_adapter_cannot_locate_resumes_nothing_tg58(
     service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi, journal: Journal
 ) -> None:
@@ -1295,6 +1312,7 @@ async def test_an_approval_the_adapter_cannot_locate_resumes_nothing_tg58(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_a_fan_out_approval_resolves_against_the_experts_own_thread_tg59(
     service: ScriptedService,
     store: SqliteTelegramStore,
@@ -1322,6 +1340,7 @@ async def test_a_fan_out_approval_resolves_against_the_experts_own_thread_tg59(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_answering_an_experts_approval_does_not_rebind_the_chat_tg59(
     service: ScriptedService,
     store: SqliteTelegramStore,
@@ -1347,6 +1366,7 @@ async def test_answering_an_experts_approval_does_not_rebind_the_chat_tg59(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_one_of_two_actions_answered_submits_nothing_tg60(
     service: ScriptedService,
     store: SqliteTelegramStore,
@@ -1382,6 +1402,7 @@ async def test_one_of_two_actions_answered_submits_nothing_tg60(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_the_last_answer_submits_every_decision_in_action_order_tg60(
     service: ScriptedService,
     store: SqliteTelegramStore,
@@ -1421,6 +1442,7 @@ async def test_the_last_answer_submits_every_decision_in_action_order_tg60(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_the_callback_is_answered_before_the_resume_tg61(
     service: ScriptedService,
     store: SqliteTelegramStore,
@@ -1448,6 +1470,7 @@ async def test_the_callback_is_answered_before_the_resume_tg61(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_the_callback_is_answered_while_the_resume_is_still_blocked_tg61(
     service: ScriptedService,
     store: SqliteTelegramStore,
@@ -1485,6 +1508,7 @@ async def test_the_callback_is_answered_while_the_resume_is_still_blocked_tg61(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_a_stale_press_is_answered_before_anything_else_tg61(
     service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi, journal: Journal
 ) -> None:
@@ -1509,6 +1533,7 @@ async def test_a_stale_press_is_answered_before_anything_else_tg61(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_a_press_on_an_interrupt_another_channel_answered_resumes_nothing_tg62(
     service: ScriptedService,
     store: SqliteTelegramStore,
@@ -1539,6 +1564,7 @@ async def test_a_press_on_an_interrupt_another_channel_answered_resumes_nothing_
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_every_message_of_an_approval_loses_its_buttons_tg63(
     service: ScriptedService,
     store: SqliteTelegramStore,
@@ -1576,6 +1602,7 @@ async def test_every_message_of_an_approval_loses_its_buttons_tg63(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_a_press_replayed_after_the_answer_resumes_nothing_tg63(
     service: ScriptedService,
     store: SqliteTelegramStore,
@@ -1603,6 +1630,7 @@ async def test_a_press_replayed_after_the_answer_resumes_nothing_tg63(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_a_press_that_cannot_be_applied_says_so_tg58(
     service: ScriptedService,
     store: SqliteTelegramStore,
@@ -1636,6 +1664,7 @@ async def test_a_press_that_cannot_be_applied_says_so_tg58(
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_the_keyboard_is_built_from_allowed_decisions_not_a_hardcoded_pair_tg54() -> None:
     """Today's gate table and a hardcoded approve/reject agree — which is what hides the bug.
 
@@ -1654,6 +1683,7 @@ def test_the_keyboard_is_built_from_allowed_decisions_not_a_hardcoded_pair_tg54(
     assert [button["text"] for row in ordered for button in row] == ["Reject", "Approve"]
 
 
+@pytest.mark.superseded
 def test_approve_and_reject_never_share_a_row_tg64() -> None:
     """On a phone, two buttons in one row are neighbouring keys under one thumb.
 
@@ -1667,6 +1697,7 @@ def test_approve_and_reject_never_share_a_row_tg64() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_an_action_nobody_can_answer_is_a_hand_off_not_an_empty_keyboard_tg55(
     service: ScriptedService,
     store: SqliteTelegramStore,
@@ -1690,6 +1721,7 @@ async def test_an_action_nobody_can_answer_is_a_hand_off_not_an_empty_keyboard_t
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_the_hand_off_names_the_thread_it_parked_on_tg55(
     service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
 ) -> None:
@@ -1710,6 +1742,7 @@ async def test_the_hand_off_names_the_thread_it_parked_on_tg55(
     assert COOKING in api.transcript
 
 
+@pytest.mark.superseded
 def test_callback_data_carries_a_handle_and_fits_the_budget_tg57() -> None:
     """64 **bytes**, and nothing meaningful fits in them.
 
@@ -1717,6 +1750,11 @@ def test_callback_data_carries_a_handle_and_fits_the_budget_tg57() -> None:
     ``verb|thread|interrupt|index`` is 97 bytes — over the limit, for the fan-out case that is the
     common one. Neither Telegram client library checks at construction; it 400s at the server, which
     is to say at the moment a human is waiting for an approval.
+
+    Superseded (Task 6 rebuilds this): ``callback_data``'s whole reason to exist is fitting an
+    approval decision into 64 bytes, and there is no decision left to fit once no gate raises one.
+    If a future picker or confirm flow (Task 7's "deep Telegram UX") needs buttons of its own, the
+    byte-budget property this test pins is worth re-deriving against whatever that scheme keys on.
     """
     for index in range(100):
         data = callback_data("7f3a2b1c", index, "a")
@@ -1725,6 +1763,7 @@ def test_callback_data_carries_a_handle_and_fits_the_budget_tg57() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_no_emitted_button_carries_a_thread_or_interrupt_id_tg57(
     service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
 ) -> None:
@@ -1751,6 +1790,7 @@ async def test_no_emitted_button_carries_a_thread_or_interrupt_id_tg57(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_a_destructive_reason_takes_a_second_tap_tg64(
     service: ScriptedService,
     store: SqliteTelegramStore,
@@ -1896,6 +1936,7 @@ async def test_several_messages_share_one_thread_tg26(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_only_new_rotates_the_thread_tg27(
     service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi, journal: Journal
 ) -> None:
@@ -1904,6 +1945,11 @@ async def test_only_new_rotates_the_thread_tg27(
     A timer or a message count would silently split a conversation, so the human's follow-up lands
     in a thread with none of the context they think it has — and the note is filed against the wrong
     discussion, with no undo and no signal that anything moved.
+
+    Superseded (Task 7 rebuilds this): ``/new`` is the channel-is-identity model's own rotation
+    command and it dies with it — channels attach to and detach from a session explicitly instead of
+    one binding being silently swapped in place. The principle here (no invisible rotation) is real
+    and needs a successor once attach/detach exists.
     """
     bot = adapter(service, store, api)
 
@@ -1921,6 +1967,7 @@ async def test_only_new_rotates_the_thread_tg27(
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_the_command_surface_is_exactly_six_and_has_no_connect_or_talk_tg39() -> None:
     """``/connect`` is gone, and with it "which expert am I talking to?".
 
@@ -1934,6 +1981,12 @@ def test_the_command_surface_is_exactly_six_and_has_no_connect_or_talk_tg39() ->
     ``/talk`` is asserted absent for the same reason as ``/connect`` (decision AF). It was the
     obvious command to add once experts had channels, and it would have restored the hidden
     current-agent mode under a new name — the one thing a topic title cannot be is invisible.
+
+    Superseded (Task 5/6 rebuild this): ``/new`` dies with the channel-is-identity model (a session
+    is not rotated by a chat command) and ``/pending`` dies with the gates it lists — ``/threads``,
+    ``/agents`` and ``/cancel`` want session-shaped successors, and ``/channels`` is the one member
+    of this tuple Task 7 keeps as is. The absence of ``/connect``/``/talk`` this test actually
+    argues for is untouched by any of that.
     """
     assert COMMANDS == ("/new", "/threads", "/agents", "/pending", "/cancel", "/channels")
     assert "/connect" not in COMMANDS
@@ -2049,6 +2102,7 @@ async def test_two_chats_on_one_agent_hold_independent_threads_tg25(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_the_preview_never_tells_the_human_to_open_the_tui_for_text_above_it_tg56(
     service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
 ) -> None:
@@ -2318,6 +2372,7 @@ async def test_the_window_is_per_chat_so_a_second_chat_is_still_answered_tg23(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_a_press_on_an_answered_approval_raises_an_alert_tg62(
     service: ScriptedService,
     store: SqliteTelegramStore,
@@ -2427,6 +2482,7 @@ async def test_each_chat_runs_against_its_own_agent_tg1(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_a_thread_started_from_a_chat_is_stamped_telegram_tg4(
     service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
 ) -> None:
@@ -2437,6 +2493,12 @@ async def test_a_thread_started_from_a_chat_is_stamped_telegram_tg4(
     indistinguishable from an HTTP one in the TUI's list — the whole point of the stamp — and
     nothing anywhere would say so. Asserted at the call *and* on the stored row, since the row is
     what the TUI reads.
+
+    Superseded (Task 7 rebuilds this): ``origin_channel`` as a field stamped onto the thread at
+    creation is exactly the channel-is-identity model Task 7 retires — a session belongs to no one
+    channel, several may attach. What survives is the underlying worry (a conversation's origin must
+    stay visible somewhere a human can look), which needs answering through the attach registry
+    instead of a stamped column.
     """
     bot = adapter(service, store, api)
 
@@ -2546,6 +2608,7 @@ async def test_ten_edits_from_one_unmapped_chat_are_rate_limited_like_a_message_
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_a_verb_the_live_action_does_not_allow_is_refused_not_converted_tg54(
     service: ScriptedService,
     store: SqliteTelegramStore,
@@ -2578,6 +2641,7 @@ async def test_a_verb_the_live_action_does_not_allow_is_refused_not_converted_tg
 
 @pytest.mark.asyncio
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_a_button_the_live_request_no_longer_offers_is_refused_not_recorded_tg60(
     service: ScriptedService,
     store: SqliteTelegramStore,
@@ -2612,6 +2676,7 @@ async def test_a_button_the_live_request_no_longer_offers_is_refused_not_recorde
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_cancelling_a_destructive_confirm_answers_nothing_tg64(
     service: ScriptedService,
     store: SqliteTelegramStore,
@@ -2648,6 +2713,7 @@ async def test_cancelling_a_destructive_confirm_answers_nothing_tg64(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_the_confirm_step_loses_its_keyboard_with_every_other_message_tg63(
     service: ScriptedService,
     store: SqliteTelegramStore,
@@ -2684,6 +2750,7 @@ async def test_the_confirm_step_loses_its_keyboard_with_every_other_message_tg63
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_a_resume_that_loses_the_race_still_raises_an_alert_tg62(
     service: ScriptedService,
     store: SqliteTelegramStore,
@@ -2722,6 +2789,7 @@ async def test_a_resume_that_loses_the_race_still_raises_an_alert_tg62(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_a_failed_upload_hands_off_instead_of_attaching_buttons_to_a_fragment_tg56(
     service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
 ) -> None:
@@ -2751,6 +2819,7 @@ async def test_a_failed_upload_hands_off_instead_of_attaching_buttons_to_a_fragm
     assert "the TUI" in api.transcript
 
 
+@pytest.mark.superseded
 def test_the_preview_marker_is_the_one_the_caller_supplied_tg56() -> None:
     """``fit`` passes ``marker=`` through instead of stripping a hand-copied literal.
 
@@ -2760,6 +2829,12 @@ def test_the_preview_marker_is_the_one_the_caller_supplied_tg56() -> None:
     no-ops, and the preview then prints "open the TUI for the whole diff" directly above the whole
     diff, which is the outcome decision U added the parameter to prevent. Asserted against the
     shared constant so a rewording moves both.
+
+    Superseded (Task 6 rebuilds this): the caller-supplied marker exists only to keep the preview
+    from sending a human to "open the TUI" for an approval description that is already in the chat
+    (decision U, TG-56) — and there is no approval description once no gate ever produces one.
+    ``fit``'s generic cut-and-mark behaviour is untouched; only this call site's reason to pass a
+    custom marker goes away.
     """
     preview, was_cut = fit("x" * 400 + "\n" + "y" * 400, 200, marker="\n… (full text above)")
 
@@ -2770,6 +2845,7 @@ def test_the_preview_marker_is_the_one_the_caller_supplied_tg56() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_the_validation_findings_travel_with_their_header_tg66(
     service: ScriptedService, store: SqliteTelegramStore, api: FakeBotApi
 ) -> None:
@@ -2805,6 +2881,7 @@ async def test_the_validation_findings_travel_with_their_header_tg66(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_a_one_tap_reject_carries_no_prose_tg65(
     service: ScriptedService,
     store: SqliteTelegramStore,
@@ -2977,6 +3054,7 @@ async def test_a_run_that_was_admitted_is_never_reported_as_lost_tg29(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_a_restart_reposts_the_keyboard_of_a_parked_fan_out_gate_tg31(
     service: ScriptedService,
     store: SqliteTelegramStore,
@@ -3134,6 +3212,7 @@ async def test_an_invalid_mapping_entry_is_visible_on_health_not_only_in_the_log
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_two_experts_gating_at_once_both_get_their_keyboard_back_tg53(
     service: ScriptedService,
     store: SqliteTelegramStore,

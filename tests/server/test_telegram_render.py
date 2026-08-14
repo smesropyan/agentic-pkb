@@ -373,6 +373,7 @@ def test_the_split_path_holds_no_summariser_reflow_or_re_sort_tg45() -> None:
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_every_emitted_callback_data_fits_the_64_byte_budget_tg57() -> None:
     """Property, over real handles and every index and verb the adapter emits.
 
@@ -381,6 +382,12 @@ def test_every_emitted_callback_data_fits_the_64_byte_budget_tg57() -> None:
     waiting on an approval, on the send that carries the buttons, so nothing arrives at all. A
     fan-out approval is the common case and indices grow with it, which is why the sweep runs to 99
     and the budget is measured in **bytes**, not characters.
+
+    Superseded (Task 6 rebuilds this): ``EMITTED_VERBS`` is the approve/reject/confirm/cancel verb
+    set of the interrupt-answer keyboard, and ``callback_data``/``parse_callback`` exist to encode a
+    decision on a pending approval. With no gates there is no decision to encode on a button; the
+    64-byte Bot API limit itself is generic and stays true, but nothing in this module needs it once
+    the keyboard-encoding scheme it protects is gone.
     """
     for _ in range(200):
         handle = secrets.token_hex(4)
@@ -391,6 +398,7 @@ def test_every_emitted_callback_data_fits_the_64_byte_budget_tg57() -> None:
                 assert parse_callback(data) == (handle, index, verb)
 
 
+@pytest.mark.superseded
 def test_the_state_that_does_not_fit_is_pinned_tg57() -> None:
     """The arithmetic that forced an opaque handle over a self-describing payload.
 
@@ -399,6 +407,11 @@ def test_the_state_that_does_not_fit_is_pinned_tg57() -> None:
     the limit, for the *common* case. ``v1|7f3a2b1c|0|a`` is 15. Nothing meaningful fits, so the
     button carries a key and the durable prompts row carries the state; the lookup is mandatory, not
     an optimisation, and this is the number that says so.
+
+    Superseded (Task 3/6 rebuild this): doubly retired — the derived thread id
+    ``<uuid4>::topic/cooking/grilling`` is the parent/derived addressing scheme Task 3 removes
+    outright, and the interrupt id it is measured beside is the parked-approval state Task 6 removes.
+    No successor: with no gate there is no state a button needs to reference at all.
     """
     thread_id = f"{uuid.uuid4()}::topic/cooking/grilling"
     assert len(thread_id) == 60
@@ -409,28 +422,37 @@ def test_the_state_that_does_not_fit_is_pinned_tg57() -> None:
     assert len(b"v1|7f3a2b1c|0|a") == 15
 
 
+@pytest.mark.superseded
 def test_callback_data_refuses_to_emit_an_oversized_payload_tg57() -> None:
     """The adapter validates the budget itself rather than trusting the caller or the library.
 
     If a future handle, verb or index scheme grows past 64 bytes, this raises here — in the code
     that built it — instead of 400ing at Telegram with a human watching a spinner. A silent pass is
     an approval that can never be answered from the phone.
+
+    Superseded (Task 6 rebuilds this): ``callback_data`` exists to encode a pending approval's
+    decision on a button; with no gates nothing ever builds one.
     """
     with pytest.raises(ValueError, match="64"):
         callback_data(secrets.token_hex(32), 0, "a")
 
 
+@pytest.mark.superseded
 def test_parse_callback_round_trips_what_callback_data_emits_tg57() -> None:
     """The button is the only thing that comes back, so the pair must be exact inverses.
 
     An index that round-trips as a string, or a handle the parser trims, resolves the wrong action
     of a fan-out — approving a write the human rejected, with no undo.
+
+    Superseded (Task 6 rebuilds this): ``callback_data``/``parse_callback`` are the approval-decision
+    button encoding; there is no fan-out action for a button press to resolve once gates are gone.
     """
     for index in (0, 7, 99):
         handle = secrets.token_hex(4)
         assert parse_callback(callback_data(handle, index, "cr")) == (handle, index, "cr")
 
 
+@pytest.mark.superseded
 @pytest.mark.parametrize(
     ("label", "data"),
     [
@@ -452,6 +474,10 @@ def test_parse_callback_rejects_rather_than_guesses_tg57(label: str, data: str) 
     at any time. Guessing at it — defaulting the index to 0, or the verb to approve — applies a
     decision to an action the human never saw. Refusing costs one unanswered press; guessing writes
     to the knowledge base.
+
+    Superseded (Task 6 rebuilds this): every case exercises ``parse_callback``, which exists to
+    resolve an approval-decision button press; with no gates there is no press and no decision to
+    guess at or refuse.
     """
     assert parse_callback(data) is None, label
 
@@ -461,6 +487,7 @@ def test_parse_callback_rejects_rather_than_guesses_tg57(label: str, data: str) 
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 @pytest.mark.parametrize("reason", list(GateReason), ids=[r.value for r in GateReason])
 def test_the_keyboard_is_the_servers_decisions_minus_edit_tg54(reason: GateReason) -> None:
     """All twelve shipped gate rows, against the table itself rather than against a literal pair.
@@ -471,6 +498,10 @@ def test_the_keyboard_is_the_servers_decisions_minus_edit_tg54(reason: GateReaso
     agreement is what would let the wrong implementation pass every test right up to the day a gate
     ships ``('edit', 'reject')`` and the bot draws an Approve button the server answers with a 400.
     Order is asserted too: it is the server's, and the first button is the one a hurried thumb hits.
+
+    Superseded (Task 6 rebuilds this): ``keyboard_for``/``GATE_DECISIONS`` render the interrupt's
+    approve/reject keyboard from a gate row; with no gates there is no server-decided set to derive a
+    keyboard from at all.
     """
     expected = tuple(d for d in GATE_DECISIONS[reason] if d not in {"edit", "respond"})
     keyboard = keyboard_for(action(GATE_DECISIONS[reason], reason=reason.value), "7f3a2b1c", 0)
@@ -481,6 +512,7 @@ def test_the_keyboard_is_the_servers_decisions_minus_edit_tg54(reason: GateReaso
     assert all(parse_callback(button["callback_data"]) is not None for button in buttons(keyboard))
 
 
+@pytest.mark.superseded
 @pytest.mark.parametrize(
     ("label", "allowed", "expected"),
     [
@@ -498,6 +530,9 @@ def test_a_gate_todays_table_does_not_ship_is_still_rendered_tg54(
     hardcoded bar offers Approve — a button that, pressed, sends a decision ``validate_decisions``
     rejects, so the human is told their approval failed for reasons that have nothing to do with the
     knowledge base. ``('reject', 'approve')`` pins that the channel narrows without re-ordering.
+
+    Superseded (Task 6 rebuilds this): ``allowed_decisions``/``validate_decisions`` are the gate's
+    vocabulary; with the gate gone there is no server-offered decision set left to narrow.
     """
     keyboard = keyboard_for(action(allowed), "7f3a2b1c", 3)
     assert keyboard is not None
@@ -505,6 +540,7 @@ def test_a_gate_todays_table_does_not_ship_is_still_rendered_tg54(
     assert all(parse_callback(b["callback_data"])[1] == 3 for b in buttons(keyboard))  # type: ignore[index]
 
 
+@pytest.mark.superseded
 def test_an_action_offering_only_respond_draws_no_button_tg54() -> None:
     """``respond`` is narrowed away, because this channel cannot produce a valid one (TG-54, TG-65).
 
@@ -516,10 +552,15 @@ def test_an_action_offering_only_respond_draws_no_button_tg54() -> None:
 
     Diverges from TG-54's parenthetical ``drop=("edit",)`` and agrees with arch §6; no shipped
     ``GATE_DECISIONS`` row offers ``respond``, so nothing in the deployed table changes.
+
+    Superseded (Task 6 rebuilds this): the whole scenario — a gate offering ``respond``, narrowed for
+    a keyboard channel, handed off to the TUI via TG-55 — is interrupt-surface machinery; with the
+    operator's instruction as the approval, no channel is ever asked to render a decision at all.
     """
     assert keyboard_for(action(("respond",)), "7f3a2b1c", 0) is None
 
 
+@pytest.mark.superseded
 def test_the_module_holds_no_hardcoded_approve_reject_pair_tg54() -> None:
     """Asserted by absence, because the correct and the wrong answer agree on every shipped input.
 
@@ -527,6 +568,10 @@ def test_the_module_holds_no_hardcoded_approve_reject_pair_tg54() -> None:
     a specification and is only a description of today's table (C-34). A ``["approve", "reject"]``
     anywhere in this module is that sentence implemented — passing every test in this file's table
     until the table changes under it.
+
+    Superseded (Task 6 rebuilds this): the whole subject — deriving an approve/reject keyboard from
+    ``allowed_decisions`` rather than hardcoding it — is retired with the gate that produced
+    ``allowed_decisions`` in the first place.
     """
     assert {"approve", "reject"} not in string_sequence_literals()
     assert "offered" in names_in("keyboard_for")
@@ -537,6 +582,7 @@ def test_the_module_holds_no_hardcoded_approve_reject_pair_tg54() -> None:
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 @pytest.mark.parametrize("reason", list(GateReason), ids=[r.value for r in GateReason])
 def test_approve_and_reject_are_never_in_one_row_tg64(reason: GateReason) -> None:
     """Every gate row: the two opposite answers are never neighbouring keys.
@@ -545,6 +591,10 @@ def test_approve_and_reject_are_never_in_one_row_tg64(reason: GateReason) -> Non
     is one mis-tap away from an irreversible write to a knowledge base with no version control and
     no undo (D6) — and the mis-tap is indistinguishable from the intent, because the only record is
     the decision itself.
+
+    Superseded (Task 6 rebuilds this): there is no Approve/Reject keyboard row to lay out once the
+    operator's instruction is the approval; the underlying "a destructive action needs a thumb-safe
+    layout" concern has no successor until Phase 5 revisits confirmation UX, if at all.
     """
     keyboard = keyboard_for(action(GATE_DECISIONS[reason], reason=reason.value), "7f3a2b1c", 0)
     assert keyboard is not None
@@ -553,6 +603,7 @@ def test_approve_and_reject_are_never_in_one_row_tg64(reason: GateReason) -> Non
         assert not {"Approve", "Reject"} <= texts, row
 
 
+@pytest.mark.superseded
 @pytest.mark.parametrize(
     ("label", "allowed"),
     [("nothing-allowed", ()), ("edit-only", ("edit",))],
@@ -566,16 +617,25 @@ def test_nothing_offerable_gives_no_keyboard_not_an_empty_one_tg64(
     a delivery fault and invites the human to wait for a retry that will never come. A message with
     no buttons at least reads as "answer this somewhere else", which is true: the interrupt is still
     parked and the TUI can resolve it (TG-55).
+
+    Superseded (Task 6 rebuilds this): "the interrupt is still parked and the TUI can resolve it" is
+    exactly the interrupt-resume surface Task 6 removes; ``keyboard_for`` renders nothing because
+    there is no gate to narrow, not because a channel narrowed one away.
     """
     assert keyboard_for(action(allowed), "7f3a2b1c", 0) is None, label
 
 
+@pytest.mark.superseded
 def test_the_no_undo_reasons_are_real_gate_reasons_tg64() -> None:
     """The three destructive reasons, spelled the way the server spells them.
 
     They are matched against ``ActionView.reason``, which is a slug on the wire — so a typo or a
     renamed enum member does not fail anywhere. It silently removes the second tap and the "there is
     no undo" line from a delete, and the first thing anybody learns about it is a file that is gone.
+
+    Superseded (Task 6 rebuilds this): ``GateReason``/``NO_UNDO_REASONS`` name the gate's own
+    vocabulary of why an interrupt parked; with the gate removed there is no reason enum left to
+    match a second-tap confirmation against.
     """
     shipped = {reason.value for reason in GateReason}
     destructive = {
@@ -587,6 +647,7 @@ def test_the_no_undo_reasons_are_real_gate_reasons_tg64() -> None:
     assert set(NO_UNDO_REASONS) == destructive
 
 
+@pytest.mark.superseded
 def test_the_confirm_step_still_fits_the_button_budget_tg64() -> None:
     """The second tap is a button too, and its verbs are longer than the first tap's.
 
@@ -594,6 +655,9 @@ def test_the_confirm_step_still_fits_the_button_budget_tg64() -> None:
     against the same handle and index. If the extra byte pushed the payload over 64, the destructive
     reasons — the only ones that need confirming — would be the only ones that could not be
     answered from the phone.
+
+    Superseded (Task 6 rebuilds this): the confirm/cancel second tap only exists to protect a
+    destructive gate decision; with no gate there is no second tap to budget for.
     """
     for verb in ("ca", "cr", "x"):
         data = callback_data(secrets.token_hex(4), 99, verb)
@@ -627,6 +691,7 @@ def test_the_mechanical_counter_fits_inside_the_wire_limit_tg45() -> None:
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_the_verb_table_is_read_in_both_directions_tg54() -> None:
     """The keyboard and the resolver must not be two independent opinions about a button.
 
@@ -635,6 +700,10 @@ def test_the_verb_table_is_read_in_both_directions_tg54() -> None:
     verbs shipped today and silently turns every future one into a rejection of a write the human
     never looked at. Asserted structurally, because behaviourally the two agree on every input that
     currently exists, which is precisely what let the wrong half live.
+
+    Superseded (Task 6 rebuilds this): ``VERBS``/``_VERB_FOR``/``_offered_type``/``_resolve`` are the
+    approve/reject/confirm/cancel button-to-decision table; with no gate there is no decision for a
+    press to resolve to.
     """
     assert "VERBS" in names_in("_offered_type"), "the press is validated through the table"
     assert "VERBS" in names_in("_resolve"), "the decision is built from the table, not a comparison"
@@ -667,6 +736,7 @@ def test_the_preview_marker_is_passed_through_not_stripped_back_off_tg56() -> No
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_no_thread_id_is_ever_constructed_in_a_telegram_module_tg40() -> None:
     """A client-derived thread id resolves to the wrong agent, and shares a checkpoint with it.
 
@@ -678,6 +748,12 @@ def test_no_thread_id_is_ever_constructed_in_a_telegram_module_tg40() -> None:
 
     Asserted over string constants and f-strings rather than by importing, because the point is
     absence: there is no call to make and no exception to catch.
+
+    Superseded (Task 3 rebuilds this): the ``"::"`` separator and ``expert_thread_id`` are the
+    parent/derived thread addressing scheme retired outright — a session belongs to one agent
+    directly, with no id to assemble a second implementation of. The durable principle, "the bot
+    renders ids, it never mints them," survives and needs a successor guarding against a
+    bot-constructed session id, once Task 3 names what that id looks like.
     """
     separator = "::"
     assert not [text for text in string_constants() if separator in text]

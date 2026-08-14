@@ -72,6 +72,17 @@ from tests.server.stub import AGENTS, COOKING, LIBRARIAN
 GRILLING = "topic/cooking/grilling"
 """A sub-topic of ``topic/cooking``: the id that makes prefix matching and naive splitting wrong."""
 
+pytestmark = pytest.mark.superseded
+"""Superseded (Task 3 rebuilds this): every test in this file exercises ``ThreadStore`` — the
+parent/derived id algebra (SV-9 … SV-13), gate-parking on a derived row (ST-10 … ST-12),
+``origin_channel`` (ST-13) and the interrupt-clearing badge (ST-10) — all of it retired wholesale by
+the sessions model (DESIGN.md §2): a session belongs to one agent directly with no parent/derived
+split, channels attach rather than stamp an ``origin_channel``, and there is no gate to park on.
+``tests/service/test_sessions.py`` (Task 3) is the from-scratch replacement, reusing this file's
+SQLite/migration discipline and slug/id minting shape per the plan, not its assertions. Whole-file
+marked because every test here is about ``ThreadStore``, which Task 10 deletes along with
+``threads.py``."""
+
 ACTION = ActionView(
     tool="write_file",
     args={"path": "Cooking/notes/steak.md"},

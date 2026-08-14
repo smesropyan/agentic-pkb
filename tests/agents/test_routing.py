@@ -423,6 +423,7 @@ async def test_one_expert_files_and_another_declines_and_that_is_a_success(kb: P
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_an_experts_gate_parks_on_its_own_thread_and_the_others_still_answer_lb16(
     kb: Path,
@@ -444,6 +445,13 @@ async def test_an_experts_gate_parks_on_its_own_thread_and_the_others_still_answ
     * the interrupt names the **expert** and the expert's thread, which is exactly what step 4's
       offer told the human, so a client can answer it without knowing anything about the fan-out;
     * resolving it on that thread completes the write.
+
+    Superseded (Phase 3 rebuilds this): both load-bearing mechanisms here are retired — the gate
+    itself (`InterruptEvent`, `pending_approval`, `Decision`-based `resume`) and the derived-thread
+    address it parks on (`expert_thread_id`, LB-14's `<parent>::<agent>` scheme), which DESIGN.md §2
+    replaces with a session belonging to one agent directly. There is no gate to park on and no
+    parent/derived split to park it against. The fan-out-does-not-stall-on-one-expert *principle* is
+    real and needs a successor once an expert consultation attaches its own session instead.
     """
     models = {
         LIBRARIAN: scripted(routes(COOKING, BBQ, reason="notes and fuel")),
@@ -482,11 +490,18 @@ async def test_an_experts_gate_parks_on_its_own_thread_and_the_others_still_answ
         assert "Sear hot" in (kb / "Cooking" / "notes" / "summary.md").read_text()
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_an_expert_still_parked_from_an_earlier_turn_is_reported_not_fatal_lb16(
     kb: Path,
 ) -> None:
-    """RT-39 inside a fan-out: the refusal becomes that expert's section, never the turn's failure."""
+    """RT-39 inside a fan-out: the refusal becomes that expert's section, never the turn's failure.
+
+    Superseded (Phase 3 rebuilds this): RT-39's whole premise is a thread left waiting on a gate
+    across turns — with no gate and no parked proposal (DESIGN.md §2), an expert is never "still
+    parked" from an earlier turn. Needs a successor once Phase 3 defines what an unfinished expert
+    consultation looks like without an interrupt to still be pending on.
+    """
     models = {
         LIBRARIAN: scripted(routes(COOKING, BBQ), routes(COOKING, BBQ, id_="r2")),
         COOKING: scripted(
@@ -618,6 +633,7 @@ async def test_an_unknown_topic_id_is_reported_rather_than_silently_dropped(kb: 
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_an_empty_catalog_reaches_the_gated_create_topic_flow_lb7(empty_kb: Path) -> None:
     """A topic gap goes to `create_topic`, gated, on the Librarian's own thread (README §2.2).
@@ -625,6 +641,11 @@ async def test_an_empty_catalog_reaches_the_gated_create_topic_flow_lb7(empty_kb
     Bootstrapping starts here: zero topics, so every inbound item is a gap and there is no menu to
     offer — a list of no experts is not a choice. The routing step hands the turn back to the
     Librarian, which proposes a topic, and the human decides. Nothing is created unattended.
+
+    Superseded (Phase 3 rebuilds this): the gate (`InterruptEvent`, approve-and-resume via
+    `Decision`) is retired wholesale — no gates, no parked proposals anywhere (DESIGN.md §2). The
+    topic-gap-hands-back-to-the-Librarian routing principle survives; "nothing is created unattended"
+    needs a successor that is not a gate.
     """
     models = {
         LIBRARIAN: scripted(
@@ -655,11 +676,17 @@ async def test_an_empty_catalog_reaches_the_gated_create_topic_flow_lb7(empty_kb
         assert "topic/physics" in {agent.agent_id for agent in runtime.list_agents()}
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_a_gated_topic_proposal_does_not_fan_out_and_leaves_the_thread_resumable(
     kb: Path,
 ) -> None:
-    """A classification turn that parks on `create_topic` ends there: no experts, one interrupt."""
+    """A classification turn that parks on `create_topic` ends there: no experts, one interrupt.
+
+    Superseded (Phase 3 rebuilds this): "parks on `create_topic`" and `pending_approval` are the
+    retired gate surface (DESIGN.md §2: no gates, no parked proposals anywhere). The
+    no-fan-out-on-a-topic-gap principle survives; needs a successor with no interrupt to park on.
+    """
     models = {
         LIBRARIAN: scripted(
             calls(
@@ -765,8 +792,15 @@ def test_the_default_cap_matches_the_plans_concurrency_lb15() -> None:
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_an_experts_thread_is_derived_from_the_librarians_lb14() -> None:
-    """Derived rather than minted, so "continue with the Cooking expert" resolves to a real thread."""
+    """Derived rather than minted, so "continue with the Cooking expert" resolves to a real thread.
+
+    Superseded (Phase 3 rebuilds this): `expert_thread_id`/`librarian_thread_id`/
+    `EXPERT_THREAD_SEPARATOR` are the `<parent-thread>::<agent-id>` derived-thread addressing
+    DESIGN.md §2 retires entirely — a session belongs to one agent directly, with no parent/derived
+    split. "Continue with this expert" needs a successor that names a session, not a derived id.
+    """
     thread = expert_thread_id("T1", COOKING)
 
     assert thread == f"T1{EXPERT_THREAD_SEPARATOR}{COOKING}"
@@ -776,9 +810,15 @@ def test_an_experts_thread_is_derived_from_the_librarians_lb14() -> None:
     assert librarian_thread_id("scan:topic/cooking:0f8e") is None
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_an_expert_thread_holds_the_exchange_and_can_be_continued_lb14(kb: Path) -> None:
-    """Step 4 is a link, not a suggestion: the thread the reply names has the history in it."""
+    """Step 4 is a link, not a suggestion: the thread the reply names has the history in it.
+
+    Superseded (Phase 3 rebuilds this): continuing "directly on" `expert_thread_id("T1", COOKING)`
+    depends on the retired derived-thread addressing (LB-14). Needs a successor once an expert
+    consultation is its own session rather than a derived id off the Librarian's.
+    """
     models = {
         LIBRARIAN: scripted(routes(COOKING)),
         COOKING: scripted(says("Reverse sear it."), says("Yes, 52C.")),
@@ -798,6 +838,7 @@ async def test_an_expert_thread_holds_the_exchange_and_can_be_continued_lb14(kb:
         assert final(events) == "Yes, 52C."
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_deleting_a_librarian_thread_removes_the_experts_threads_rt48(kb: Path) -> None:
     """RT-48 under the derived-thread design (LB-14).
@@ -806,6 +847,10 @@ async def test_deleting_a_librarian_thread_removes_the_experts_threads_rt48(kb: 
     everything. An addressable expert thread does not vanish with its parent, and a "delete this
     conversation" that left the expert's copy behind would be the worst kind of lie in a system with
     no undo (D6) — so the derived threads are deleted with it.
+
+    Superseded (Phase 3 rebuilds this): the cascade this pins is specific to the retired derived-
+    thread scheme (LB-14) — a session has no derived children to cascade to, and per DESIGN.md §2
+    nothing deletes a session at all, so `delete_thread` itself has no successor to re-target.
     """
     models = {
         LIBRARIAN: scripted(routes(COOKING)),

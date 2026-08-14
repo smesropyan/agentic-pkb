@@ -645,6 +645,7 @@ async def test_exactly_four_tools_and_no_fifth_mc5(empty_kb: KbSnapshot) -> None
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_two_static_resources_and_one_template_mc6(empty_kb: KbSnapshot) -> None:
     """A template is invisible to a client that only calls ``list_resources()``.
 
@@ -654,6 +655,9 @@ async def test_two_static_resources_and_one_template_mc6(empty_kb: KbSnapshot) -
     can only guess, and a caller that never learns a proposal's URI shape cannot follow README
     Part 4's feedback loop at all. Both listings are asserted here precisely because checking one
     would leave the other free to disappear.
+
+    Superseded (Task 6 rebuilds this): both pinned resources are the ``pkb://proposals`` family,
+    deleted with the rest of the parked-proposal machinery.
     """
     app = build_app(StubService(), snapshot=empty_kb)
     async with lifespan_running(app), mcp_session(app) as session:
@@ -733,6 +737,7 @@ def test_a_transport_pulls_no_harness_and_never_curls_the_daemon_mc7(source: Pat
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_every_run_is_propose_only_mc8(connect: Connect) -> None:
     """The approval mode belongs to the channel, and behind ``/mcp`` there is no human.
 
@@ -741,6 +746,9 @@ async def test_every_run_is_propose_only_mc8(connect: Connect) -> None:
     and then be cancelled — a lost turn that looks like a timeout. The contract is stronger than
     "usually propose_only": MCP must see **zero** interrupt events, which is only true if no path
     can pass the other mode. No tool exposes it as an argument, either.
+
+    Superseded (Task 6 rebuilds this): the whole "§ The channel's mode (MC-8)" section — with no
+    gate anywhere, there is no second mode for ``propose_only`` to be distinguished from.
     """
     service = ScriptedService(events=list(FANOUT))
     async with connect(service) as session:
@@ -755,6 +763,7 @@ async def test_every_run_is_propose_only_mc8(connect: Connect) -> None:
             assert "approval_mode" not in tool.input_schema.get("properties", {})
 
 
+@pytest.mark.superseded
 def test_the_word_interactive_is_in_no_executable_string_mc8() -> None:
     """The grep MC-8 asks for, aimed at code rather than at prose.
 
@@ -815,6 +824,7 @@ def test_layer_three_constructs_no_model_client_mc9() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_experts_are_assembled_from_the_event_stream_mc10(connect: Connect) -> None:
     """The roster, the statuses, the per-expert text and the thread ids all come from events.
 
@@ -824,6 +834,10 @@ async def test_experts_are_assembled_from_the_event_stream_mc10(connect: Connect
     roster, ``SubagentEnd`` the status, each expert's own ``MessageComplete`` its text, and SS-10's
     derivation the thread id — which is what makes "continue with the Grilling expert" a real link
     rather than a suggestion.
+
+    Superseded (Task 3/7 rebuild this): mixed — assembling the roster/status/text from events
+    survives, but the expected per-expert ids use SS-10's derived-thread scheme
+    (``expert_thread_id``), which is retired along with the parent/derived split.
     """
     service = ScriptedService(events=list(FANOUT))
     async with connect(service) as session:
@@ -898,6 +912,7 @@ def test_nothing_in_layer_three_parses_the_merged_reply_mc10() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_an_omitted_thread_id_creates_a_real_mcp_thread_and_returns_it_mc11(
     connect: Connect,
 ) -> None:
@@ -907,6 +922,9 @@ async def test_an_omitted_thread_id_creates_a_real_mcp_thread_and_returns_it_mc1
     or the caller's next question starts from nothing. And SV-10 says callers never mint ids: an id
     minted by an external agent is one the daemon cannot guarantee is unique, unused, or not already
     someone else's conversation.
+
+    Superseded (Task 3/5 rebuild this): the whole "§ Threads (MC-11 … MC-13)" section — MCP's
+    caller-durability principle survives against a session, but ``origin_channel`` does not.
     """
     service = ScriptedService(events=list(FANOUT))
     async with connect(service) as session:
@@ -917,6 +935,7 @@ async def test_an_omitted_thread_id_creates_a_real_mcp_thread_and_returns_it_mc1
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_the_returned_thread_id_continues_the_same_conversation_mc11(
     connect: Connect,
 ) -> None:
@@ -946,6 +965,7 @@ async def test_the_returned_thread_id_continues_the_same_conversation_mc11(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_an_unknown_thread_id_errors_rather_than_being_created_mc11(
     connect: Connect,
 ) -> None:
@@ -976,6 +996,7 @@ async def test_an_unknown_thread_id_errors_rather_than_being_created_mc11(
     ],
 )
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_derived_and_maintenance_thread_ids_are_refused_mc12(
     connect: Connect, thread_id: str, accepted: bool
 ) -> None:
@@ -986,6 +1007,10 @@ async def test_derived_and_maintenance_thread_ids_are_refused_mc12(
     agent write into a human's conversation with an expert, or into a maintenance run, neither of
     which it owns — and both of which the human would later read as their own history. The check is
     on *shape*, before any service call, so nothing exists to clean up afterwards.
+
+    Superseded (Task 3/7 rebuild this): both refused shapes are functions of the retired thread-id
+    algebra (SV-9's derived and scan namespaces); the accepted case exists only to contrast them, so
+    the whole function is marked rather than one arm of a three-way comparison.
     """
     service = ScriptedService(events=list(FANOUT))
     async with connect(service) as session:
@@ -1002,6 +1027,7 @@ async def test_derived_and_maintenance_thread_ids_are_refused_mc12(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_an_mcp_thread_is_listed_and_labelled_not_hidden_mc13(connect: Connect) -> None:
     """A proposal the human must review is meaningless without the conversation that produced it.
 
@@ -1033,8 +1059,20 @@ async def test_an_mcp_thread_is_listed_and_labelled_not_hidden_mc13(connect: Con
         pytest.param(UnknownAgentError("no agent 'topic/x'"), "unknown_agent", id="unknown_agent"),
         pytest.param(UnknownThreadError("no thread 't'"), "unknown_thread", id="unknown_thread"),
         pytest.param(ThreadBusyError("a run is active"), "thread_busy", id="thread_busy"),
-        pytest.param(ApprovalPendingError("parked"), "approval_pending", id="approval_pending"),
-        pytest.param(StaleInterruptError("stale"), "stale_interrupt", id="stale_interrupt"),
+        pytest.param(
+            ApprovalPendingError("parked"),
+            "approval_pending",
+            id="approval_pending",
+            marks=pytest.mark.superseded,
+            # Superseded (Task 6 rebuilds this): no gate means nothing is ever "parked".
+        ),
+        pytest.param(
+            StaleInterruptError("stale"),
+            "stale_interrupt",
+            id="stale_interrupt",
+            marks=pytest.mark.superseded,
+            # Superseded (Task 6 rebuilds this): no interrupt exists to go stale.
+        ),
         pytest.param(InvalidDecisionError("bad"), "invalid_decision", id="invalid_decision"),
     ],
 )
@@ -1051,6 +1089,9 @@ async def test_typed_errors_are_returned_with_a_machine_code_mc14(
     (retry later, render the approval, refetch the interrupt), so two mapping tables would drift and
     a client would spin on ``approval_pending`` forever waiting for a human it never told anyone
     about.
+
+    Two of the six cases (``approval_pending``, ``stale_interrupt``) are marked superseded
+    individually — see their ``pytest.param`` above.
     """
     service = ScriptedService(raise_on_run=error)
     async with connect(service) as session:
@@ -1215,6 +1256,7 @@ async def test_ingest_always_enters_at_the_librarian_with_hints_as_context_mc17(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_the_result_names_what_became_a_proposal_mc18(connect: Connect) -> None:
     """Propose-only is not read-only, and the difference has to be visible in the result.
 
@@ -1395,6 +1437,7 @@ async def test_a_sibling_topic_is_unaffected_by_the_conflict_mc20(
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_mcp_never_resolves_a_conflict_itself_mc21(
     connect: Connect, reviewed_kb: KbSnapshot
 ) -> None:
@@ -1444,6 +1487,7 @@ def assert_primitives(value: object, where: str = "$") -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.superseded
 async def test_every_result_is_json_primitives_and_carries_no_harness_object_mc22(
     connect: Connect, reviewed_kb: KbSnapshot
 ) -> None:
@@ -1454,6 +1498,12 @@ async def test_every_result_is_json_primitives_and_carries_no_harness_object_mc2
     ``pkb.contracts`` are already primitives — but packs, proposals and escalations are new types
     added at this layer, and a stray dataclass or ``Path`` in one of them serializes as ``repr`` at
     best and raises mid-response at worst, after the 200 has been committed.
+
+    Superseded (Task 3/6/7 rebuild this): two of the six exercised outcomes are retired-design
+    vehicles — a ``gated`` fixture producing a ``proposals`` field, and a derived-thread-id call
+    producing ``"error"`` — folded into one combined status list this test can't be split without
+    touching its body. The JSON-primitive-safety principle itself is permanent and needs a
+    session-shaped successor.
     """
     service = ScriptedService(
         events=list(FANOUT), gated=("Cooking/notes/summary.md", "breadth-approval")

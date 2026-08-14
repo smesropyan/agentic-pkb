@@ -51,6 +51,21 @@ from pkb.core.scaffold import scaffold_subtopic
 from pkb.core.scan import scan
 from tests.agents.conftest import TODAY, call, calls, says, scripted
 
+pytestmark = pytest.mark.superseded
+"""Superseded (Phase 3 rebuilds this): every test in this file exercises the approval-gate
+table — `requires_approval`, `GateReason`, `GATE_DECISIONS`, `GATED_TOOLS`, `WRITE_DECISIONS`,
+`allowed_decisions`, `describe_write`, `new_tags`, `proposed_content` and `build_interrupt_on`'s
+compiled-agent wiring (RT-21 … RT-35, MW-10) — retired wholesale by Task 6 of the sessions plan
+(`docs/superpowers/plans/2026-08-14-phase2-sessions.md`): "no gates, no interrupts, no parked
+proposals, no pending queue anywhere... interrupts off at the composition point". The operator's
+instruction is now the approval, so a write lands during the turn and nothing ever asks
+`requires_approval` a question again. This includes `§ escalations` at the file's foot, which
+compiles a real `interrupt_on`-wired agent to prove a caching-snapshot defect in the escalation
+path — a defect that cannot recur once nothing escalates. Whole-file marked because every test's
+subject, including the path-canonicalisation and newline-normalisation tests threaded through the
+gate table's own logic, is this mechanism. Phase 3 rebuilds whatever write-time safeguards, if
+any, replace it; nothing here previews that shape."""
+
 BODY = "\n# Steak\n\nSear it hot.\n"
 OTHER_BODY = "\n# Steak\n\nSear it hot, then rest it for ten minutes.\n"
 
