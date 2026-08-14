@@ -1,8 +1,11 @@
 """Tags: the model, the validator, the derived tree, and the shared tree renderer (TG-1 … TG-13).
 
-A tag is a dot-separated path in one of four closed namespaces (TG-2). Layer 1 never invents,
-approves, or rewrites a tag: it parses, checks syntax/depth/vocabulary, derives the tree that is
-actually in use, and renders it. Governance is a Layer 2 dialog concern (TG-9, VA-40).
+The namespace set itself is governed by the T-rules (T-17 … T-21), which supersede this file's own
+TG-2/TG-7: three namespaces, ``topic.*`` and ``domain.*`` open trees the operator grows a branch at
+a time, ``type.*`` the one closed set, and no ``status.*`` — a ``status.*`` tag is an unrecognized
+namespace like any other invented one. Layer 1 never invents, approves, or rewrites a tag: it
+parses, checks syntax/depth/vocabulary, derives the tree that is actually in use, and renders it.
+Governance is a Layer 2 dialog concern (T-21).
 
 Two rendered surfaces share one renderer (GE-17, GE-23): the root ``tags.md`` registry and every
 topic ``index.md``'s ``## Tag subtree`` block. The renderer is pure and takes its annotations from
@@ -15,7 +18,7 @@ Two decisions worth knowing before reading:
 * ``domain.*`` renders as a nested tree, exactly like ``topic.*`` (contradiction C8 / Q1). The
   README's worked example lists ``domain.legal.compliance`` flat, but §1.5's own rule says a nested
   tag implies its parent and the registry is "the canonical relational tree"; one renderer for both
-  is the resolution. ``type.*`` and ``status.*`` stay flat because they *are* flat static lists.
+  is the resolution. ``type.*`` stays flat because it *is* a flat static list (T-18).
 * The ancestor closure (TG-5) runs all the way to the bare namespace, so ``topic`` is a node of the
   forest even though no section ever starts there. Sections start at ``TagTree.subtree("topic.x")``
   or ``TagTree.namespace_children(Namespace.DOMAIN)``, which is what GE-22's section shapes need.
@@ -42,8 +45,6 @@ __all__ = [
     "ROOT_TOPIC_ANNOTATION",
     "STATIC_ANNOTATIONS",
     "STATIC_DEFINITIONS",
-    "STATUS_DEFINITIONS",
-    "STATUS_TAGS",
     "TAG_DEF_SEP",
     "TAG_RE",
     "TAG_SEGMENT_RE",
@@ -83,14 +84,15 @@ TAG_RE: Final = re.compile(rf"^{_SEGMENT_PATTERN}(?:\.{_SEGMENT_PATTERN})*$")
 
 
 class Namespace(StrEnum):
-    """The closed namespace set (TG-2).
+    """The closed namespace set: three, and nothing invents a fourth (T-17).
 
-    Closed because the registry renderer has exactly four section kinds and supplies static
-    definitions for two of them; a fifth namespace would have no defined rendering.
+    Closed because the registry renderer has exactly three section kinds and supplies a static
+    definition for one of them (``type.*``, T-18); a fourth namespace would have no defined
+    rendering. There is no ``status.*`` member — the PKB writes instructions and executes nothing,
+    so nothing in the tree records work in progress or a status field (T-32).
     """
 
     TOPIC = "topic"
-    STATUS = "status"
     TYPE = "type"
     DOMAIN = "domain"
 
@@ -127,21 +129,14 @@ TYPE_DEFINITIONS: Final[Mapping[str, str | None]] = MappingProxyType(
         "type.summary": "breadth overview",
     }
 )
-"""The closed ``type.*`` vocabulary with its static gloss (TG-6, TG-12). Order is render order."""
+"""The closed ``type.*`` vocabulary with its static gloss (T-18). Order is render order."""
 
-STATUS_DEFINITIONS: Final[Mapping[str, str | None]] = MappingProxyType(
-    {
-        "status.draft": "proposed, awaiting human approval",
-        "status.approved": None,
-        "status.conflict-review": None,
-    }
-)
-"""The closed ``status.*`` vocabulary (TG-7, TG-12). ``None`` renders bare — no separator, no gloss."""
+STATIC_DEFINITIONS: Final[Mapping[str, str | None]] = MappingProxyType(dict(TYPE_DEFINITIONS))
+"""Every tag whose gloss is generator text rather than derived from files (TG-12, C17).
 
-STATIC_DEFINITIONS: Final[Mapping[str, str | None]] = MappingProxyType(
-    {**TYPE_DEFINITIONS, **STATUS_DEFINITIONS}
-)
-"""Every tag whose gloss is generator text rather than derived from files (TG-12, C17)."""
+``type.*`` is the only closed vocabulary left (T-17, T-18) — kept as its own mapping, rather than
+folded into :data:`TYPE_DEFINITIONS` directly, so a future closed namespace has one join point.
+"""
 
 STATIC_ANNOTATIONS: Final[Mapping[str, str]] = MappingProxyType(
     {tag: f"{TAG_DEF_SEP}{gloss}" for tag, gloss in STATIC_DEFINITIONS.items() if gloss}
@@ -149,7 +144,6 @@ STATIC_ANNOTATIONS: Final[Mapping[str, str]] = MappingProxyType(
 """Ready-to-render suffixes for :func:`render_tag_tree`'s ``annotations`` (TG-12, TG-13)."""
 
 TYPE_TAGS: Final = frozenset(TYPE_DEFINITIONS)
-STATUS_TAGS: Final = frozenset(STATUS_DEFINITIONS)
 
 _NO_ANNOTATIONS: Final[Mapping[str, str]] = MappingProxyType({})
 
@@ -157,8 +151,7 @@ _NO_ANNOTATIONS: Final[Mapping[str, str]] = MappingProxyType({})
 def definition_annotation(tag: str) -> str:
     """The rendered suffix for a tag carrying a static definition, or ``""`` (TG-12, TG-13).
 
-    ``status.approved`` and ``status.conflict-review`` map to ``None`` in the vocabulary and so
-    render bare — the empty string, not a dangling separator.
+    A ``None`` gloss in the vocabulary renders bare — the empty string, not a dangling separator.
     """
     gloss = STATIC_DEFINITIONS.get(tag)
     return f"{TAG_DEF_SEP}{gloss}" if gloss else ""
@@ -241,12 +234,12 @@ class Tag:
 
 
 # --------------------------------------------------------------------------------------
-# Validation (TG-2, TG-3, TG-4, TG-6, TG-7)
+# Validation (T-17, T-18, TG-3, TG-4)
 # --------------------------------------------------------------------------------------
 
 
 def validate_tag(raw: str, *, path: str | None = None) -> list[Finding]:
-    """Check one tag's syntax, namespace, depth, and closed vocabularies (TG-2..TG-4, TG-6, TG-7).
+    """Check one tag's syntax, namespace, depth, and the one closed vocabulary (T-17, T-18).
 
     Returns findings; never raises (CX-5). A syntax failure returns on its own because the segments
     of a malformed tag are not meaningful — reporting "unknown namespace ``Topic``" alongside
@@ -290,7 +283,7 @@ def validate_tag(raw: str, *, path: str | None = None) -> list[Finding]:
                 path=path,
                 field="tags",
                 value=raw,
-                hint="Re-file the tag under topic, status, type or domain.",
+                hint="Re-file the tag under topic, type or domain.",
             )
         )
 
@@ -325,24 +318,6 @@ def validate_tag(raw: str, *, path: str | None = None) -> list[Finding]:
                 field="tags",
                 value=raw,
                 hint="The type.* vocabulary is closed; pick the tag matching the file's source_type.",
-            )
-        )
-
-    if namespace is Namespace.STATUS and raw not in STATUS_TAGS:
-        findings.append(
-            Finding(
-                code="UNKNOWN_STATUS_TAG",
-                severity=Severity.ERROR,
-                message=(
-                    f"Tag {raw!r} is not one of the three status tags: "
-                    f"{_joined(sorted(STATUS_TAGS))}."
-                ),
-                rule_id="TG-7",
-                path=path,
-                field="tags",
-                value=raw,
-                hint="The status.* vocabulary is closed: status.draft, status.approved, "
-                "status.conflict-review.",
             )
         )
 
@@ -574,14 +549,16 @@ def render_tag_tree(
 
 
 def render_definition_list(definitions: Mapping[str, str | None] = STATIC_DEFINITIONS) -> list[str]:
-    """Render a static definition block — the ``type`` and ``status`` sections (TG-12, TG-13).
+    """Render a static definition block — the ``type`` section, the one closed vocabulary left
+    (TG-12, TG-13, T-18).
 
-    Deliberately *not* :func:`render_tag_tree`: these two sections are flat static lists whose order
-    is the vocabulary's own (``draft``, ``approved``, ``conflict-review``), which sorting would
+    Deliberately *not* :func:`render_tag_tree`: this is a flat static list whose order is the
+    vocabulary's own (``note``, ``reference``, ``solution``, ``summary``), which sorting would
     scramble. A ``None`` gloss renders bare — no separator, no text.
 
-    Pass ``TYPE_DEFINITIONS`` or ``STATUS_DEFINITIONS``; the block is identical for an empty KB and a
-    full one, because it is generator text rather than derived content (C17, GE-29).
+    Pass ``TYPE_DEFINITIONS`` (the default, ``STATIC_DEFINITIONS``, is the same mapping); the block
+    is identical for an empty KB and a full one, because it is generator text rather than derived
+    content (C17, GE-29).
     """
     return [
         f"{BULLET}`{tag}`" + (f"{TAG_DEF_SEP}{gloss}" if gloss else "")

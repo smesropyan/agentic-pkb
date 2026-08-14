@@ -43,7 +43,7 @@ _DEFAULT_FIELDS: Mapping[str, str] = {
     "title": '"Grill Performance"',
     "description": '"How wind affects grill temperature"',
     "topic": '"Cooking"',
-    "tags": "\n  - topic.cooking.grilling\n  - type.note\n  - status.approved",
+    "tags": "\n  - topic.cooking.grilling\n  - type.note",
     "created": "2024-10-15",
     "updated": "2024-10-16",
     "source_type": "note",
@@ -86,7 +86,7 @@ def topic_md(name: str, tag: str) -> str:
         title=f'"{name}"',
         description=f'"Everything about {name}"',
         topic=f'"{name}"',
-        tags=tag_block(tag, "type.summary", "status.draft"),
+        tags=tag_block(tag, "type.summary"),
         source_type="summary",
     )
 
@@ -96,7 +96,7 @@ def summary_md(name: str, topic: str, tag: str) -> str:
         title=f'"{name}"',
         description=f'"Breadth overview of {name}"',
         topic=f'"{topic}"',
-        tags=tag_block(tag, "type.summary", "status.draft"),
+        tags=tag_block(tag, "type.summary"),
         source_type="summary",
     )
 
@@ -192,7 +192,7 @@ def test_three_defects_yield_three_distinct_codes_cx5(kb: Path) -> None:
         NOTE_PATH,
         description=None,
         source_type="essay",
-        tags=tag_block("topic.cooking.grilling", "type.note", "status.approved", "type.solution"),
+        tags=tag_block("topic.cooking.grilling", "type.note", "type.solution"),
     )
     found = validate_content(kb, NOTE_PATH, text)
     assert set(codes(found)) == {
@@ -392,9 +392,7 @@ def test_tag_syntax_namespace_depth_and_vocabulary_va8(kb: Path, tag: str, code:
 def test_open_namespaces_never_yield_a_vocabulary_finding_va8(kb: Path) -> None:
     text = note_at(
         NOTE_PATH,
-        tags=tag_block(
-            "topic.cooking.grilling", "domain.legal.compliance", "type.note", "status.approved"
-        ),
+        tags=tag_block("topic.cooking.grilling", "domain.legal.compliance", "type.note"),
     )
     assert validate_content(kb, NOTE_PATH, text) == []
 
@@ -453,9 +451,7 @@ def test_topic_md_pairs_summary_with_type_summary_va11(kb: Path) -> None:
 
 def test_a_novel_topic_tag_is_accepted_va40(kb: Path) -> None:
     """Layer 1 keeps no approved-tag list; governance is a Layer 2 dialog concern (VA-40)."""
-    text = note_at(
-        NOTE_PATH, tags=tag_block("topic.cooking.sous-vide", "type.note", "status.approved")
-    )
+    text = note_at(NOTE_PATH, tags=tag_block("topic.cooking.sous-vide", "type.note"))
     assert validate_content(kb, NOTE_PATH, text) == []
 
 
@@ -492,7 +488,7 @@ def test_topic_field_comparison_is_slug_based_va12(kb: Path) -> None:
     text = note_at(
         path,
         topic='"heat management"',
-        tags=tag_block("topic.cooking.heat-management", "type.note", "status.draft"),
+        tags=tag_block("topic.cooking.heat-management", "type.note"),
     )
     assert validate_content(kb, path, text) == []
 
@@ -538,7 +534,7 @@ def test_the_location_table_accepts_its_own_rows_va13(
     text = note_at(
         path,
         source_type=source_type,
-        tags=tag_block("topic.cooking", type_tag, "status.approved"),
+        tags=tag_block("topic.cooking", type_tag),
     )
     assert errors(validate_content(kb, path, text)) == []
 
@@ -558,7 +554,7 @@ def test_a_note_may_not_be_tagged_type_reference_va14(kb: Path) -> None:
     text = note_at(
         path,
         source_type="reference",
-        tags=tag_block("topic.cooking", "type.reference", "status.approved"),
+        tags=tag_block("topic.cooking", "type.reference"),
     )
     assert "TYPE_TAG_LOCATION_MISMATCH" in codes(validate_content(kb, path, text))
 
@@ -582,7 +578,7 @@ def test_a_deeper_topic_tag_needs_no_folder_va15(kb: Path) -> None:
     text = note_at(
         path,
         topic='"Grilling"',
-        tags=tag_block("topic.cooking.grilling.charcoal", "type.note", "status.draft"),
+        tags=tag_block("topic.cooking.grilling.charcoal", "type.note"),
     )
     assert validate_content(kb, path, text) == []
 
@@ -680,7 +676,7 @@ def test_a_standalone_reference_warns_va25(kb: Path) -> None:
     text = note_at(
         path,
         source_type="reference",
-        tags=tag_block("topic.cooking", "type.reference", "status.approved"),
+        tags=tag_block("topic.cooking", "type.reference"),
     )
     finding = only(validate_content(kb, path, text), "REFERENCE_NOT_FOLDER_HOSTED")
     assert finding.severity is Severity.WARNING
@@ -691,7 +687,7 @@ def test_a_folder_hosted_reference_is_clean_va25(kb: Path) -> None:
     text = note_at(
         path,
         source_type="reference",
-        tags=tag_block("topic.cooking", "type.reference", "status.approved"),
+        tags=tag_block("topic.cooking", "type.reference"),
     )
     assert validate_content(kb, path, text) == []
 

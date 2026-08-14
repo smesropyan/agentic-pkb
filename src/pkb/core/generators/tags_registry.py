@@ -7,9 +7,10 @@ would churn on every note and none is what the reader needs.
 
 Two shapes are worth naming before reading the code:
 
-* **The ``type`` and ``status`` sections are generator text, not derived content** (TG-12, C17).
-  They render identically for an empty KB and a full one — an ontology that vanishes when unused
-  cannot teach an agent how to file the first note (GE-29).
+* **The ``type`` section is generator text, not derived content** (TG-12, C17, T-18). It renders
+  identically for an empty KB and a full one — an ontology that vanishes when unused cannot teach
+  an agent how to file the first note (GE-29). There is no ``status`` section: T-17 retires the
+  namespace, so the registry has one static-definition section left, not two.
 * **``domain.*`` renders as a nested tree**, the same renderer as ``topic.*`` (Q1 / C8). README
   §1.5's worked example lists three ``domain.*`` tags flat, but the same section's own rule says a
   nested tag implies its parent and calls the registry "the canonical relational tree". One
@@ -48,10 +49,10 @@ def render_root_tags(snapshot: KbSnapshot) -> str:
     """Render the tag registry (GE-21 … GE-24). Pure: no I/O, no clock (GE-9).
 
     Section order is fixed by GE-22 and follows README §1.5's rendered example rather than its
-    namespace *table* (C15): one section per top-level topic root, then ``type``, ``status``,
-    ``domain``, then the mappings. Sub-topics get no heading of their own — they nest inside their
-    root topic's tree, which is what keeps the file readable as one ontology instead of a list of
-    folders.
+    namespace *table* (C15): one section per top-level topic root, then ``type``, ``domain``, then
+    the mappings — no ``status`` section (T-17). Sub-topics get no heading of their own — they nest
+    inside their root topic's tree, which is what keeps the file readable as one ontology instead
+    of a list of folders.
     """
     tree = tags.build_tag_tree(snapshot)
     annotations = derive.extension_annotations(snapshot)
@@ -68,10 +69,6 @@ def render_root_tags(snapshot: KbSnapshot) -> str:
     blocks += base.section(
         _NAMESPACE_HEADING.format(name=tags.Namespace.TYPE.value),
         tags.render_definition_list(tags.TYPE_DEFINITIONS),
-    )
-    blocks += base.section(
-        _NAMESPACE_HEADING.format(name=tags.Namespace.STATUS.value),
-        tags.render_definition_list(tags.STATUS_DEFINITIONS),
     )
     blocks += base.section(
         _NAMESPACE_HEADING.format(name=tags.Namespace.DOMAIN.value),

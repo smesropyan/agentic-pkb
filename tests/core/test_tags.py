@@ -7,7 +7,7 @@ dataclass, so a fixture is a dict of `FileRecord`s (decision C).
 from __future__ import annotations
 
 import builtins
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -30,7 +30,6 @@ from pkb.core.tags import (
     MAX_TAG_DEPTH,
     ROOT_TOPIC_ANNOTATION,
     STATIC_ANNOTATIONS,
-    STATUS_DEFINITIONS,
     TAG_DEF_SEP,
     TAG_RE,
     TAG_SEGMENT_RE,
@@ -291,7 +290,12 @@ def test_unknown_type_tag_is_an_error_tg6() -> None:
 
 
 @pytest.mark.superseded
-@pytest.mark.parametrize("raw", sorted(STATUS_DEFINITIONS))
+@pytest.mark.parametrize(
+    "raw",
+    # Retired closed vocabulary (T-17): STATUS_DEFINITIONS no longer exists, so its former keys
+    # are hardcoded here rather than imported, to keep this dead-but-not-yet-deleted test collecting.
+    sorted(["status.draft", "status.approved", "status.conflict-review"]),
+)
 def test_status_vocabulary_members_validate_tg7(raw: str) -> None:
     assert validate_tag(raw) == []
 
@@ -442,18 +446,16 @@ def test_tags_in_namespace_filters_by_depth_tg11(tmp_path: Path) -> None:
 
 @pytest.mark.superseded
 def test_static_definitions_are_verbatim_generator_text_tg12() -> None:
+    """Superseded by T-17: the ``status.*`` half of this test has no subject left in
+    ``pkb.core.tags`` \u2014 the vocabulary is retired outright, not merely renamed."""
     assert list(TYPE_DEFINITIONS.items()) == [
         ("type.note", "human-written note"),
         ("type.reference", "static source"),
         ("type.solution", "reusable solution (a note tagged as a solution)"),
         ("type.summary", "breadth overview"),
     ]
-    assert list(STATUS_DEFINITIONS.items()) == [
-        ("status.draft", "proposed, awaiting human approval"),
-        ("status.approved", None),
-        ("status.conflict-review", None),
-    ]
-    # A bare node renders with no separator and no gloss.
+    # A bare node renders with no separator and no gloss \u2014 true for any tag STATIC_DEFINITIONS no
+    # longer carries, `status.approved` included, now that the vocabulary is gone (T-17).
     assert definition_annotation("status.approved") == ""
     assert definition_annotation("topic.cooking") == ""
     assert definition_annotation("type.note") == " \u2013 human-written note"
@@ -461,15 +463,27 @@ def test_static_definitions_are_verbatim_generator_text_tg12() -> None:
 
 @pytest.mark.superseded
 def test_static_sections_are_the_golden_blocks_tg12(tmp_path: Path) -> None:
-    """The `type` and `status` blocks are generator text: KB contents cannot move them."""
+    """The `type` and (formerly) `status` blocks are generator text: KB contents cannot move them.
+
+    Superseded by T-17: the ``status.*`` half of this test has nothing left in ``pkb.core.tags`` to
+    read, so its former golden lines are hardcoded rather than rendered.
+    """
     assert render_definition_list(TYPE_DEFINITIONS) == [
         "- `type.note` \u2013 human-written note",
         "- `type.reference` \u2013 static source",
         "- `type.solution` \u2013 reusable solution (a note tagged as a solution)",
         "- `type.summary` \u2013 breadth overview",
     ]
-    # Vocabulary order, not alphabetical: `draft` leads and `approved` follows.
-    assert render_definition_list(STATUS_DEFINITIONS) == [
+    # Vocabulary order, not alphabetical: `draft` leads and `approved` follows. The mapping itself
+    # is hardcoded rather than read off `pkb.core.tags` \u2014 `STATUS_DEFINITIONS` is gone (T-17) \u2014 but
+    # the renderer stays generic over any `Mapping[str, str | None]`, so it is still the real
+    # function under test here.
+    former_status_definitions: Mapping[str, str | None] = {
+        "status.draft": "proposed, awaiting human approval",
+        "status.approved": None,
+        "status.conflict-review": None,
+    }
+    assert render_definition_list(former_status_definitions) == [
         "- `status.draft` \u2013 proposed, awaiting human approval",
         "- `status.approved`",
         "- `status.conflict-review`",

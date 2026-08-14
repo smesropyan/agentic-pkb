@@ -160,8 +160,14 @@ def test_the_schema_keeps_no_record_that_a_conflict_occurred_rt59(tmp_path: Path
 
 @pytest.mark.asyncio
 async def test_a_flush_enqueues_through_the_runtimes_own_queue_rt54(kb: Path) -> None:
-    """End to end: the middleware's report reaches the SQLite queue the runtime owns."""
-    note = FLAGGED_NOTE.replace("status.conflict-review", "status.draft").replace(
+    """End to end: the middleware's report reaches the SQLite queue the runtime owns.
+
+    Not a conflict-flagged write — ``status.conflict-review`` is stripped outright rather than
+    downgraded to ``status.draft``, because T-17 retires the whole ``status.*`` namespace and
+    either value would now be UNKNOWN_TAG_NAMESPACE. This test is about the generic write-triggers-
+    a-scan plumbing, not about conflict detection.
+    """
+    note = FLAGGED_NOTE.replace("  - status.conflict-review\n", "").replace(
         '\nreview_note: "The references summary says to sear first; this note says to sear last."',
         "",
     )
@@ -209,8 +215,11 @@ async def test_the_enqueue_happens_inside_the_flushs_critical_section_rt55(kb: P
     The next flush only ever sees *its own* turn's touched paths, so a request that never reached
     the queue is never re-derived — which is why the two must share one critical section rather than
     merely happening in the same method.
+
+    Not a conflict-flagged write, for the same reason as RT-54's sibling test above: T-17 retires
+    ``status.*`` outright, so the tag is stripped rather than downgraded.
     """
-    note = FLAGGED_NOTE.replace("status.conflict-review", "status.draft").replace(
+    note = FLAGGED_NOTE.replace("  - status.conflict-review\n", "").replace(
         '\nreview_note: "The references summary says to sear first; this note says to sear last."',
         "",
     )
@@ -378,9 +387,18 @@ async def test_a_scan_that_fails_reports_the_failure_rt58(kb: Path) -> None:
     assert result.tagged_paths == ()
 
 
+@pytest.mark.superseded
 @pytest.mark.asyncio
 async def test_a_scan_runs_on_its_own_thread_and_leaves_the_humans_alone_rt58(kb: Path) -> None:
-    """The scan's context never enters a human conversation (Q9)."""
+    """The scan's context never enters a human conversation (Q9).
+
+    Superseded by T-17: the write this test simulates carries ``status.conflict-review`` — the tag
+    that makes a path "flagged" for the scan to find — and Layer 1 now refuses any ``status.*`` tag
+    outright (UNKNOWN_TAG_NAMESPACE), so the write never lands and nothing is ever tagged. The
+    conflict-review signal this test (and RT-58's `tagged_paths` mechanism generally) depends on
+    needs a replacement that does not route through a retired tag namespace; no replacement exists
+    yet, so this is deselected rather than patched into asserting something untrue.
+    """
     model = scripted(
         says("hello"),
         calls(

@@ -49,7 +49,6 @@ from pkb.core.frontmatter import serialize
 from pkb.core.models import KbSnapshot
 from pkb.core.scaffold import scaffold_subtopic
 from pkb.core.scan import scan
-from pkb.core.tags import STATUS_TAGS
 from tests.agents.conftest import TODAY, call, calls, says, scripted
 
 BODY = "\n# Steak\n\nSear it hot.\n"
@@ -612,7 +611,7 @@ def test_a_valid_draft_carries_no_validation_label_rt35(snapshot: KbSnapshot) ->
     clean = doc(
         title="Notes summary",
         description="Distilled rules and notable solutions from the Cooking notes.",
-        tags=["topic.cooking", "type.summary", "status.draft"],
+        tags=["topic.cooking", "type.summary"],
         source_type="summary",
         body="\n# Notes summary\n\nRest steak for ten minutes.\n",
     )
@@ -700,9 +699,17 @@ def test_edit_file_result_is_simulated_with_the_backends_own_function_mw10(
     assert absent is None
 
 
+@pytest.mark.superseded
 def test_status_tag_constants_come_from_layer_one_vocabulary_rt26(snapshot: KbSnapshot) -> None:
-    """The two status literals this module names must stay members of Layer 1's closed set."""
+    """The two status literals this module names must stay members of Layer 1's closed set.
+
+    Superseded by T-17: Layer 1 no longer has a ``status.*`` vocabulary at all, so gates.py's
+    ``APPROVED_TAG``/``CONFLICT_TAG`` are now Layer-2-only literals with nothing in
+    ``pkb.core.tags`` to check them against (CLAUDE.md's Task 4 ripple note: "gates.py defines its
+    own CONFLICT_TAG literal (fine, leave)"). No replacement rule exists yet.
+    """
     from pkb.agents.gates import APPROVED_TAG, CONFLICT_TAG
+    from pkb.core.tags import STATUS_TAGS
 
     assert {APPROVED_TAG, CONFLICT_TAG} <= STATUS_TAGS
     assert snapshot.root.exists()

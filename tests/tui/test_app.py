@@ -228,7 +228,7 @@ def document(body: str = BULLETS, *, title: str = "Steak notes") -> str:
         title=title,
         description="Distilled rules for cooking steak at home.",
         topic="Cooking",
-        tags=("topic.cooking", "type.note", "status.draft"),
+        tags=("topic.cooking", "type.note"),
         created=TODAY,
         updated=TODAY,
         source_type="note",

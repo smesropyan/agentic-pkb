@@ -10,10 +10,11 @@ Three properties make it safe to call from an agent turn:
   reported as skipped and left byte-identical (SC-10). Re-scaffolding is therefore a repair
   operation, not a reset — which matters because there is no version control to undo it (arch D6).
 * **Nothing invalid.** Every file written here passes :func:`pkb.core.validation.validate_content`
-  with zero errors (SC-3): all seven required fields, ``status.draft``, and ``topic`` /
-  ``source_type`` / ``type.*`` / ``topic.*`` consistent with where the file lands. A scaffolder that
-  emitted invalid placeholders would poison every topic at creation and burn Layer 2's retry budget
-  on files no agent asked for.
+  with zero errors (SC-3): all seven required fields, and ``topic`` / ``source_type`` / ``type.*`` /
+  ``topic.*`` consistent with where the file lands. There is no ``status.*`` tag to stamp — T-17
+  retires the namespace, so a placeholder carries only its ``topic.*`` and ``type.*`` tags. A
+  scaffolder that emitted invalid placeholders would poison every topic at creation and burn
+  Layer 2's retry budget on files no agent asked for.
 
 ``index.md`` is not written here. It arrives through :func:`~pkb.core.generators.regenerate_all`,
 which also adds the new topic's line to the root catalog, so a scaffolded topic is addressable the
@@ -46,7 +47,6 @@ from pkb.core.models import Metadata, ScaffoldResult
 __all__ = [
     "NOTES_SUMMARY_TITLE",
     "PLACEHOLDER_SOURCE_TYPE",
-    "PLACEHOLDER_STATUS_TAG",
     "PLACEHOLDER_TYPE_TAG",
     "REFERENCES_SUMMARY_TITLE",
     "member_paths",
@@ -64,9 +64,6 @@ PLACEHOLDER_SOURCE_TYPE: Final = "summary"
 
 PLACEHOLDER_TYPE_TAG: Final = f"{tags.Namespace.TYPE.value}.{PLACEHOLDER_SOURCE_TYPE}"
 """Derived from :data:`PLACEHOLDER_SOURCE_TYPE` so VA-11's bijection cannot drift here."""
-
-PLACEHOLDER_STATUS_TAG: Final = f"{tags.Namespace.STATUS.value}.draft"
-"""Everything the scaffolder writes is a proposal awaiting human approval (SC-2, SC-3)."""
 
 NOTES_SUMMARY_TITLE: Final = "Notes summary"
 REFERENCES_SUMMARY_TITLE: Final = "References summary"
@@ -129,7 +126,7 @@ def _document(spec: _Spec, *, title: str, description: str, body: str) -> str:
         title=title,
         description=description,
         topic=spec.topic_name,
-        tags=(spec.topic_tag, PLACEHOLDER_TYPE_TAG, PLACEHOLDER_STATUS_TAG),
+        tags=(spec.topic_tag, PLACEHOLDER_TYPE_TAG),
         created=spec.today,
         updated=spec.today,
         source_type=PLACEHOLDER_SOURCE_TYPE,
@@ -389,9 +386,9 @@ def scaffold_topic(
 
     Writes exactly ``topic.md``, ``notes/summary.md``, ``references/summary.md`` and the two
     directories holding them, plus the topic root itself — six paths, and nothing optional (SC-1,
-    SC-4). Each placeholder carries the seven required fields, ``status.draft``, and the ``topic`` /
-    ``source_type`` / ``type.*`` / ``topic.*`` values its location implies, so every one of them
-    validates with zero errors (SC-3).
+    SC-4). Each placeholder carries the seven required fields and the ``topic`` / ``source_type`` /
+    ``type.*`` / ``topic.*`` values its location implies, so every one of them validates with zero
+    errors (SC-3). There is no ``status.*`` tag (T-17).
 
     ``topic_path`` may be a knowledge-base-relative POSIX string, a relative
     :class:`~pathlib.Path`, or an absolute path inside ``kb_root``. It must name either a directory

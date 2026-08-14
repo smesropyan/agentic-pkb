@@ -7,7 +7,12 @@ Every test name ends in the rule id it covers, matching the convention in
 
 from __future__ import annotations
 
-from pkb.core import frontmatter
+from pathlib import Path
+
+from pkb.core import frontmatter, tags
+from pkb.core.scan import scan
+from pkb.core.validation import validate_tree
+from tests.core.conftest import write_kb
 
 
 def test_related_topics_is_the_only_optional_field_t12() -> None:
@@ -31,3 +36,64 @@ def test_a_retired_field_round_trips_as_unknown_t12() -> None:
     doc = frontmatter.parse(text)
     assert doc.meta is not None
     assert "review_note" in doc.meta.unknown_fields
+
+
+# --------------------------------------------------------------------------------------
+# Task 4 — T-17: three namespaces, nothing invents a fourth; no status.* namespace
+# --------------------------------------------------------------------------------------
+
+
+def test_three_namespaces_and_type_is_the_closed_set_t17() -> None:
+    """T-17: `topic.*`/`domain.*` stay open, `type.*` is the one closed set, `status.*` is gone."""
+    assert {n.value for n in tags.Namespace} == {"topic", "type", "domain"}
+    assert not hasattr(tags, "STATUS_DEFINITIONS")
+
+
+def test_a_status_tag_is_an_unknown_namespace_finding_t17(tmp_path: Path) -> None:
+    """T-17: a `status.*` tag is `UNKNOWN_TAG_NAMESPACE`, like any other unrecognized namespace.
+
+    Built by hand rather than through the scaffolder, the way `test_scan.py`'s fixtures are: one
+    topic root plus one note, the note carrying `status.approved` alongside otherwise-legal tags.
+    """
+    kb = write_kb(
+        tmp_path / "KB",
+        {
+            "Cooking/topic.md": (
+                "---\n"
+                'title: "Cooking"\n'
+                'description: "Home cooking"\n'
+                'topic: "Cooking"\n'
+                "tags:\n"
+                "  - topic.cooking\n"
+                "  - type.summary\n"
+                "created: 2024-01-01\n"
+                "updated: 2024-01-01\n"
+                "source_type: summary\n"
+                "---\n\n# Cooking\n"
+            ),
+            "Cooking/notes/idea.md": (
+                "---\n"
+                'title: "Idea"\n'
+                'description: "An idea worth keeping"\n'
+                'topic: "Cooking"\n'
+                "tags:\n"
+                "  - topic.cooking\n"
+                "  - type.note\n"
+                "  - status.approved\n"
+                "created: 2024-01-01\n"
+                "updated: 2024-01-01\n"
+                "source_type: note\n"
+                "---\n\n# Idea\n"
+            ),
+        },
+    )
+
+    snapshot = scan(kb)
+    findings = validate_tree(kb, snapshot)
+
+    matches = [
+        finding
+        for finding in findings
+        if finding.path == "Cooking/notes/idea.md" and finding.code == "UNKNOWN_TAG_NAMESPACE"
+    ]
+    assert len(matches) == 1

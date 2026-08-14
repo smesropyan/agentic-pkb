@@ -115,9 +115,7 @@ _FIELD_HINTS: Mapping[str, str] = {
     "title": 'Add title: "…" — the display name every generated index links with.',
     "description": 'Add description: "…" — one line; it is the gloss the topic index renders.',
     "topic": 'Add topic: "…" — the display name of the folder holding topic.md.',
-    "tags": (
-        "Add tags: at least one topic.* tag, exactly one type.* tag and exactly one status.* tag."
-    ),
+    "tags": "Add tags: at least one topic.* tag and exactly one type.* tag.",
     "created": "Add created: YYYY-MM-DD (a calendar date, unquoted, no time).",
     "updated": "Add updated: YYYY-MM-DD, on or after created.",
     "source_type": (
@@ -155,7 +153,6 @@ _SECTION_EXCLUDED: frozenset[str] = frozenset(
 
 _TOPIC_NAMESPACE = tags.Namespace.TOPIC.value
 _TYPE_NAMESPACE = tags.Namespace.TYPE.value
-_STATUS_NAMESPACE = tags.Namespace.STATUS.value
 
 
 # --------------------------------------------------------------------------------------
@@ -572,14 +569,15 @@ def _va8_tag_syntax_and_vocabulary(ctx: _Context) -> list[Finding]:
 
 
 def _va9_tag_cardinality(ctx: _Context) -> list[Finding]:
-    """At least one ``topic.*``, exactly one ``type.*``, exactly one ``status.*`` (VA-9, Q11).
+    """At least one ``topic.*`` tag and exactly one ``type.*`` tag (T-19, formerly VA-9).
 
-    Errors rather than warnings: the conflict lifecycle is a state machine over one status value,
-    and a file carrying both ``status.approved`` and ``status.conflict-review`` is ambiguous to
-    every consumer that reads it.
+    Errors rather than warnings: a file with no ``topic.*`` tag cannot be placed in the registry or
+    a topic index, and a file carrying two ``type.*`` tags contradicts itself about what it is.
+    There is no ``status.*`` cardinality to check — T-17 retires the namespace outright, and a
+    ``status.*`` tag on a file is reported once, as an unknown namespace (VA-8), not here.
 
     Silent when the field is missing (VA-4 said so) or unusable — ``tags: "topic.cooking"`` is one
-    defect, and answering it with three more cardinality errors buries the fix.
+    defect, and answering it with more cardinality errors buries the fix.
     """
     unusable = any(problem.field == "tags" for problem in ctx.meta.bad_fields)
     if not ctx.meta.has("tags") or unusable:
@@ -592,7 +590,7 @@ def _va9_tag_cardinality(ctx: _Context) -> list[Finding]:
                 "MISSING_TOPIC_TAG",
                 Severity.ERROR,
                 "The file carries no topic.* tag.",
-                "VA-9",
+                "T-19",
                 field="tags",
                 hint=(
                     f"Add {ctx.topic_tag}."
@@ -601,41 +599,39 @@ def _va9_tag_cardinality(ctx: _Context) -> list[Finding]:
                 ),
             )
         )
-    for namespace, missing_code, multiple_code in (
-        (_TYPE_NAMESPACE, "MISSING_TYPE_TAG", "MULTIPLE_TYPE_TAGS"),
-        (_STATUS_NAMESPACE, "MISSING_STATUS_TAG", "MULTIPLE_STATUS_TAGS"),
-    ):
-        declared = _in_namespace(ctx.meta, namespace)
-        if not declared:
-            findings.append(
-                ctx.finding(
-                    missing_code,
-                    Severity.ERROR,
-                    f"The file carries no {namespace}.* tag; exactly one is required.",
-                    "VA-9",
-                    field="tags",
-                    hint=_cardinality_hint(namespace, ctx),
-                )
+
+    declared = _in_namespace(ctx.meta, _TYPE_NAMESPACE)
+    if not declared:
+        findings.append(
+            ctx.finding(
+                "MISSING_TYPE_TAG",
+                Severity.ERROR,
+                f"The file carries no {_TYPE_NAMESPACE}.* tag; exactly one is required.",
+                "T-19",
+                field="tags",
+                hint=_cardinality_hint(ctx),
             )
-        elif len(declared) > 1:
-            findings.append(
-                ctx.finding(
-                    multiple_code,
-                    Severity.ERROR,
-                    f"The file carries {len(declared)} {namespace}.* tags "
-                    f"({', '.join(declared)}); exactly one is allowed.",
-                    "VA-9",
-                    field="tags",
-                    value=", ".join(declared),
-                    hint=f"Keep the one {namespace}.* tag that describes the file and drop the rest.",
-                )
+        )
+    elif len(declared) > 1:
+        findings.append(
+            ctx.finding(
+                "MULTIPLE_TYPE_TAGS",
+                Severity.ERROR,
+                f"The file carries {len(declared)} {_TYPE_NAMESPACE}.* tags "
+                f"({', '.join(declared)}); exactly one is allowed.",
+                "T-19",
+                field="tags",
+                value=", ".join(declared),
+                hint=(
+                    f"Keep the one {_TYPE_NAMESPACE}.* tag that describes the file and drop the "
+                    "rest."
+                ),
             )
+        )
     return findings
 
 
-def _cardinality_hint(namespace: str, ctx: _Context) -> str:
-    if namespace == _STATUS_NAMESPACE:
-        return "Add one of " + ", ".join(sorted(tags.STATUS_TAGS)) + "."
+def _cardinality_hint(ctx: _Context) -> str:
     expected = _TYPE_TAGS_BY_ROLE.get(ctx.role)
     if expected:
         return "Add " + " or ".join(sorted(expected)) + " to match this file's location."

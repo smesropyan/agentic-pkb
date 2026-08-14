@@ -54,7 +54,6 @@ topic: "Cooking"
 tags:
   - topic.cooking
   - type.note
-  - status.draft
 created: 2026-08-06
 updated: 2026-08-06
 source_type: note

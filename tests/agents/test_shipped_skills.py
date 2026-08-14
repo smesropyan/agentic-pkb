@@ -38,7 +38,7 @@ from pkb.core import (
 from pkb.core.frontmatter import REQUIRED_FIELDS
 from pkb.core.frontmatter import parse as parse_frontmatter
 from pkb.core.scaffold import scaffold_topic
-from pkb.core.tags import MAX_TAG_DEPTH, STATUS_TAGS, TYPE_TAGS, Namespace
+from pkb.core.tags import MAX_TAG_DEPTH, TYPE_TAGS, Namespace
 from tests.agents.conftest import TODAY
 
 SKILL_FILE = "SKILL.md"
@@ -237,7 +237,7 @@ def test_restated_layer1_constraints_match_layer1_sk14() -> None:
     for namespace in Namespace:
         assert f"`{namespace.value}.*`" in tags
     assert f"{MAX_TAG_DEPTH} segments" in tags
-    for closed_tag in sorted(TYPE_TAGS | STATUS_TAGS):
+    for closed_tag in sorted(TYPE_TAGS):
         assert f"`{closed_tag}`" in tags, f"tag-proposal omits the closed vocabulary {closed_tag}"
 
     ingestion = _body("ingestion-classification")
