@@ -7,15 +7,15 @@ source_type: tag-registry
 
 ## Namespace: topic.bbq
 
-- `topic.bbq` – root topic
+- `topic.bbq` – Barbecue equipment, fuel, and technique
     - `topic.bbq.equipment`
 
 ## Namespace: topic.cooking
 
-- `topic.cooking` – root topic
-    - `topic.cooking.grilling`
+- `topic.cooking` *(custom expert)* – Home cooking: technique, equipment, and recipes
+    - `topic.cooking.grilling` – Charcoal and gas grilling
     - `topic.cooking.heat-management`
-    - `topic.cooking.recipes` *(topic-specific extension)*
+    - `topic.cooking.recipes`
 
 ## Namespace: type
 
@@ -24,16 +24,14 @@ source_type: tag-registry
 - `type.solution` – reusable solution (a note tagged as a solution)
 - `type.summary` – breadth overview
 
-## Namespace: status
-
-- `status.draft` – proposed, awaiting human approval
-- `status.approved`
-- `status.conflict-review`
-
 ## Namespace: domain
 
 - `domain.legal`
     - `domain.legal.compliance`
+
+## Skills (from each `SKILL.md`)
+
+- `voice` – How the assistant writes on the human's behalf
 
 ## Cross-topic mappings (aggregated from `related_topics`)
 

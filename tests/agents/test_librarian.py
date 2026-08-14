@@ -188,8 +188,17 @@ def test_the_librarian_prompt_is_kb_independent_lb3(kb: Path, tmp_path: Path) ->
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_the_root_catalog_is_in_context_every_turn_lb4(kb: Path) -> None:
-    """LB-4: root `index.md` is bounded (GE-12) so it is loaded; root `tags.md` is read on demand."""
+    """LB-4: root `index.md` is bounded (GE-12) so it is loaded; root `tags.md` is read on demand.
+
+    Superseded by Phase 1's Task 6: there is no root ``index.md`` any more (T-37), so the breadth
+    block now renders ``<file path="/kb/index.md" note="not present" />`` and carries no agent id at
+    all — see the same reasoning on ``test_the_librarian_block_is_the_root_catalog_only_lb4`` in
+    ``test_breadth_middleware.py``. Phase 3 rebuilds the Librarian's routing view against DESIGN.md;
+    it is not a one-line repoint to ``tags.md`` (the registry is deliberately unbounded, unlike the
+    8 KB root catalog this test's own docstring cites).
+    """
     regenerate_all(kb)
     model = scripted(says("routed"))
     run(librarian(kb, model), thread="t-lb4")

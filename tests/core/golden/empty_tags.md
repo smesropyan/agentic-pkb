@@ -11,9 +11,3 @@ source_type: tag-registry
 - `type.reference` – static source
 - `type.solution` – reusable solution (a note tagged as a solution)
 - `type.summary` – breadth overview
-
-## Namespace: status
-
-- `status.draft` – proposed, awaiting human approval
-- `status.approved`
-- `status.conflict-review`

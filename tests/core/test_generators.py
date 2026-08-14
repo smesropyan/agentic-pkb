@@ -1,24 +1,28 @@
-"""The three derived files: content, byte format, determinism and totality (GE-1 … GE-32).
+"""The two derived files: content, byte format, determinism and totality (GE-1 … GE-32, T-22 … T-37).
 
-The golden files in ``tests/core/golden/`` are the contract. Five of them
-(``root_index.md``, ``empty_root_index.md``, ``cooking_index.md``, ``tags.md``, ``empty_tags.md``)
-were lifted verbatim from §4.2 / §4.3 / §4.4 of the rules document rather than captured from this
-implementation, so :func:`test_goldens_match_ge31` is a real comparison against the spec and not a
-snapshot of whatever the code happened to emit. The remaining goldens cover the shapes §4 describes
-but does not print: a minimal topic, a sub-topic, a degraded tree, and a topic carrying maintenance
-flags.
+The golden files in ``tests/core/golden/`` are the contract. ``tags.md`` and ``empty_tags.md`` were
+regenerated against the new registry renderer by Phase 1's Task 6 and their comparison
+(:func:`test_goldens_match_ge31`, parametrized per file) is live again — the rest
+(``cooking_index.md``, ``bbq_index.md``, ``grilling_index.md``, ``minimal_topic_index.md``,
+``flagged_cooking_index.md``, ``degraded_topic_index.md``) are ``topic_index.py`` goldens Task 6
+does not touch and stay :data:`_LIVE_GOLDENS`-excluded (superseded) until Task 7 rebuilds that
+generator and regenerates them in turn. ``root_index.md``, ``empty_root_index.md`` and
+``degraded_root_index.md`` are gone along with ``root_index.py`` — there is no root ``index.md``
+generator left to compare against one (T-37).
 
-Regenerate every golden with::
+Regenerate the live goldens with::
 
     PYTHONPATH=. uv run python tests/core/test_generators.py --update-golden
 
 The switch lives on the module's script entry point rather than on ``pytest`` because
 ``pytest_addoption`` is only honoured from a ``conftest.py``, and this phase does not own
 ``tests/core/conftest.py``. Compare and update run through the same :func:`render_goldens`, so the
-two can never disagree about what a golden contains.
+two can never disagree about what a golden contains — but :func:`_update_goldens` writes only
+:data:`_LIVE_GOLDENS`: writing every key in :func:`render_goldens`' dict would silently regenerate
+the topic-index goldens Task 7 still owns, ahead of the rework that is supposed to change them.
 
-Re-run the five spec-derived goldens against §4 after any change to them: they are quoted text, and
-a golden that drifts from the document it was copied from is worse than no golden at all.
+Re-run the live goldens against DESIGN §1.6 after any change to them: they are quoted text, and a
+golden that drifts from the document it was copied from is worse than no golden at all.
 """
 
 from __future__ import annotations
@@ -46,13 +50,11 @@ from pkb.core.generators import (
     flags_for_topic,
     generate_topic_index,
     regenerate_all,
-    render_root_index,
     render_root_tags,
     render_topic_index,
-    root_index_findings,
+    root_tags_findings,
     topic_index_findings,
 )
-from pkb.core.generators.root_index import CUSTOM_EXPERT_MARKER, NO_TOPICS
 from pkb.core.generators.tags_registry import MAPPINGS_HEADING
 from pkb.core.models import FileClass
 from pkb.core.scan import scan
@@ -233,18 +235,15 @@ def render_goldens(workdir: Path) -> dict[str, str]:
     flagged = scan(write_kb(workdir / "flagged", FLAGGED_KB_FILES))
     degraded = scan(write_kb(workdir / "degraded", DEGRADED_KB_FILES))
     return {
-        "root_index.md": render_root_index(sample),
         "tags.md": render_root_tags(sample),
         "cooking_index.md": render_topic_index(sample, "Cooking", [ORPHAN_FLAG]),
         "bbq_index.md": render_topic_index(sample, "BBQ"),
         "grilling_index.md": render_topic_index(sample, "Cooking/sub-topics/Grilling"),
-        "empty_root_index.md": render_root_index(empty),
         "empty_tags.md": render_root_tags(empty),
         "minimal_topic_index.md": render_topic_index(minimal, "Physics"),
         "flagged_cooking_index.md": render_topic_index(
             flagged, "Cooking", [BROKEN_LINK_FLAG, ORPHAN_FLAG]
         ),
-        "degraded_root_index.md": render_root_index(degraded),
         "degraded_topic_index.md": render_topic_index(degraded, "Physics"),
     }
 
@@ -252,20 +251,21 @@ def render_goldens(workdir: Path) -> dict[str, str]:
 GOLDEN_NAMES = tuple(
     sorted(
         {
-            "root_index.md",
             "tags.md",
             "cooking_index.md",
             "bbq_index.md",
             "grilling_index.md",
-            "empty_root_index.md",
             "empty_tags.md",
             "minimal_topic_index.md",
             "flagged_cooking_index.md",
-            "degraded_root_index.md",
             "degraded_topic_index.md",
         }
     )
 )
+
+_LIVE_GOLDENS = frozenset({"tags.md", "empty_tags.md"})
+"""Task 6 regenerates these two against the new registry renderer, so their comparison is live
+again; the rest are topic-index goldens Task 7 rebuilds when it reworks ``topic_index.py``."""
 
 
 def _read_golden(name: str) -> str:
@@ -273,8 +273,14 @@ def _read_golden(name: str) -> str:
     return (GOLDEN / name).read_bytes().decode("utf-8")
 
 
-@pytest.mark.superseded
-@pytest.mark.parametrize("name", GOLDEN_NAMES, ids=GOLDEN_NAMES)
+@pytest.mark.parametrize(
+    "name",
+    [
+        name if name in _LIVE_GOLDENS else pytest.param(name, marks=pytest.mark.superseded)
+        for name in GOLDEN_NAMES
+    ],
+    ids=GOLDEN_NAMES,
+)
 def test_goldens_match_ge31(name: str, tmp_path: Path) -> None:
     """Full-file string equality against every golden; one drifting space fails it (GE-31)."""
     assert render_goldens(tmp_path)[name] == _read_golden(name)
@@ -375,7 +381,7 @@ def test_derived_files_are_excluded_from_the_index_ge3(tmp_path: Path) -> None:
 
 def _render_all(kb: Path) -> str:
     snapshot = scan(kb)
-    parts = [render_root_index(snapshot), render_root_tags(snapshot)]
+    parts = [render_root_tags(snapshot)]
     parts += [render_topic_index(snapshot, path) for path in snapshot.topics]
     return "\n".join(parts)
 
@@ -593,7 +599,6 @@ def test_a_case_variant_collision_flags_without_aborting_the_flush_pa17(tmp_path
     assert {"index.md", "tags.md", "BBQ/index.md"} <= set(report.written)
 
 
-@pytest.mark.superseded
 def test_renderers_perform_no_io_ge9(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Every ``render_*`` runs with the filesystem taken away (GE-9)."""
     kb = write_kb(tmp_path / "KB", SAMPLE_KB_FILES)
@@ -607,36 +612,8 @@ def test_renderers_perform_no_io_ge9(tmp_path: Path, monkeypatch: pytest.MonkeyP
     for method in ("open", "read_text", "read_bytes", "write_text", "write_bytes"):
         monkeypatch.setattr(Path, method, _blocked)
 
-    assert render_root_index(snapshot)
     assert render_root_tags(snapshot)
     assert render_topic_index(snapshot, "Cooking")
-
-
-# --------------------------------------------------------------------------------------
-# GE-10 … GE-13 — the root catalog
-# --------------------------------------------------------------------------------------
-
-
-@pytest.mark.superseded
-def test_root_index_ignores_file_level_change_ge10(tmp_path: Path) -> None:
-    """Adding a note leaves the catalog byte-identical; a topic description changes one line."""
-    kb = write_kb(tmp_path / "KB", SAMPLE_KB_FILES)
-    before = render_root_index(scan(kb))
-
-    (kb / "Cooking" / "notes" / "new.md").write_text(
-        _note("New", "A brand new note", "topic.cooking"), encoding="utf-8"
-    )
-    assert render_root_index(scan(kb)) == before
-
-    topic = kb / "Cooking" / "topic.md"
-    topic.write_text(
-        topic.read_text(encoding="utf-8").replace(
-            "Home cooking: technique, equipment, and recipes", "Cooking, rewritten"
-        ),
-        encoding="utf-8",
-    )
-    after = render_root_index(scan(kb))
-    assert _changed_lines(before, after) == 1
 
 
 def _changed_lines(before: str, after: str) -> int:
@@ -646,50 +623,11 @@ def _changed_lines(before: str, after: str) -> int:
     return sum(1 for a, b in zip(old, new, strict=True) if a != b)
 
 
-@pytest.mark.superseded
-def test_root_index_carries_no_tag_data_ge11(tmp_path: Path) -> None:
-    """No mapping glyph and no rendered tag node in the catalog (GE-11)."""
-    text = render_root_index(scan(write_kb(tmp_path / "KB", SAMPLE_KB_FILES)))
-    assert tags.MAPPING_SEP not in text
-    assert "`topic." not in text  # agent ids are `topic/...`, tags would be `topic....`
-
-
-@pytest.mark.superseded
-def test_root_index_stays_bounded_ge12(tmp_path: Path) -> None:
-    """Fifty topics of twenty files each render one line per topic, under 8 KB (GE-12)."""
-    files: dict[str, str] = {}
-    for index in range(50):
-        topic = f"Topic{index:02d}"
-        files[f"{topic}/topic.md"] = _summary(topic, f"Everything about {topic}", "topic.physics")
-        for note in range(20):
-            files[f"{topic}/notes/note-{note:02d}.md"] = _note(
-                f"Note {note}", "One of many", "topic.physics"
-            )
-    text = render_root_index(scan(write_kb(tmp_path / "KB", files)))
-
-    chrome = 12  # frontmatter (5) + blanks and headings around the H1, banner and section
-    assert len(text.rstrip("\n").split("\n")) == 50 + chrome
-    assert len(text.encode("utf-8")) < 8 * 1024
-
-
-@pytest.mark.superseded
-def test_expert_marker_flips_one_line_ge13(tmp_path: Path) -> None:
-    """``*(custom expert)*`` marks exactly the topic roots holding an ``expert.md`` (GE-13)."""
-    kb = write_kb(tmp_path / "KB", SAMPLE_KB_FILES)
-    before = render_root_index(scan(kb))
-    assert before.count(CUSTOM_EXPERT_MARKER) == 1
-
-    (kb / "BBQ" / "expert.md").write_text("# BBQ Expert\n", encoding="utf-8")
-    after = render_root_index(scan(kb))
-    assert after.count(CUSTOM_EXPERT_MARKER) == 2
-    assert _changed_lines(before, after) == 1
-
-
-@pytest.mark.superseded
-def test_root_index_lists_sub_topics_ge10(tmp_path: Path) -> None:
-    """Every topic root at every depth appears, nested under its parent (GE-10, Q9)."""
-    text = render_root_index(scan(write_kb(tmp_path / "KB", SAMPLE_KB_FILES)))
-    assert "    - [Grilling](Cooking/sub-topics/Grilling/topic.md) `topic/cooking/grilling`" in text
+# --------------------------------------------------------------------------------------
+# GE-10 … GE-13 — the root catalog: retired outright (T-37). The root registry took over this
+# surface's responsibilities — the lifted description, the totality guarantee, the expert marker —
+# and tests/core/test_tree_rules.py's T-22..T-27 section (Task 6) is where they are asserted now.
+# --------------------------------------------------------------------------------------
 
 
 # --------------------------------------------------------------------------------------
@@ -774,8 +712,17 @@ def _block(text: str, heading: str) -> list[str]:
     return [line for line in rest[:end] if line]
 
 
+@pytest.mark.superseded
 def test_topic_tag_subtree_equals_the_registry_block_ge17(tmp_path: Path) -> None:
-    """A topic's ``## Tag subtree`` equals its ``## Namespace:`` block in ``tags.md`` (GE-17)."""
+    """A topic's ``## Tag subtree`` equals its ``## Namespace:`` block in ``tags.md`` (GE-17).
+
+    Superseded by Task 6 (T-23): the registry's root node now carries a lifted description plus
+    ``*(custom expert)*`` instead of the generic "root topic" gloss, but ``topic_index.py``'s own
+    ``## Tag subtree`` section still renders the old ``ROOT_TOPIC_ANNOTATION`` — Task 6's own scope
+    is ``tags_registry.py``/``derive.py``/``generators/__init__.py``, not ``topic_index.py``. Task
+    7's own interface is explicit that it picks this up: "Consumes: ... Task 6's registry
+    conventions (same renderer for the tag subtree)."
+    """
     snapshot = scan(write_kb(tmp_path / "KB", SAMPLE_KB_FILES))
     index = render_topic_index(snapshot, "Cooking")
     registry = render_root_tags(snapshot)
@@ -936,7 +883,9 @@ def test_tag_tree_renders_the_full_chain_ge23(tmp_path: Path) -> None:
     }
     kb = write_kb(tmp_path / "KB", files)
     block = _block(render_root_tags(scan(kb)), "Namespace: topic.cooking")
-    root_topic = f"- `topic.cooking`{tags.ROOT_TOPIC_ANNOTATION}"
+    # The topic-backed root node's summary is lifted from `topic.md`'s own `description` (T-23),
+    # not the retired generic "root topic" gloss `_summary`'s second argument became.
+    root_topic = f"- `topic.cooking`{tags.TAG_DEF_SEP}Cooking"
     assert block == [
         root_topic,
         "    - `topic.cooking.grilling`",
@@ -979,24 +928,31 @@ def test_static_definitions_are_always_rendered_ge29(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------------------
 
 
-@pytest.mark.superseded
 def test_generators_are_total_over_a_degraded_tree_ge25(tmp_path: Path) -> None:
-    """Each degraded case renders one line plus one diagnostic, and the flush completes (GE-25)."""
+    """Each degraded case renders one line plus one diagnostic, and the flush completes (GE-25).
+
+    The registry is the one derived file above the topics now (T-37), so it is the registry —
+    not a root catalog, retired — that carries the degraded topic-backed node and its diagnostic.
+    """
     kb = write_kb(tmp_path / "KB", DEGRADED_KB_FILES)
     snapshot = scan(kb)
 
-    catalog = render_root_index(snapshot)
-    assert "- [Physics](Physics/topic.md) `topic/physics` — *(missing topic metadata)*" in catalog
-    assert "NotATopic" not in catalog  # a directory without topic.md is not a topic
+    registry = render_root_tags(snapshot)
+    assert f"`topic.physics`{tags.TAG_DEF_SEP}*(missing topic metadata)*" in registry
+    assert "NotATopic" not in registry  # a directory without topic.md is not a topic
 
     index = render_topic_index(snapshot, "Physics")
     assert "- [Notes summary](notes/summary.md) — *(no description)*" in index
 
-    assert [f.code for f in root_index_findings(snapshot)] == ["MISSING_TOPIC_METADATA"]
+    # `Physics/notes/summary.md`'s own `status.draft` tag (T-17: retired namespace) also surfaces
+    # an UNKNOWN_TAG_NAMESPACE finding here, incidental to this fixture rather than to GE-25/T-23's
+    # own totality guarantee, which is what the filter below isolates.
+    registry_codes = [f.code for f in root_tags_findings(snapshot)]
+    assert registry_codes.count("MISSING_TOPIC_METADATA") == 1
     assert [f.code for f in topic_index_findings(snapshot, "Physics")] == ["MISSING_DESCRIPTION"]
 
     report = regenerate_all(kb)
-    assert sorted(report.written) == ["Physics/index.md", "index.md", "tags.md"]
+    assert sorted(report.written) == ["Physics/index.md", "tags.md"]
 
 
 def test_a_file_is_never_silently_dropped_ge25(tmp_path: Path) -> None:
@@ -1156,16 +1112,14 @@ def test_derived_set_holds_no_conflict_history_ge28(tmp_path: Path) -> None:
             assert "conflict" not in text.lower()
 
 
-@pytest.mark.superseded
-def test_empty_kb_generates_two_files_ge29(tmp_path: Path) -> None:
-    """An empty KB yields the two root artifacts and no topic index (GE-29)."""
+def test_empty_kb_generates_one_file_ge29(tmp_path: Path) -> None:
+    """An empty KB yields the one root artifact and no topic index (GE-29, T-37)."""
     kb = _mkdir(tmp_path / "Empty")
     report = regenerate_all(kb)
 
-    assert sorted(report.written) == ["index.md", "tags.md"]
-    assert (kb / "index.md").read_bytes().decode("utf-8") == _read_golden("empty_root_index.md")
+    assert sorted(report.written) == ["tags.md"]
     assert (kb / "tags.md").read_bytes().decode("utf-8") == _read_golden("empty_tags.md")
-    assert NO_TOPICS in (kb / "index.md").read_text(encoding="utf-8")
+    assert not (kb / "index.md").exists()
 
 
 def test_regenerate_all_takes_no_lock_ge30() -> None:
@@ -1325,13 +1279,19 @@ def test_registry_rendering_is_invariant_to_file_order_ge4(segments: list[str]) 
 
 
 def _update_goldens() -> list[str]:
-    """Rewrite every golden from the current renderers. Used by the script entry point (GE-31)."""
+    """Rewrite the *live* goldens from the current renderers. Used by the script entry point (GE-31).
+
+    Restricted to :data:`_LIVE_GOLDENS` rather than every key :func:`render_goldens` renders: the
+    topic-index goldens are Task 7's to regenerate, and a script that quietly overwrote them ahead
+    of that rework would make the stale comparison in :func:`test_goldens_match_ge31` stale in the
+    other direction — passing against bytes nobody reviewed rather than failing loudly.
+    """
     with tempfile.TemporaryDirectory() as workdir:
         rendered = render_goldens(Path(workdir))
     GOLDEN.mkdir(parents=True, exist_ok=True)
-    for name, text in rendered.items():
-        (GOLDEN / name).write_bytes(text.encode("utf-8"))
-    return sorted(rendered)
+    for name in _LIVE_GOLDENS:
+        (GOLDEN / name).write_bytes(rendered[name].encode("utf-8"))
+    return sorted(_LIVE_GOLDENS)
 
 
 if __name__ == "__main__":  # pragma: no cover - developer entry point

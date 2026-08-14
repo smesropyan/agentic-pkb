@@ -321,11 +321,19 @@ def _derived_bytes(kb: Path) -> dict[str, bytes]:
     }
 
 
+@pytest.mark.superseded
 def test_adopting_every_skill_changes_no_generated_artifact_sk17(kb: Path) -> None:
-    """SK-17: skills appear in no index, contribute no tags, and mint no topic root.
+    """SK-17 (superseded rule id, no longer binding — ``docs/superpowers/specs/superseded/``):
+    skills appear in no index, contribute no tags, and mint no topic root.
 
-    Layer 1 excludes ``skills/**`` from every artifact; Layer 2 must not defeat that by putting an
-    adopted copy anywhere else.
+    DESIGN.md §1.6 (Phase 1) contradicts this outright: the root registry now catalogs "the skills
+    the root resolves, the shipped ones and the root's own, from the name and description in each
+    SKILL.md" — an adopted root-level skill is exactly a root-owned ``skills/<name>/SKILL.md``, so
+    ``tags.md``'s own ``## Skills`` section changing underneath it is the new design working as
+    documented, not a regression. Phase 3 rebuilds ``pkb.agents`` against DESIGN.md and owns
+    replacing this assertion with one that expects the registry to change for a root-level adoption
+    while still holding for a topic-scoped one (Layer 1 never puts a topic's own skill in the root
+    catalog, T-25).
     """
     before = _derived_bytes(kb)
     for name in DEFAULT_SKILL_NAMES:

@@ -369,12 +369,24 @@ def test_a_multibyte_character_on_the_cap_boundary_is_not_reported_as_broken_ex7
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.superseded
 def test_the_librarian_block_is_the_root_catalog_only_lb4(kb: Path) -> None:
     """The Librarian carries the generated routing view and nothing topic-scoped (LB-4, LB-5).
 
     Root `index.md` is one line per topic and bounded under 8 KB, which is what makes it affordable
     every turn. A topic's breadth files in the Librarian's context would make it answer instead of
     route, which is the one thing README §1.1 goal 2 asks it not to do.
+
+    Superseded by Phase 1's Task 6: there is no root ``index.md`` any more (T-37) and the fixture's
+    ``append_line(kb / "index.md", ...)`` now raises ``FileNotFoundError`` before the assertions run
+    — ``scaffold_topic``'s bare rebuild writes only ``tags.md``. Fixing this is Phase 3's job
+    (rebuilding ``pkb.agents`` against DESIGN.md), not a one-line repoint: swapping
+    ``librarian_breadth_sources()`` from ``INDEX_FILE`` to ``TAGS_FILE`` would falsify this
+    middleware's whole "bounded under 8 KB, so it is loaded every turn; the registry is unbounded,
+    so it is named instead" split, baked into ``MAX_SOURCE_BYTES``'s own docstring and
+    ``librarian_breadth_sources``'s (breadth.py:136-144) — the registry now carries a tag tree, a
+    skills catalog and cross-topic mappings and is no longer the small, line-per-topic file that
+    reasoning depends on.
     """
     append_line(kb / "index.md", "MARKER-ROOT-CATALOG")
     append_line(kb / "Cooking" / "notes" / "summary.md", "MARKER-TOPIC-SCOPED")

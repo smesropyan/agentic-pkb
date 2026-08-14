@@ -12,6 +12,13 @@ from pathlib import Path
 
 from pkb.core import frontmatter, tags
 from pkb.core.errors import Severity
+from pkb.core.generators.tags_registry import (
+    CUSTOM_EXPERT_MARKER,
+    MAPPINGS_HEADING,
+    SKILLS_HEADING,
+    render_root_tags,
+    root_tags_findings,
+)
 from pkb.core.models import FileClass, FileRole
 from pkb.core.scan import scan
 from pkb.core.validation import validate_tree
@@ -327,3 +334,243 @@ def test_session_file_classifies_as_session_and_skips_location_agreement_t9(
 
     findings = validate_tree(kb, snapshot)
     assert not [f for f in findings if f.code == "TOPIC_LOCATION_MISMATCH"]
+
+
+# --------------------------------------------------------------------------------------
+# Task 6 — T-22 … T-27: the registry is the one derived root file
+# --------------------------------------------------------------------------------------
+
+_COOKING_DESCRIPTION = (
+    "Home cooking end to end: equipment, technique and the dishes worth making again."
+)
+_BAKING_DESCRIPTION = "Bread and pastry, where the dough sets the schedule."
+
+
+def _design_example_kb(tmp_path: Path) -> Path:
+    """DESIGN.md §1.6's worked example tree, built for real (the section's own acceptance surface).
+
+    Cooking carries the example's own description; its ``Baking`` sub-topic owns ``expert.md`` so
+    the rendered node carries ``*(custom expert)*`` — the one marked line the example shows it on.
+    One note under Cooking tags ``topic.cooking.grilling`` (no folder behind it: a bare node) and
+    declares ``related_topics: [ bbq.equipment ]``, and one carries ``domain.legal.compliance`` —
+    both copied verbatim from the example's own mapping and domain lines.
+    """
+    return write_kb(
+        tmp_path / "KB",
+        {
+            "Cooking/topic.md": _knowledge_file(
+                title="Cooking",
+                description=_COOKING_DESCRIPTION,
+                topic="Cooking",
+                tags_=["topic.cooking", "type.summary"],
+                source_type="summary",
+            ),
+            "Cooking/sub-topics/Baking/topic.md": _knowledge_file(
+                title="Baking",
+                description=_BAKING_DESCRIPTION,
+                topic="Baking",
+                tags_=["topic.cooking.baking", "type.summary"],
+                source_type="summary",
+            ),
+            "Cooking/sub-topics/Baking/expert.md": "# Baking Topic Expert\n\nKnead gently.\n",
+            "Cooking/notes/wind.md": _knowledge_file(
+                title="Wind shelter",
+                description="A windbreak beside the grill",
+                topic="Cooking",
+                tags_=["topic.cooking.grilling", "type.note"],
+                source_type="note",
+            ).replace("source_type: note", "related_topics: [ bbq.equipment ]\nsource_type: note"),
+            "Cooking/notes/regulations.md": _knowledge_file(
+                title="Open-flame rules",
+                description="Local fire-safety regulations for open flame",
+                topic="Cooking",
+                tags_=["topic.cooking", "domain.legal.compliance", "type.note"],
+                source_type="note",
+            ),
+        },
+    )
+
+
+def test_marked_lines_match_the_design_example_exactly_t23_t24_t25(tmp_path: Path) -> None:
+    """T-23, T-24, T-25: the described node, the custom-expert node, a bare domain node and the
+    ``## Skills`` head appear byte-exact, straight out of DESIGN §1.6's own worked example."""
+    snapshot = scan(_design_example_kb(tmp_path))
+    shipped = [
+        ("brainstorming", "Work an objective wide."),
+        ("voice", "Draft in the operator's own register."),
+    ]
+    text = render_root_tags(snapshot, shipped_skills=shipped)
+
+    described_node = f"- `topic.cooking`{tags.TAG_DEF_SEP}{_COOKING_DESCRIPTION}"
+    custom_expert_node = (
+        f"    - `topic.cooking.baking`{CUSTOM_EXPERT_MARKER}{tags.TAG_DEF_SEP}{_BAKING_DESCRIPTION}"
+    )
+    assert described_node in text
+    assert custom_expert_node in text
+    assert "- `domain.legal`" in text
+    assert "    - `domain.legal.compliance`" in text
+    assert f"## {SKILLS_HEADING}" in text
+
+
+def test_a_bare_tag_with_no_topic_folder_carries_no_summary_t23(tmp_path: Path) -> None:
+    """T-23: ``topic.cooking.grilling`` is a tag inside Cooking, not a topic — it stays bare."""
+    snapshot = scan(_design_example_kb(tmp_path))
+    text = render_root_tags(snapshot)
+
+    assert "    - `topic.cooking.grilling`\n" in text
+    assert f"`topic.cooking.grilling`{tags.TAG_DEF_SEP}" not in text
+    assert f"`topic.cooking.grilling`{CUSTOM_EXPERT_MARKER}" not in text
+
+
+def test_losing_expert_md_removes_the_marker_t23(tmp_path: Path) -> None:
+    """T-23: the marker follows ``expert.md``'s presence, not a cached fact about the topic."""
+    kb = _design_example_kb(tmp_path)
+    assert CUSTOM_EXPERT_MARKER in render_root_tags(scan(kb))
+
+    (kb / "Cooking" / "sub-topics" / "Baking" / "expert.md").unlink()
+
+    assert CUSTOM_EXPERT_MARKER not in render_root_tags(scan(kb))
+
+
+def test_lifted_not_authored_description_follows_topic_md_t23(tmp_path: Path) -> None:
+    """T-23: nothing here authors a description — changing ``topic.md`` changes exactly this line."""
+    kb = _design_example_kb(tmp_path)
+    before = render_root_tags(scan(kb))
+    assert _COOKING_DESCRIPTION in before
+
+    topic_md = kb / "Cooking" / "topic.md"
+    topic_md.write_text(
+        topic_md.read_text(encoding="utf-8").replace(_COOKING_DESCRIPTION, "Cooking, rewritten"),
+        encoding="utf-8",
+    )
+    after = render_root_tags(scan(kb))
+
+    assert "Cooking, rewritten" in after
+    assert _COOKING_DESCRIPTION not in after
+    before_lines = before.split("\n")
+    after_lines = after.split("\n")
+    assert len(before_lines) == len(after_lines)
+    changed = sum(1 for a, b in zip(before_lines, after_lines, strict=True) if a != b)
+    assert changed == 1
+
+
+def test_a_degraded_topic_md_renders_a_placeholder_and_a_finding_t23(tmp_path: Path) -> None:
+    """T-23, GE-25: a topic without a readable ``topic.md`` still gets a registry line — the
+    retired root catalog used to own this totality guarantee, and the registry owns it now (T-37)."""
+    kb = write_kb(
+        tmp_path / "KB",
+        {"Cooking/topic.md": "---\ntitle: [unclosed\n---\n\n# Cooking\n"},
+    )
+    snapshot = scan(kb)
+
+    text = render_root_tags(snapshot)
+    assert f"- `topic.cooking`{tags.TAG_DEF_SEP}*(missing topic metadata)*" in text
+
+    findings = root_tags_findings(snapshot)
+    assert [f.code for f in findings] == ["MISSING_TOPIC_METADATA"]
+    assert findings[0].path == "Cooking/topic.md"
+
+
+def test_domain_nodes_are_always_bare_t24(tmp_path: Path) -> None:
+    """T-24: ``domain.*`` never carries a summary — no file backs it the way ``topic.md`` does."""
+    snapshot = scan(_design_example_kb(tmp_path))
+    domain_block = _block(render_root_tags(snapshot), "Namespace: domain")
+
+    assert domain_block == ["- `domain.legal`", "    - `domain.legal.compliance`"]
+
+
+def _block(text: str, heading: str) -> list[str]:
+    lines = text.split("\n")
+    start = lines.index(f"## {heading}") + 1
+    rest = lines[start:]
+    end = next((i for i, line in enumerate(rest) if line.startswith("## ")), len(rest))
+    return [line for line in rest[:end] if line]
+
+
+def test_skills_section_merges_shipped_and_root_root_shadows_by_name_t25(tmp_path: Path) -> None:
+    """T-25: shipped entries plus the root's own ``skills/*/SKILL.md``; a root-owned name shadows
+    the shipped one it names, mirroring DESIGN §4's "most specific entry wins" resolution order."""
+    kb = write_kb(
+        tmp_path / "KB",
+        {
+            "skills/voice/SKILL.md": (
+                "---\nname: voice\ndescription: The operator's own overload.\n---\n\nBody.\n"
+            ),
+        },
+    )
+    snapshot = scan(kb)
+    shipped = [
+        ("brainstorming", "Work an objective wide."),
+        ("voice", "The shipped starter profile."),
+    ]
+
+    skills_block = _block(render_root_tags(snapshot, shipped_skills=shipped), SKILLS_HEADING)
+
+    assert skills_block == [
+        f"- `brainstorming`{tags.TAG_DEF_SEP}Work an objective wide.",
+        f"- `voice`{tags.TAG_DEF_SEP}The operator's own overload.",
+    ]
+
+
+def test_a_topics_own_skill_never_reaches_the_registry_t25(tmp_path: Path) -> None:
+    """T-25: "A topic's own skills stay in that topic's index.md" — never the root registry."""
+    kb = write_kb(
+        tmp_path / "KB",
+        {
+            "Cooking/topic.md": _knowledge_file(
+                title="Cooking",
+                description=_COOKING_DESCRIPTION,
+                topic="Cooking",
+                tags_=["topic.cooking", "type.summary"],
+                source_type="summary",
+            ),
+            "Cooking/skills/timing/SKILL.md": (
+                "---\nname: timing\ndescription: Cooking's own overload.\n---\n\nBody.\n"
+            ),
+        },
+    )
+    snapshot = scan(kb)
+
+    assert "timing" not in render_root_tags(snapshot)
+
+
+def test_cross_topic_mappings_are_unchanged_by_the_registry_rework_t26(tmp_path: Path) -> None:
+    """T-26: mappings still come from ``related_topics`` alone, rendered under the same heading.
+
+    Only Cooking's note declares the relationship, so the declared direction stands — grilling
+    left, ``bbq.equipment`` right — the same orientation DESIGN §1.6's own example renders.
+    """
+    snapshot = scan(_design_example_kb(tmp_path))
+    mappings_block = _block(render_root_tags(snapshot), MAPPINGS_HEADING)
+
+    expected = tags.render_mapping_line("topic.cooking.grilling", "topic.bbq.equipment")
+    assert mappings_block == [expected]
+
+
+def test_registry_regeneration_is_byte_idempotent_t27(tmp_path: Path) -> None:
+    """T-27: "Regeneration is byte-idempotent" — calling the renderer twice changes nothing."""
+    snapshot = scan(_design_example_kb(tmp_path))
+
+    first = render_root_tags(snapshot)
+    second = render_root_tags(snapshot)
+
+    assert first == second
+
+
+def test_sibling_order_is_case_insensitive_by_the_full_string_t27(tmp_path: Path) -> None:
+    """T-27: siblings sort case-insensitively, not by codepoint — a tag itself is always lowercase
+    (TG-4), so this is only observable where a name is not: the skills catalog's own ``name`` field.
+
+    Plain codepoint order would put every uppercase letter ahead of every lowercase one (``Z`` is
+    ``0x5A``, ``a`` is ``0x61``), rendering ``Zebra`` before ``apple``; case-insensitive order does
+    not.
+    """
+    snapshot = scan(write_kb(tmp_path / "KB", {}))
+    shipped = [("Zebra", "Capitalized on purpose."), ("apple", "Lowercase on purpose.")]
+
+    skills_block = _block(render_root_tags(snapshot, shipped_skills=shipped), SKILLS_HEADING)
+
+    assert skills_block == [
+        f"- `apple`{tags.TAG_DEF_SEP}Lowercase on purpose.",
+        f"- `Zebra`{tags.TAG_DEF_SEP}Capitalized on purpose.",
+    ]

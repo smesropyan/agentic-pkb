@@ -1,14 +1,18 @@
 """What the generators compute from a snapshot before any byte is rendered (GE-3, GE-19 … GE-24).
 
-Two derivations are needed by more than one artifact, and both are subtle enough that two
+Three derivations are needed by more than one artifact, and each is subtle enough that two
 implementations would silently disagree:
 
 * **Cross-topic mappings.** Root ``tags.md`` aggregates them (GE-19, GE-20) and every topic index
   shows its own slice (GE-18). GE-18's assertion — "the same unordered pair appears exactly once in
   root ``tags.md``" — is only checkable because both read the same list.
-* **Tag-section annotations.** The extension marker (GE-24) is derived from the *tree* (a directory
-  under a topic root), not from the tag, so the registry and the topic index must consult the same
-  folder listing or one of them will mark a node the other does not.
+* **Skill entries.** A ``SKILL.md``'s ``name``/``description`` are read out of the ``ParsedDocument``
+  the walk already parsed (T-25, T-16) — never a second file open — so the root registry's ``##
+  Skills`` section and a future topic index's own catalog agree on what one ``SKILL.md`` says.
+
+There is no tag-section annotation derivation left (T-1): the extension-folder mechanism the old
+``EXTENSION_MARKER`` depended on is retired outright, not merely renamed, so a topic's local tag
+subtree carries only its root gloss now (:func:`topic_annotations`).
 
 Everything here is pure over the snapshot: no filesystem, no clock, no absolute path in any result.
 """
@@ -19,19 +23,24 @@ from collections.abc import Iterable, Mapping
 
 from pkb.core import frontmatter, paths, tags
 from pkb.core.errors import Finding, Severity, has_errors
-from pkb.core.models import KbSnapshot
+from pkb.core.models import FileRole, KbSnapshot, ParsedDocument
 
 __all__ = [
     "Pair",
+    "SkillEntry",
     "cross_topic_pairs",
-    "extension_annotations",
     "is_at_or_below",
     "pairs_for_topic",
+    "read_skill_entry",
+    "root_skills",
     "topic_annotations",
 ]
 
 Pair = tuple[str, str]
 """An oriented cross-topic mapping: ``(left, right)`` as rendered."""
+
+SkillEntry = tuple[str, str]
+"""A cataloguable skill: ``(name, description)``, both straight out of one ``SKILL.md`` (T-25)."""
 
 
 def _pair_sort_key(pair: Pair) -> tuple[tuple[str, str], tuple[str, str]]:
@@ -145,36 +154,65 @@ def pairs_for_topic(pairs: Iterable[Pair], topic_tag: str) -> list[Pair]:
 
 
 # --------------------------------------------------------------------------------------
-# Tag-section annotations (GE-23, GE-24)
+# Tag-section annotations (GE-23)
 # --------------------------------------------------------------------------------------
 
 
-def extension_annotations(snapshot: KbSnapshot) -> dict[str, str]:
-    """Tags that carry ``*(topic-specific extension)*``, keyed by full dotted tag (GE-24).
-
-    The marker is derived from the tree, not from the tag: a node is marked iff a non-structural
-    directory whose name slugifies to the node's leaf segment sits directly under the topic root
-    that owns the node's parent tag. Deleting the folder therefore removes the marker while the tag
-    (still used by a file) keeps its node — which is exactly GE-24's test.
-
-    Built by enumerating the folders rather than the tags, so the result is a pure function of the
-    snapshot's topic records and can annotate any tree slice.
-    """
-    marked: dict[str, str] = {}
-    for topic in snapshot.topics.values():
-        # Read live rather than cached (T-1 retired ``TopicRecord.extension_folders``): this whole
-        # function is EXTENSION_MARKER machinery a later task removes outright.
-        for folder in paths.extension_folders(snapshot.root / topic.path):
-            segment = paths.slugify(folder)
-            if segment:
-                marked[f"{topic.tag}.{segment}"] = tags.EXTENSION_MARKER
-    return marked
-
-
 def topic_annotations(snapshot: KbSnapshot, root_tag: str) -> Mapping[str, str]:
-    """Annotations for one ``topic.*`` section: the root gloss plus extension markers (GE-23).
+    """Annotation for one ``topic.*`` section's root node: the root gloss, and nothing else (GE-23).
 
-    ``root_tag`` wins over an extension marker on the same tag: a section's root node is a topic,
-    whatever else the folder tree says about a directory with that name.
+    There is no extension-folder mechanism any more (T-1), so this no longer also marks a folder
+    that happens to sit under the topic root — a name ``STRUCTURAL_DIRS`` does not recognize is
+    reported once, cross-file, as ``UNEXPECTED_TOPIC_ENTRY`` (:func:`pkb.core.paths.extension_folders`),
+    never rendered into a tag-tree annotation.
     """
-    return {**extension_annotations(snapshot), root_tag: tags.ROOT_TOPIC_ANNOTATION}
+    return {root_tag: tags.ROOT_TOPIC_ANNOTATION}
+
+
+# --------------------------------------------------------------------------------------
+# Skill entries (T-16, T-25)
+# --------------------------------------------------------------------------------------
+
+
+def read_skill_entry(doc: ParsedDocument | None) -> SkillEntry | None:
+    """Read ``name``/``description`` straight out of a ``SKILL.md``'s own frontmatter block.
+
+    ``SKILL.md`` carries no PKB schema (skills are a file class of their own, §1.3/§1.9), so this
+    reads ``doc.raw`` — the generic YAML mapping :func:`pkb.core.frontmatter.parse` already loaded
+    while the walk recorded the file — as a two-key document in its own right, rather than routing
+    through :class:`~pkb.core.models.Metadata`'s known/unknown split, which exists for a different
+    schema and would make the coincidence that both schemas spell one field ``description`` load-
+    bearing by accident.
+
+    Costs no second file open (GE-9): every skill markdown file is parsed once, by the walk itself.
+    Returns ``None`` when the block is missing, unparseable, or names no usable ``name`` — a skill
+    with no name cannot be catalogued, and this function never invents one from the folder.
+    """
+    if doc is None or doc.raw is None:
+        return None
+    name = doc.raw.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    description = doc.raw.get("description")
+    return (name.strip(), description.strip() if isinstance(description, str) else "")
+
+
+def root_skills(snapshot: KbSnapshot) -> list[SkillEntry]:
+    """The knowledge base's own root-level skills, sorted by name (T-25).
+
+    Root-level means ``skills/<name>/SKILL.md`` directly under the KB root — ``record.topic_path is
+    None`` is what tells one apart from a topic's own overload folder (``Cooking/skills/...``, which
+    carries its owning topic's path). A topic's own skills stay out of this list on purpose: they
+    belong in that topic's own index (T-25), never in the root registry.
+    """
+    entries: list[SkillEntry] = []
+    for record in snapshot.files.values():
+        if record.role is not FileRole.SKILL or record.topic_path is not None:
+            continue
+        parts = record.path.split("/")
+        if len(parts) != 3 or parts[0] != paths.SKILLS_DIR or parts[2] != paths.SKILL_FILE:
+            continue
+        entry = read_skill_entry(record.doc)
+        if entry is not None:
+            entries.append(entry)
+    return sorted(entries, key=lambda entry: tags.tag_sort_key(entry[0]))

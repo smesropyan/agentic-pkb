@@ -700,7 +700,16 @@ def test_an_expert_md_invalidates_the_whole_subtree_rg17(kb: Path) -> None:
     assert {d.agent_id for d in registry.list_agents() if d.has_custom_expert} == {COOKING}
 
 
+@pytest.mark.superseded
 def test_a_topic_description_edit_reaches_the_routing_view_rg17(kb: Path) -> None:
+    """Superseded by Phase 1's Task 6: ``index_lines(kb)`` reads a root ``index.md`` that no
+    generator writes any more (T-37), so it now raises ``FileNotFoundError`` before the last
+    assertion runs. ``AgentRegistry``'s own ``description`` (checked above and still true) is
+    computed straight from ``TopicRecord.meta.description`` — see ``_catalog_description`` in
+    ``registry.py`` — never by reading the generated catalog back, so only this test's helper is
+    stale, not the behaviour it means to check. Phase 3 rebuilds the routing view against
+    DESIGN.md and owns pointing this test at whatever replaces ``index_lines``.
+    """
     registry, _ = registry_for(kb)
     before = {d.agent_id: d.description for d in registry.list_agents()}
 
