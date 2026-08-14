@@ -146,10 +146,19 @@ rounds).
 **Live evaluation (the operator's directive, 2026-08-14):** the research pass tests candidate agent
 behaviours and prompts on the operator's real Ollama models — the credentials live in `.env` and
 both the cloud default and the local fallback are verified reachable. A design or prompt earns
-adoption by a measured live run against the current one, the way the original model choice was
-priced by its five-task evaluation; reading a repo recommends, a run decides. Runs are budgeted
-against the Ollama Pro plan's 5-hour and weekly quota windows, and every measurement lands in the
-research brief beside the finding it prices.
+adoption by a measured live run against the current one; reading a repo recommends, a run decides.
+Runs are budgeted against the Ollama Pro plan's 5-hour and weekly quota windows, and every
+measurement lands in the research brief beside the finding it prices.
+
+**The eval suite is minted fresh (the operator's directive, 2026-08-14):** the old five-task
+evaluation priced the superseded design's workload and is not reused. The research pass writes a
+new suite of eval tasks derived from the current spec — tasks drawn from `README.md`'s own loop and
+`DESIGN.md`'s mechanisms: ingest a source into a topic, brainstorm breadth-first across topics from
+their summaries, settle an approach and plan it deep with the owning experts, produce an
+instruction set that states why and what it must achieve, work a session through `/close`, and
+distil a closed session's record for the learning queue. The suite is written once at the start of
+the research pass, versioned beside the research brief, and every candidate and the incumbent run
+the same tasks.
 
 ## Phase 3: The Agents and the Skills (DESIGN §3–§4)
 
