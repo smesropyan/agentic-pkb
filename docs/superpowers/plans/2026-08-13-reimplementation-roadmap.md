@@ -143,6 +143,14 @@ land in a research brief beside the phase plan, with strength labels, and anythi
 still beat the measurements this design already carries (code fan-out, attributed merge, no debate
 rounds).
 
+**Live evaluation (the operator's directive, 2026-08-14):** the research pass tests candidate agent
+behaviours and prompts on the operator's real Ollama models — the credentials live in `.env` and
+both the cloud default and the local fallback are verified reachable. A design or prompt earns
+adoption by a measured live run against the current one, the way the original model choice was
+priced by its five-task evaluation; reading a repo recommends, a run decides. Runs are budgeted
+against the Ollama Pro plan's 5-hour and weekly quota windows, and every measurement lands in the
+research brief beside the finding it prices.
+
 ## Phase 3: The Agents and the Skills (DESIGN §3–§4)
 
 **Builds:** the three agents with the Librarian holding no topic and the Learning agent holding
