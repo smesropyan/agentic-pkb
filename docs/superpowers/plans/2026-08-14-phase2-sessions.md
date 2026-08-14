@@ -33,15 +33,19 @@ in the service layer through `pkb.core`'s serializer — no model ever holds a t
   (`Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>` /
   `Claude-Session: https://claude.ai/code/session_013RAwz2RWewccxyv7ZqeRz3`). Never push mid-phase.
 
-## Proposals where the design is silent (flag with the task, do not block)
+## Two rulings where the design was silent
 
-**P3 — the on-disk seal.** `/end` seals the file and a sealed file is never reopened. Proposal: the
-seal is an appended `## Ended` marker line written by harness code (the design says marks are
-appended entries, the body is append-only, and frontmatter carries no state field), plus the store's
-`state='ended'`; the writer module refuses every write to a sealed file by checking the store, not
-the file. **P4 — the queue is a view, not a table.** "Every closed session enters the learning
-queue... no cap and no expiry" is implemented as the set of sessions with `state='closed'` ordered
-by `closed_at` — the queue IS the closed-not-ended sessions, no second structure to drift.
+**P3 — RULED by the operator, 2026-08-14.** `/end` seals the file and a sealed file is never
+reopened: the seal is an appended `## Ended` marker entry written by harness code (the design says
+marks are appended entries, the body is append-only, and frontmatter carries no state field), plus
+the store's `state='ended'`; the writer module refuses every write to a sealed file by checking the
+store, never by parsing the file. No checkpoint needed.
+
+**P4 — RULED by the operator, 2026-08-14.** The queue is a view, not a table: "Every closed session
+enters the learning queue... no cap and no expiry" is implemented as the set of sessions with
+`state='closed'` ordered by `closed_at` — the queue IS the closed-not-ended sessions, no second
+structure to drift; `/close` enters a session into it and `/end` leaves it by the state change alone.
+No checkpoint needed.
 
 ## File Structure
 
