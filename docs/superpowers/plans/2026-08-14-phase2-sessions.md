@@ -372,3 +372,27 @@ assumed clean — Phase 1's own final review is the reason this step is not left
   check`: **1818 passed, 257 deselected** (2075 collected), against fix round 1's 1804/257
   (2061 collected) — +14 tests, all from this round. Full per-finding detail is in the commit's own
   message body.
+
+## Live smoke (executed 2026-08-15)
+
+Task 9's proves-itself life, re-run against the real `ollama:deepseek-v4-flash:cloud` (fallback
+`ollama:gemma4:31b`, RuntimeConfig's own defaults) instead of Task 9's `ScriptedModel` — a real
+`PkbRuntime`/`RuntimeService`/FastAPI app over a scratch KB with one scaffolded `Cooking` topic and
+a real SQLite file, driven through `TestClient`. Objective: "a rub that doesn't burn above 250"; the
+run's question: "At what temperature does honey in a rub start to burn?"
+
+| stage | result | seconds |
+|---|---|---|
+| scaffold | PASS | 0.00 |
+| create (`POST /agents/topic%2Fcooking/sessions`) | PASS | 0.01 |
+| name (`/name`) | PASS | 0.01 |
+| run (`/runs`, streamed) | PASS | 4.90 |
+| close (`/close`, queue membership) | PASS | 0.01 |
+| end (`/end`, further run 409) | PASS | 0.01 |
+
+No failover: the primary answered directly, well under the ~16s estimate. Reply's first line: "I
+checked the Cooking topic — the index shows only the breadth files, and both the notes and
+references folders hold just their placeholder summaries." — the model read the (empty) tree
+honestly rather than answering from general knowledge, then offered to file a note. The exchange
+landed under `## Record`, blockquoted, verbatim; `topic.cooking` present in frontmatter. **Overall:
+PASS.**
