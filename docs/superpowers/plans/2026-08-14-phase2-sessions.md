@@ -270,12 +270,12 @@ tests under tests/service and tests/server whose subjects this phase rebuilt (te
 tests/agents markers STAY for Phases 3–5); dead exports in `src/pkb/service/__init__.py`,
 `src/pkb/contracts.py`.
 
-- [ ] **Step 1:** Delete; clean stranded imports/fixtures; verification greps:
+- [x] **Step 1:** Delete; clean stranded imports/fixtures; verification greps:
   `grep -rn 'threads\.py\|ThreadStore\|pkb_proposals\|pending_interrupt' src/` → only Phase-3/5
   survivors, each documented with file:line in the commit body.
-- [ ] **Step 2:** `make check`; tick Task 10's checkboxes; run the plan's Self-Review (coverage of
+- [x] **Step 2:** `make check`; tick Task 10's checkboxes; run the plan's Self-Review (coverage of
   every S-rule → citing test; placeholder scan; type consistency) and record it in the commit body.
-- [ ] **Step 3:** Commit: `chore: remove the superseded session machinery`.
+- [x] **Step 3:** Commit: `chore: remove the superseded session machinery`.
 
 ---
 
@@ -286,3 +286,50 @@ tests/agents markers STAY for Phases 3–5); dead exports in `src/pkb/service/__
   review caught this step being skipped; do not repeat that).
 - Final: the widened dead-machinery grep, and a manual smoke: run the daemon locally against a
   scratch KB, create/name/close/end a session via curl, open the file.
+
+## Self-Review (executed)
+
+Run for real at Task 10, against the whole of `tests/service/` and `tests/server/` rather than
+assumed clean — Phase 1's own final review is the reason this step is not left for later.
+
+- [x] **Spec coverage:** walked all 39 `S-*` rules in
+  `docs/superpowers/specs/2026-08-14-sessions-S-rules.md` against every citing test in
+  `tests/service/` and `tests/server/`. 28 of 29 error-severity rules already had a citing test;
+  **S-33** ("nothing stages a rejected candidate under `.inbox/` or `references/`") had none
+  anywhere in the tree, source or test — closed in this commit with two new tests in
+  `tests/service/test_session_file.py`
+  (`test_session_file_module_names_neither_inbox_nor_references_s33`, a structural scan of
+  `session_file.py`'s own source, and `test_a_rejected_candidate_named_in_the_record_touches_neither_directory_s33`,
+  a real write cycle naming a rejection that asserts both directories stay absent). The five
+  boundary rows (S-10, S-18, S-23, S-32, S-34) assert nothing of their own by design and were not
+  expected to cite a test; the five warning rows (S-14, S-21, S-35, S-36, S-37) are Phase 3/4/5
+  judgment territory this phase documents but does not mechanically enforce, and none regressed.
+  The full 39-row mapping is in this commit's own message body, not duplicated here.
+- [x] **Placeholder scan:** `git diff bdc7bb3 -- .` (Phase 2's own first commit) introduces no
+  `TODO`, `FIXME` or `XXX` anywhere — checked over the whole phase's diff, not just this task's.
+- [x] **Type consistency:** `make check` is green — `ruff check`, `ruff format --check`, `mypy
+  --strict` (`src/pkb` only, per `pyproject.toml`'s `[tool.mypy]`), `lint-imports` (5 contracts
+  kept), and the full suite. Final, after fix round 1 (below): **1804 passed, 257 deselected**
+  (2061 collected), against the true pre-Task-10 baseline of 1798/510 (2308 collected) — the
+  item-level reconciliation, verified against worktrees of the baseline commit (`8af9c2e`) and of
+  this task's first commit (`199c02d`, since amended), is in the amended commit's own body.
+- [x] **Fix round 1** (post-review): the reviewer's first pass found this section's own "never
+  marked superseded, 0 deselected" claim about `tests/service/test_threads.py` false — it carried a
+  whole-file `pytestmark = pytest.mark.superseded` since Task 2 (`d6cc0ac`), 36 deselected items,
+  not 0 — and found a citation blind spot: Task 2's own sweep (`d6cc0ac`) left 15 named
+  `tests/service`/`tests/server`/`tests/clients` superseded marks with no `Task N`/`Phase N`
+  citation in their docstring, so the citation-driven first pass never saw them. Triaged all 15,
+  then a defensive re-grep of the same three directories for any straggler the named list missed.
+  Verdicts: 54 more dead, Phase-2-owned tests deleted across four files (`test_mcp.py` +7,
+  `test_routes.py` +5, `test_sse.py` +3, `test_telegram.py` +39 collected items — the reviewer's 15
+  named cases plus 39 stragglers the defensive pass caught, overwhelmingly in `test_telegram.py`,
+  whose approval-button/keyboard/resume tests turned out not to be Phase 5's deferred polish but
+  Task 6's own dead gate machinery, still crashing on `_post_approval`/`keyboard_for`/
+  `_repost_pending` when actually run); 2 `test_sse.py` tests restored to active status rather than
+  deleted (Task 2's sweep over-marked them — their subject is ordinary multi-agent fan-out
+  labelling, not the gate/interrupt system, and nothing about them was ever dead); 2
+  `tests/clients/test_sse.py` tests gained the citation their section's first test already carried,
+  unchanged otherwise — `tests/clients` sits outside Task 10's plan-scoped deletion
+  (`tests/service`+`tests/server` only), so a KEEP verdict there is a scope boundary, not a claim
+  the tests are still meaningful. Full per-test verdicts and the item-level count arithmetic are in
+  the amended commit's own body.

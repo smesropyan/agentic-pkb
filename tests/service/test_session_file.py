@@ -10,6 +10,7 @@ way ``tests/core/test_scaffold.py`` never touches a running agent. Rule ids are 
 from __future__ import annotations
 
 import dataclasses
+import inspect
 import os
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -21,6 +22,7 @@ from pkb.core.models import FileClass, FileRole
 from pkb.core.paths import classify
 from pkb.core.scaffold import scaffold_topic
 from pkb.core.validation import validate_content
+from pkb.service import session_file
 from pkb.service.session_file import (
     LEARNING_AGENT_ID,
     SessionFileExistsError,
@@ -524,3 +526,48 @@ def test_write_synthesis_on_a_session_that_searched_nothing_leaves_the_section_e
 
     text = read(root, path)
     assert "## Synthesis\n\n## Distillation" in text
+
+
+# --------------------------------------------------------------------------------------
+# § candidates never stage to disk — S-33
+# --------------------------------------------------------------------------------------
+# Task 10's Self-Review found S-33 (error severity) cited by no test anywhere in the tree: "Nothing
+# stages it, copies it or writes it under the PKB root" of a page the search returned and the
+# operator has not accepted. The two tests below close that gap — one structural (the module never
+# even spells the two paths a candidate must not reach), one behavioural (a full write cycle that
+# names a rejected candidate touches neither directory).
+
+
+def test_session_file_module_names_neither_inbox_nor_references_s33() -> None:
+    """A cheaper, permanent guard than re-deriving this by hand on every change to the module: if a
+    future write path ever needs ``.inbox/`` or ``references/``, this is the line that has to move,
+    on purpose, rather than the property drifting silently the way a missing test lets it."""
+    source = inspect.getsource(session_file)
+    assert ".inbox" not in source
+    assert "references/" not in source
+
+
+def test_a_rejected_candidate_named_in_the_record_touches_neither_directory_s33(
+    tmp_path: Path,
+) -> None:
+    """ "The text goes when the search that found it ends, and its line in the running record stays.
+    Nothing stages it, copies it or writes it under the PKB root" (§2.7, quoted).
+
+    ``append_record`` is the *only* place a candidate's fate — kept or rejected — is ever named
+    (S-28); this drives the real write path with a rejection in the entry's own text, the shape a
+    session's own synthesis narrates one, and asserts the two directories S-35's ingestion/nothing
+    rows would otherwise use stay entirely absent from the tree.
+    """
+    root = kb(tmp_path)
+    session = make_session()
+    writer = SessionFileWriter(root)
+    writer.create(session)
+
+    writer.append_record(
+        session,
+        "Rejected: 'Searing Myths Debunked' (blog, no citations) — claims sugar burns above 250 "
+        "with nothing behind it.",
+    )
+
+    assert not (root / ".inbox").exists()
+    assert not (root / "references").exists()

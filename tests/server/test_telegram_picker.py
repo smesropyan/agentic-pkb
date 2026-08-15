@@ -364,26 +364,6 @@ def test_the_shallow_case_rides_inline_and_is_readable_in_a_log_tg97() -> None:
     assert len(GRILLING.encode()) == 22
 
 
-@pytest.mark.superseded
-def test_the_two_callback_grammars_refuse_each_other_tg97() -> None:
-    """One press, one handler. A grammar that overlapped would route a tap to the wrong code.
-
-    Two fields against four, and no agent id can hold a ``|``, so neither parser can be fooled by
-    the other's payload.
-
-    Superseded (Task 6, DESIGN.md §2.10): ``callback_data``/``parse_callback`` were the approval
-    grammar this test proved disjoint from the picker's; with no gate ever posting an approval
-    keyboard, the picker is the only grammar this adapter draws and there is nothing left to refuse.
-    """
-    approval = callback_data("abcd", 0, "a")  # noqa: F821
-    channel = picker_callback(COOKING)
-
-    assert parse_callback(channel) is None  # noqa: F821
-    assert parse_picker(approval) is None
-    assert parse_picker(channel) == COOKING
-    assert parse_callback(approval) == ("abcd", 0, "a")  # noqa: F821
-
-
 @pytest.mark.asyncio
 async def test_a_row_keeps_its_payload_when_the_catalog_moves_under_it_tg97(
     service: TopicService, store: SqliteTelegramStore, api: PickyBotApi
@@ -933,30 +913,6 @@ async def test_a_double_tap_on_one_row_creates_one_topic_tg101(
 # --------------------------------------------------------------------------------------
 # § the picker writes nothing durable of its own (decision AG)
 # --------------------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-@pytest.mark.superseded
-async def test_drawing_a_keyboard_writes_no_row_tg97(
-    service: TopicService, store: SqliteTelegramStore, api: PickyBotApi, connection: Any
-) -> None:
-    """A handle would index a copy of state the press re-reads anyway, and add a failure the design
-    does not have: a missing row turns a working button into a "could not be located" hand-off.
-
-    An approval needs the row because a live interrupt on a specific thread is 97 bytes (P-28) and
-    cannot be re-derived. An agent id is a catalog name and fits.
-
-    Superseded (Task 6 rebuilds this): ``pkb_telegram_prompts`` is the approval-prompt table and
-    dies with the interrupt/resume surface, so the query this test runs has no table to hit. The
-    contrast it draws — the picker indexes nothing durable, an approval had to — no longer has a
-    second side; a successor needs no table at all to prove the picker writes nothing of its own.
-    """
-    bot = await topical(service, store, api)
-
-    await say(bot, "/channels")
-
-    cursor = await connection.execute("SELECT COUNT(*) FROM pkb_telegram_prompts")
-    assert (await cursor.fetchone())[0] == 0
 
 
 def test_the_adapter_holds_the_picker_bounds_as_constants_tg99() -> None:

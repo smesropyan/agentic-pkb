@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -42,10 +41,10 @@ import aiosqlite
 import pytest
 import pytest_asyncio
 
-from pkb.contracts import ActionView, ApprovalRequest, MessageView, RunEnd
-from pkb.server.telegram import Channel, TelegramAdapter, TelegramConfig
+from pkb.contracts import ActionView, ApprovalRequest, RunEnd
+from pkb.server.telegram import TelegramAdapter, TelegramConfig
 from pkb.server.telegram_api import GENERAL, POLL_TIMEOUT
-from pkb.service import Thread, ThreadDetail
+from pkb.service import Thread
 from pkb.service.telegram import SqliteTelegramStore
 from tests.server.stub import COOKING, LIBRARIAN, StubService
 
@@ -292,201 +291,14 @@ def button_data(api: AuditBotApi, verb: str) -> str:
 # --------------------------------------------------------------------------------------
 
 
-@pytest.mark.superseded
-async def test_a_stray_keyboard_is_disarmed_even_when_the_death_is_already_known_tg81(
-    service: StubService, store: SqliteTelegramStore, api: AuditBotApi
-) -> None:
-    """The failure this whole section is arranged around, reached through the *dedup* branch.
-
-    ``_channel_died`` skips its work when the channel is already in ``_moved``, which is correct for
-    the correction — TG-84's "one correction, not eight" — and catastrophic for the keyboard. The
-    interleaving is not exotic: the outbox pump is a separate task (TG-49), so while an approval's
-    keyboard is in flight the pump can send the run's reply into the same topic, discover the
-    deletion first and re-address the channel. The keyboard's own response then comes back stray with
-    the death already recorded, and an early return leaves an **Approve button for an irreversible
-    write live in General under Cooking's name** — indistinguishable, in scrollback, from the
-    Librarian's own work, on a system with no undo (D6).
-
-    Superseded (Task 6 rebuilds this): the race is driven entirely through ``bot._post_approval`` on
-    an ``ApprovalRequest``, retired with the approval-prompt surface. No successor: with no keyboard
-    ever posted, there is no button to disarm. The dedup-vs-correction distinction this race exposed
-    (``_channel_died``'s early return) may still matter for a future channel-carrying keyboard — the
-    picker's, say — but that is a new test against new code, not this one.
-    """
-    bot = await make_bot(service, store, api)
-    await store.open_channel(CHAT, COOK_TOPIC, COOKING)
-    cooking = Channel(CHAT, COOK_TOPIC)
-    api.hold_armed = True
-
-    posting = asyncio.create_task(bot._post_approval(cooking, approval()))
-    await asyncio.wait_for(api.armed_seen.wait(), 2)  # the keyboard's send is in flight
-    api.topics[CHAT] = set()  # the human long-presses the topic and taps Delete
-    await bot._say(cooking, "Filed under Cooking.", agent_id=COOKING)  # the pump's next frame
-    api.gate.set()
-    await asyncio.wait_for(posting, 2)
-
-    assert [m.text for m in api.landed_in(GENERAL) if m.armed] == []
-
-
-@pytest.mark.superseded
-async def test_the_second_stray_is_explained_and_the_repair_is_still_not_repeated_tg84(
-    service: StubService, store: SqliteTelegramStore, api: AuditBotApi
-) -> None:
-    """Both halves of the same branch, so a fix for one cannot quietly undo the other.
-
-    A message whose buttons were just killed, sitting in General with nothing under it saying why,
-    is a human pressing a dead Approve and learning nothing — so an armed stray always gets TG-81's
-    correction. The *repair* stays once per channel: TG-84 exists because a fan-out with eight queued
-    frames must not produce eight ``createForumTopic`` calls and eight notifications at exactly the
-    moment something needs approving.
-
-    Superseded (Task 6 rebuilds this): same race as its sibling above, through ``bot._post_approval``
-    on an ``ApprovalRequest``. No successor: no keyboard, no "armed stray" case to explain. TG-84's
-    once-per-channel repair itself is exercised without a keyboard elsewhere in
-    ``test_telegram_topics.py`` (``test_a_dead_channel_is_never_addressed_twice_tg84``), which is
-    unaffected.
-    """
-    bot = await make_bot(service, store, api)
-    await store.open_channel(CHAT, COOK_TOPIC, COOKING)
-    cooking = Channel(CHAT, COOK_TOPIC)
-    api.hold_armed = True
-
-    posting = asyncio.create_task(bot._post_approval(cooking, approval()))
-    await asyncio.wait_for(api.armed_seen.wait(), 2)
-    api.topics[CHAT] = set()
-    await bot._say(cooking, "Filed under Cooking.", agent_id=COOKING)
-    api.gate.set()
-    await asyncio.wait_for(posting, 2)
-
-    corrections = [t for t in api.texts_in(GENERAL) if "has been deleted" in t]
-    assert len(corrections) == 2, corrections
-    assert sum("buttons no longer work" in t for t in corrections) == 1
-    assert len(api.of("create_forum_topic")) == 1, "the channel was repaired more than once"
-
-
 # --------------------------------------------------------------------------------------
 # TG-64/TG-85 — the confirm step is part of the approval
 # --------------------------------------------------------------------------------------
 
 
-@pytest.mark.superseded
-async def test_the_confirm_step_is_addressed_and_named_like_the_approval_it_belongs_to_tg85(
-    service: StubService,
-    store: SqliteTelegramStore,
-    api: AuditBotApi,
-    connection: aiosqlite.Connection,
-) -> None:
-    """*"Yes, do it"* is the last thing a human taps before an irreversible write. It has an owner.
-
-    Sent with no ``agent_id``, this message was invisible to both mechanisms §9 built for a channel
-    that is no longer its agent's: ``_route_out``'s retirement check (TG-82) and ``_prefixed``'s
-    exposure line (TG-85(b)). On a retired channel the human therefore received a bare *"There is no
-    undo for this. Confirm?"* with a live **Yes, do it** button in General, naming no expert and no
-    write — beside the Librarian's messages, for a delete in Cooking's tree.
-
-    Superseded (Task 6 rebuilds this): the two-tap confirm step is the interrupt/decision surface by
-    definition — the operator's instruction is the approval, so there is no second tap to confirm.
-    No successor: this scenario cannot recur once every write lands immediately.
-    """
-    await store.open_channel(CHAT, COOK_TOPIC, COOKING)
-    await store.retire_channel(CHAT, COOKING)  # TG-82: given up on before this daemon started
-    bot = await make_bot(service, store, api)
-    request = approval(reason="delete")
-    service.pending = request
-    service.rows[request.thread_id] = thread_row(request.thread_id)
-
-    await bot._post_approval(Channel(CHAT, COOK_TOPIC), request)
-    await bot._on_callback(press(button_data(api, "a")))
-
-    confirm = next(m for m in api.delivered if m.text.endswith("Confirm?"))
-    assert confirm.topic_id == GENERAL, "the retired channel's traffic did not fall back to General"
-    assert confirm.text.startswith(f"{COOKING}\n"), confirm.text
-    assert await handle_of(connection)  # the prompt row is still open; nothing was decided
-
-
 # --------------------------------------------------------------------------------------
 # TG-82/TG-84 — a repair outlives the process that made it
 # --------------------------------------------------------------------------------------
-
-
-@pytest.mark.superseded
-async def test_an_approvals_outcome_follows_its_agent_to_the_repaired_topic_tg84(
-    service: StubService,
-    store: SqliteTelegramStore,
-    api: AuditBotApi,
-    connection: aiosqlite.Connection,
-) -> None:
-    """The one line that records an irreversible act, sent from a row that names a dead topic.
-
-    ``_moved`` is process memory and a prompt row keeps naming the topic it was posted in (TG-57), so
-    after a bounce the outcome of a press is addressed to a topic that was repaired before the
-    restart. TG-84's amended re-addressing — *"a row naming a different topic means the channel
-    already moved, so re-address and create nothing"* — can only fire for a send that names its
-    expert; unattributed, this line was pinned to General for the life of the daemon and every later
-    message on that prompt's channel with it.
-
-    Superseded (Task 6 rebuilds this): the "outcome of a press" is a decision on an
-    ``ApprovalRequest``, resolved through ``store.open_prompt`` and ``bot._on_callback`` — the whole
-    interrupt/decision surface. No successor: with every write landing immediately, there is no press
-    and no decision outcome to re-address after a restart.
-    """
-    await store.open_channel(CHAT, COOK_TOPIC, COOKING)
-    await store.rebind_channel(CHAT, COOKING, LIVE_TOPIC)  # the repair the last process performed
-    api.topics[CHAT] = {LIVE_TOPIC}
-    bot = await make_bot(service, store, api)  # the restart: `_moved` is empty
-
-    request = approval()
-    service.pending = request
-    service.rows[request.thread_id] = thread_row(request.thread_id)
-    handle = "deadbeef"
-    await store.open_prompt(handle, CHAT, COOK_TOPIC, request.thread_id, request.interrupt_id, 1)
-
-    await bot._on_callback(press(f"v1|{handle}|0|a"))
-
-    assert api.of("create_forum_topic") == [], "a second topic was created for a live channel"
-    assert any(text.startswith("Answered:") for text in api.texts_in(LIVE_TOPIC)), api.delivered
-    # The first attempt still strays once — nothing announces a deletion, so the send *is* the probe
-    # (TG-80) — and that copy stands with a correction under it (TG-81, decision AD). What must not
-    # happen is the line stopping there, which is where it stopped when the send named no expert.
-    assert [t for t in api.texts_in(GENERAL) if "has been deleted" in t]
-
-
-@pytest.mark.superseded
-async def test_a_restarted_runs_frames_still_name_their_agent_tg85(
-    service: StubService, store: SqliteTelegramStore, api: AuditBotApi
-) -> None:
-    """``ThreadDetail`` has no ``agent_id``, so the re-sync path attributed nothing, ever.
-
-    A ``getattr(detail, "agent_id", "")`` is not a fallback here — it is a constant ``None``, because
-    the field does not exist on the class and never has. Every frame TG-31 re-synced after a restart
-    was therefore unattributed: not routed by TG-82's retirement, not prefixed by TG-85(b) on arrival
-    in General, and unable to repair the channel it died in (TG-84) — on the one code path whose
-    whole premise is that the topic may have been deleted while the daemon was down.
-
-    Superseded (Task 7 rebuilds this): ``_agent_of``/``_post_late_reply(channel, detail)`` are gone
-    with ``ThreadDetail`` itself — the re-sync path now reads a session id straight off the ledger
-    and asks the store for it (``TelegramAdapter._agent_of_session``), which carries ``agent_id`` on
-    the ``Session`` dataclass directly, so there is no "field does not exist" case left to attribute
-    nothing for. What TG-85 still guards — a restarted run's outcome is attributed rather than
-    anonymous — is asserted freshly wherever Task 7's own re-sync tests land, over a session id
-    rather than a ``ThreadDetail``.
-    """
-    assert not hasattr(ThreadDetail, "agent_id"), "the getattr this replaced would now be live"
-    detail = ThreadDetail(
-        thread=thread_row("t-cooking-1"),
-        messages=(MessageView(role="assistant", text="Filed under Cooking.", created_at=None),),
-    )
-    assert detail.thread.agent_id == COOKING  # what the retired `_agent_of` helper read off it
-
-    await store.open_channel(CHAT, COOK_TOPIC, COOKING)
-    await store.retire_channel(CHAT, COOKING)
-    bot = await make_bot(service, store, api)
-
-    await bot._post_late_reply(Channel(CHAT, COOK_TOPIC), detail)
-    await drain(bot)
-
-    late = next(m for m in api.landed_in(GENERAL) if "Filed under Cooking." in m.text)
-    assert late.text.startswith(f"{COOKING}\n"), late.text
 
 
 async def drain(bot: TelegramAdapter) -> None:
@@ -506,76 +318,3 @@ async def drain(bot: TelegramAdapter) -> None:
 # --------------------------------------------------------------------------------------
 # The properties the audit checked and found sound, pinned so a change has to argue with them
 # --------------------------------------------------------------------------------------
-
-
-@pytest.mark.superseded
-async def test_only_the_send_family_ever_carries_a_topic_out_of_this_module_tg90(
-    service: StubService, store: SqliteTelegramStore, api: AuditBotApi
-) -> None:
-    """Stated over the whole outbound surface rather than over one call.
-
-    A grep is the right shape for this one: ``message_thread_id`` is a wire word, and the module has
-    exactly one place it may leave the process (``_api_send``) plus ``send_document``'s keyword. If a
-    third appears, TG-80's comparison has to appear beside it or the new call is a silent relocation
-    nobody checks.
-
-    Superseded (Task 6 rebuilds this): mixed. The opening static grep over ``telegram.py`` (exactly
-    two ``topic_id=target.topic_id`` call sites) is generic and survives untouched. Reaching a
-    ``clear_keyboard`` call to check its shape requires a keyboard to disarm, and the only one this
-    file can produce is an ``ApprovalRequest`` posted through ``bot._post_approval`` and pressed via
-    ``bot._on_callback`` — both retired with the approval-prompt surface, and inseparable from the
-    static half without touching the assertion. TG-90's "no edit/clear call ever takes a topic"
-    property is pinned statically elsewhere too (``test_no_edit_or_answer_call_takes_a_topic_tg90``
-    in ``test_telegram_topics.py``, unaffected); a dynamic successor needs a different keyboard
-    source once one exists.
-    """
-    source = Path("src/pkb/server/telegram.py").read_text(encoding="utf-8")
-    call_sites = [
-        line.strip() for line in source.splitlines() if "topic_id=target.topic_id" in line
-    ]
-    assert len(call_sites) == 2, call_sites  # send_message in `_api_send`, send_document
-
-    await store.open_channel(CHAT, COOK_TOPIC, COOKING)
-    bot = await make_bot(service, store, api)
-    request = approval()
-    service.pending = request
-    service.rows[request.thread_id] = thread_row(request.thread_id)
-    await bot._post_approval(Channel(CHAT, COOK_TOPIC), request)
-    await bot._on_callback(press(button_data(api, "r")))
-
-    assert api.of("clear_keyboard"), "the disarm never ran, so its shape was not exercised"
-    assert all("topic" not in entry for entry in api.of("clear_keyboard"))
-
-
-@pytest.mark.superseded
-async def test_a_press_from_a_relocated_message_still_resolves_the_rows_thread_tg57(
-    service: StubService,
-    store: SqliteTelegramStore,
-    api: AuditBotApi,
-    connection: aiosqlite.Connection,
-) -> None:
-    """A stray message's press carries General, and the thread must come from the row regardless.
-
-    ``callback_data`` holds 64 bytes and an opaque handle (TG-57), so the channel a press is answered
-    in comes from the durable row and the thread from the row's ``thread_id`` — never from where the
-    human happened to be standing. A stray relocated into General is exactly the case where those two
-    disagree, and resolving by the query's location would answer the wrong interrupt.
-
-    Superseded (Task 6 rebuilds this): the button press resolves an ``ApprovalRequest`` to a
-    ``resume`` call against ``PROMPTS_TABLE`` — the interrupt/resume surface entire. No successor:
-    with no keyboard and no ``resume``, there is no press to relocate.
-    """
-    await store.open_channel(CHAT, COOK_TOPIC, COOKING)
-    api.topics[CHAT] = set()  # deleted before the approval is posted
-    bot = await make_bot(service, store, api)
-    request = approval()
-    service.pending = request
-    service.rows[request.thread_id] = thread_row(request.thread_id)
-
-    await bot._post_approval(Channel(CHAT, COOK_TOPIC), request)
-    await bot._on_callback(press(button_data(api, "a")))
-
-    assert ("resume", (request.thread_id, request.interrupt_id)) in service.calls
-    cursor = await connection.execute(f"SELECT answers_json FROM {_PROMPTS_TABLE}")
-    row = await cursor.fetchone()
-    assert row is not None and json.loads(str(row[0])) == {"0": "a"}

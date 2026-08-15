@@ -34,7 +34,6 @@ import importlib
 import inspect
 import subprocess
 import sys
-import uuid
 from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 
@@ -56,7 +55,6 @@ from pkb.core.models import FlushReport
 from pkb.service import PkbService
 from pkb.service import runtime as service_runtime
 from pkb.service.runtime import Runtime, RuntimeService
-from pkb.service.threads import mint_thread_id
 
 HARNESS = ("deepagents", "langgraph", "langchain", "langchain_core")
 """The four roots I2 names. Banning the roots bans every submodule (see ``_BAN``)."""
@@ -617,88 +615,54 @@ def test_the_service_depends_on_a_structural_runtime_not_a_concrete_one_sv4() ->
 # --------------------------------------------------------------------------------------
 
 
-@pytest.mark.superseded
-def test_runs_are_addressed_by_thread_never_by_agent_sv6() -> None:
+def test_runs_are_addressed_by_session_never_by_agent_sv6() -> None:
     """Cross-channel resume is a one-field handoff, and only because of this.
 
-    Telegram continues what the TUI started with nothing but the id from ``list_threads``: no agent,
-    no channel state, no second lookup the phone cannot do. Put ``agent_id`` in these signatures and
-    every client has to carry a pair, keep it consistent, and get it right — and a client that
-    guesses wrong runs the Librarian's graph on an expert's checkpoint, which D-6 measured reading
-    the other conversation's messages verbatim with no error anywhere.
+    Telegram continues what the TUI started with nothing but the session id: no agent, no channel
+    state, no second lookup the phone cannot do. Put ``agent_id`` in this signature and every client
+    has to carry a pair, keep it consistent, and get it right — and a client that guesses wrong runs
+    the Librarian's graph on an expert's checkpoint, which D-6 measured reading the other
+    conversation's messages verbatim with no error anywhere.
 
-    Superseded (Task 3/5/6 rebuild this): the second loop's method list mixes ``start_run`` (whose
-    addressed-by-thread-not-by-agent principle survives against ``session_id``) with ``resume``
-    (dies with the gate), ``create_thread``/``get_thread`` (thread CRUD, dies) and ``delete_thread``
-    (no successor — "nothing deletes a session"). Marked whole; the surviving principle needs an
-    analogous assertion once sessions land.
+    Successor to ``test_runs_are_addressed_by_thread_never_by_agent_sv6`` (deleted at Task 10): that
+    test's own docstring flagged this as owed once sessions land — ``start_run``'s
+    addressed-by-thread-not-by-agent principle, carried over to ``start_session_run`` — and Task 10
+    is the one that removes the thread-keyed original, so it is the one that pays the debt rather
+    than deleting it unpaid.
     """
     for owner in (PkbService, RuntimeService):
-        for method in ("start_run", "resume"):
-            parameters = inspect.signature(getattr(owner, method)).parameters
-            assert "agent_id" not in parameters, f"{owner.__name__}.{method}"
-            assert list(parameters)[:2] == ["self", "thread_id"], f"{owner.__name__}.{method}"
+        parameters = inspect.signature(owner.start_session_run).parameters
+        assert "agent_id" not in parameters, owner.__name__
+        assert list(parameters)[:2] == ["self", "session_id"], owner.__name__
 
     # The implementation is the Protocol, argument for argument: a client written against one and
     # served by the other is what the seam promises.
-    for method in ("start_run", "resume", "create_thread", "get_thread", "delete_thread"):
-        assert inspect.signature(getattr(RuntimeService, method)) == inspect.signature(
-            getattr(PkbService, method)
-        ), method
+    assert inspect.signature(RuntimeService.start_session_run) == inspect.signature(
+        PkbService.start_session_run
+    )
 
 
-def _minting_sites(sources: dict[Path, ast.Module]) -> list[str]:
-    """``file:function`` for every place a uuid is generated."""
-    sites: list[str] = []
-    for path, tree in sources.items():
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-                continue
-            if any(
-                _called_name(call.func).startswith("uuid")
-                for call in ast.walk(node)
-                if isinstance(call, ast.Call)
-            ):
-                sites.append(f"{path.name}:{node.name}")
-    return sites
+def test_a_session_id_is_never_caller_supplied_sv10() -> None:
+    """**Layer 3 mints every session id, and only Layer 3.**
 
+    Layer 2 explicitly refuses to invent one for a thread (RT-36) and nothing in the sessions rebuild
+    reopens that: a Telegram chat id, an MCP argument or a slug of the objective is *stable*, which
+    means two sessions could reuse it, and the checkpointer keys on the id passed as ``thread_id``
+    alone — sessions were built to make two conversations sharing a key exactly as unrecoverable as
+    it always was (SV-11, D-6).
 
-@pytest.mark.superseded
-def test_create_thread_takes_no_id_parameter_sv10() -> None:
-    """**Layer 3 mints every user thread id, and only Layer 3.**
-
-    Layer 2 explicitly refuses to invent one (RT-36), so if the transport does not mint it nobody
-    does — and the tempting alternatives are all wrong in the same way. A Telegram chat id, an MCP
-    argument or a slug of the title is *stable*, which means two conversations reuse it, and the
-    checkpointer keys on ``thread_id`` alone: they silently merge into one checkpoint with no error
-    anywhere (SV-11, D-6). ``mint_thread_id`` taking no arguments is that stated mechanically —
-    there is nothing a caller could pass in for an id to be derived from.
-
-    Superseded (Task 3 rebuilds this): ``create_thread``/``mint_thread_id`` are replaced by
-    ``SessionStore.create``/a session-id minter; the minting-sites assertion also pins
-    ``threads.py:mint_thread_id`` and ``threads.py:mint_run_id`` by file, both moving. The
-    no-caller-supplied-id principle survives and Task 3 owns re-asserting it.
+    Successor to ``test_create_thread_takes_no_id_parameter_sv10`` (deleted at Task 10): that test's
+    own docstring named ``SessionStore.create``/a session-id minter as the replacement and said "Task
+    3 owns re-asserting it" — which it did (``tests/service/test_sessions.py``'s
+    ``test_minted_session_ids_are_unique`` covers ``mint_session_id``'s own uniqueness), but nothing
+    anywhere pinned that ``create_session``'s signature itself carries no id-shaped parameter, the
+    structural half of the principle this file's own SV-10 test always paired with the minting check.
     """
     for owner in (PkbService, RuntimeService):
-        parameters = set(inspect.signature(owner.create_thread).parameters)
-        assert not parameters & {"thread_id", "id", "chat_id", "thread"}, owner.__name__
-
-    assert inspect.signature(mint_thread_id).parameters == {}
-    minted = {mint_thread_id() for _ in range(64)}
-    assert len(minted) == 64
-    assert all(uuid.UUID(value).version == 4 for value in minted)
-
-    # And nowhere else in Layer 3 makes one: an id born in a route or an MCP tool is an id nobody
-    # asserted the namespace invariants for (SV-9). Two minters are allowed and both live in
-    # `threads.py` — `mint_run_id` is RO-11's, minted before a run starts so `run.started` can carry
-    # it and the supervisor can key on it; it is not a thread id and never reaches the table.
-    assert sorted(_minting_sites(_sources(SERVICE_DIR, SERVER_DIR))) == [
-        "threads.py:mint_run_id",
-        "threads.py:mint_thread_id",
-    ]
-    assert _minting_sites(
-        _planted("async def create(chat_id):\n    return await store.create(str(uuid.uuid4()))\n")
-    ) == ["planted.py:create"]
+        parameters = set(inspect.signature(owner.create_session).parameters)
+        assert not parameters & {"session_id", "id", "chat_id", "thread_id", "thread"}, (
+            owner.__name__
+        )
 
 
 # --------------------------------------------------------------------------------------
@@ -1071,7 +1035,13 @@ async def test_a_run_carries_its_id_before_its_first_event_ro11(
     ``_tasks[""]`` — the other run's task — so ``/health``'s ``active_runs`` and ``aclose``'s
     shutdown sweep both lose it; and ``cancel(run_id)`` from any client cancels whichever run is
     currently squatting on ``""``. The remedy the Protocol already anticipates is the ``run_id``
-    parameter on both ``start_run`` and ``runtime.run``: mint it up front and hand it down.
+    parameter on both ``start_session_run`` and ``runtime.run``: mint it up front and hand it down.
+
+    Rewritten at Task 10 to drive ``create_session``/``start_session_run`` rather than the deleted
+    ``create_thread``/``start_run``: the race this test proves is a property of
+    ``RuntimeService``'s admission wrapper (``_launch_session``), not of which table names the run,
+    and Task 6's own review already flagged that this driver — like ``test_seam.py``'s sv4 test —
+    would otherwise be left scripting a table that no longer exists.
     """
     # The deadline, not the model, scaled down: 10 ms of waiting stands in for 250 ms, so the fake's
     # 50 ms first event models the 2.06 s one without the suite paying for it.
@@ -1081,16 +1051,15 @@ async def test_a_run_carries_its_id_before_its_first_event_ro11(
     service = RuntimeService(_SlowRuntime(), connection, kb_root=tmp_path)
     try:
         await service.setup()
-        cooking = await service.create_thread("topic/cooking")
-        running = await service.create_thread("topic/running")
+        cooking = await service.create_session("topic/cooking", objective="sear a steak")
+        running = await service.create_session("topic/running", objective="taper a race")
 
-        first = await service.start_run(cooking.thread_id, "how do I sear")
-        second = await service.start_run(running.thread_id, "how do I taper")
+        first = await service.start_session_run(cooking.session_id, "how do I sear")
+        second = await service.start_session_run(running.session_id, "how do I taper")
         handles = (first.handle, second.handle)
 
         for subscription in (first, second):
             assert [event async for event in subscription.events]
-        await asyncio.sleep(0.05)  # let the titling tasks finish before the connection goes
     finally:
         await connection.close()
 

@@ -1,4 +1,4 @@
-"""SQLite concurrency and the open order — AP-4, ST-2, ST-3, ST-4, ST-8, ST-14.
+"""SQLite concurrency and the open order — AP-4, ST-2, ST-3, ST-4, ST-8.
 
 The one Layer 3 test file that legitimately touches the harness. Everything asserted here is a
 property of a **real** file that a real ``PkbRuntime`` opened: the journal mode the checkpointer's
@@ -8,6 +8,19 @@ locking is the thing under test, and a fake connection would only assert the fak
 
 No key, no network, no model call that leaves the process: the runtime runs on a
 ``ScriptedChatModel`` and the only I/O is ``tmp_path`` and its SQLite file.
+
+**Repointed from ``ThreadStore`` to ``SessionStore`` at Task 10** (``pkb.service.threads`` is deleted
+whole). Every property under test here is a property of the shared connection discipline
+(``open_connection``, ``BUSY_TIMEOUT_MS`` — moved into ``pkb.service.runtime``, the one remaining
+opener) rather than of either table's own columns, so the vehicle changes and the assertions do not:
+``SessionStore.create`` replaces ``ThreadStore.register`` as "the write that lands a row," and it
+mints its own id per call (``mint_session_id``) rather than taking a caller-supplied one — which
+removes a hazard the old tests guarded against (``register``'s ``INSERT OR IGNORE`` could silently
+swallow an id collision) rather than reintroducing an equivalent one, since a genuine collision here
+raises. The ST-14 section (``ProposalStore`` outlives the process that recorded it) is not carried
+over: both of its tests were already marked superseded citing Task 6, which deleted
+``pkb.service.proposals`` outright, and Task 10 deletes what Task 6 already retired rather than
+adapting it to a table that no longer exists either.
 """
 
 from __future__ import annotations
@@ -17,7 +30,6 @@ import asyncio
 import sqlite3
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -25,10 +37,10 @@ import aiosqlite
 import pytest
 
 from pkb.agents import PkbRuntime, RuntimeConfig
-from pkb.contracts import ActionView, PendingProposal, RunEnd
+from pkb.contracts import RunEnd
 from pkb.core.scaffold import scaffold_topic
-from pkb.service.runtime import RuntimeService, open_service
-from pkb.service.threads import BUSY_TIMEOUT_MS, MIGRATIONS_TABLE, ThreadStore, open_connection
+from pkb.service.runtime import BUSY_TIMEOUT_MS, open_connection
+from pkb.service.sessions import MIGRATIONS_TABLE, SessionStore
 from tests.agents.conftest import TODAY, ScriptedChatModel, says, scripted
 
 COOKING = "topic/cooking"
@@ -36,10 +48,15 @@ COOKING = "topic/cooking"
 SERVICE_PACKAGE = Path(__file__).resolve().parents[2] / "src" / "pkb" / "service"
 
 INSERT_ROW = """
-INSERT INTO threads
-    (thread_id, agent_id, title, created_at, updated_at, origin_channel, pending_interrupt_id)
-VALUES (?, ?, NULL, '2026-08-08T00:00:00Z', '2026-08-08T00:00:00Z', 'http', NULL)
+INSERT INTO sessions
+    (session_id, agent_id, objective, name, operator, state, created_at, updated_at, closed_at,
+     ended_at)
+VALUES (?, ?, NULL, ?, 'test', 'open', '2026-08-08T00:00:00Z', '2026-08-08T00:00:00Z', NULL, NULL)
 """
+"""A row shaped like :data:`~pkb.service.sessions.SessionStore.create`'s own insert, but driven
+directly for the tests below that need to control *when* a statement lands rather than what
+:class:`SessionStore` computes for them — ``name`` is passed explicitly (it is ``UNIQUE NOT NULL``)
+rather than slugged, since these tests already mint distinct, readable ids of their own."""
 
 
 # --------------------------------------------------------------------------------------
@@ -84,13 +101,13 @@ async def opened(kb: Path, db: Path, model: ScriptedChatModel | None = None) -> 
 
 
 @asynccontextmanager
-async def store(runtime: Any) -> AsyncIterator[tuple[aiosqlite.Connection, ThreadStore]]:
+async def store(runtime: Any) -> AsyncIterator[tuple[aiosqlite.Connection, SessionStore]]:
     """Layer 3's own connection over a runtime that is already open, with the table created."""
     connection = await open_connection(runtime.db_path)
     try:
-        threads = ThreadStore(connection)
-        await threads.setup()
-        yield connection, threads
+        sessions = SessionStore(connection)
+        await sessions.setup()
+        yield connection, sessions
     finally:
         await connection.close()
 
@@ -109,8 +126,8 @@ async def scalar(connection: aiosqlite.Connection, sql: str, *args: Any) -> Any:
     return row[0]
 
 
-async def thread_ids(connection: aiosqlite.Connection) -> set[str]:
-    cursor = await connection.execute("SELECT thread_id FROM threads")
+async def session_ids(connection: aiosqlite.Connection) -> set[str]:
+    cursor = await connection.execute("SELECT session_id FROM sessions")
     return {str(row[0]) for row in await cursor.fetchall()}
 
 
@@ -124,7 +141,7 @@ def modules() -> Iterator[tuple[Path, ast.Module, str]]:
 def executed_sql(tree: ast.Module, source: str) -> Iterator[str]:
     """Every SQL string that reaches ``execute``/``executescript``/``executemany``, constants resolved.
 
-    Deliberately the *call arguments* rather than every literal in the file: ``threads.py``'s own
+    Deliberately the *call arguments* rather than every literal in the file: ``sessions.py``'s own
     module docstring explains at length what ``BEGIN IMMEDIATE`` would do to a concurrent run, so a
     grep flags the explanation and still misses an f-string that issued one.
     """
@@ -167,7 +184,7 @@ async def test_a_connection_opened_before_the_runtime_gets_a_rollback_journal_ap
     ``AsyncSqliteSaver.from_conn_string`` is a bare ``aiosqlite.connect`` and ``PRAGMA
     journal_mode=WAL`` is set in ``setup()``, which only ``PkbRuntime.open`` calls. So the *same two
     lines of code* in the wrong order give Layer 3 a rollback-journal file, where a reader blocks a
-    writer — and nothing about it looks wrong until the daemon is under load and a ``/threads`` read
+    writer — and nothing about it looks wrong until the daemon is under load and a ``/sessions`` read
     stalls a run's flush. Ordering is invisible in a diff; this is what makes it visible.
     """
     early = await aiosqlite.connect(str(db))
@@ -213,19 +230,19 @@ async def test_the_busy_timeout_is_sqlites_default_and_hammering_never_locks_st4
     """Four writers, no waiting, no lost write — because nobody lowered the timeout.
 
     5000 ms is SQLite's default and Layer 3 restates it rather than tuning it: at 1 ms the same
-    hammering measured ``ok=528 locked=72``. Every one of those 72 is a thread row that never landed
-    — a conversation missing from the list, or a pending approval no channel can see. The retry
-    people reach for instead is SQLite's own, and it is already on.
+    hammering measured ``ok=528 locked=72``. Every one of those 72 is a session row that never landed
+    — a conversation missing from the list, or a queue entry no channel can see. The retry people
+    reach for instead is SQLite's own, and it is already on.
     """
-    async with opened(kb, db) as runtime, store(runtime) as (first, threads):
+    async with opened(kb, db) as runtime, store(runtime) as (first, sessions):
         assert await scalar(first, "PRAGMA busy_timeout") == BUSY_TIMEOUT_MS
 
         others = [await open_connection(runtime.db_path) for _ in range(3)]
-        stores = [threads, *(ThreadStore(other) for other in others)]
+        stores = [sessions, *(SessionStore(other) for other in others)]
         try:
             results = await asyncio.gather(
                 *(
-                    writer.register(f"W{index}-{n}", COOKING)
+                    writer.create(COOKING, f"objective w{index}-{n}", "test")
                     for index, writer in enumerate(stores)
                     for n in range(50)
                 ),
@@ -236,7 +253,7 @@ async def test_the_busy_timeout_is_sqlites_default_and_hammering_never_locks_st4
                 await other.close()
 
         assert [result for result in results if isinstance(result, BaseException)] == []
-        assert await scalar(first, "SELECT COUNT(*) FROM threads") == 200
+        assert await scalar(first, "SELECT COUNT(*) FROM sessions") == 200
 
 
 # --------------------------------------------------------------------------------------
@@ -248,17 +265,22 @@ async def test_the_busy_timeout_is_sqlites_default_and_hammering_never_locks_st4
 async def test_three_hundred_concurrent_upserts_survive_a_live_run_st2(kb: Path, db: Path) -> None:
     """The daemon writes its own rows *while* a graph streams into the same file. It must not care.
 
-    Layer 3's rows are written from event callbacks — a fan-out registering a derived thread, an
-    interrupt recording a pending approval — so its writes are concurrent with the checkpointer's by
-    construction, on the same file, from the same loop. ``aiosqlite`` puts one worker thread behind a
-    ``SimpleQueue`` per connection, which is why unsynchronised coroutines are safe here without a
-    lock of our own; ``sqlite3`` on ``asyncio.to_thread`` would need ``check_same_thread=False``
-    *plus* that lock, which is re-implementing aiosqlite. Zero failures and 300 rows is the property:
-    a swallowed ``database is locked`` here is a thread that vanishes from every channel's list.
+    Layer 3's rows are written from event callbacks and from ordinary session creation — so its
+    writes are concurrent with the checkpointer's by construction, on the same file, from the same
+    loop. ``aiosqlite`` puts one worker thread behind a ``SimpleQueue`` per connection, which is why
+    unsynchronised coroutines are safe here without a lock of our own; ``sqlite3`` on
+    ``asyncio.to_thread`` would need ``check_same_thread=False`` *plus* that lock, which is
+    re-implementing aiosqlite. Zero failures and 300 rows is the property: a swallowed ``database is
+    locked`` here is a session that vanishes from every channel's list.
+
+    Each concurrent write is its own ``SessionStore.create`` call, which mints its own id and raises
+    on a genuine failure rather than ``ThreadStore.register``'s old ``INSERT OR IGNORE`` — so a
+    row-count check is already the stronger assertion the old set-membership check existed to
+    approximate for an idempotent write.
     """
     async with (
         opened(kb, db, scripted(says("filed"))) as runtime,
-        store(runtime) as (conn, threads),
+        store(runtime) as (conn, sessions),
     ):
         streaming = asyncio.Event()
         hammered = asyncio.Event()
@@ -277,7 +299,7 @@ async def test_three_hundred_concurrent_upserts_survive_a_live_run_st2(kb: Path,
         async def hammer() -> list[Any]:
             await asyncio.wait_for(streaming.wait(), timeout=5)
             results = await asyncio.gather(
-                *(threads.register(f"T{n:03d}", COOKING) for n in range(300)),
+                *(sessions.create(COOKING, f"objective {n:03d}", "test") for n in range(300)),
                 return_exceptions=True,
             )
             hammered.set()
@@ -286,10 +308,11 @@ async def test_three_hundred_concurrent_upserts_survive_a_live_run_st2(kb: Path,
         run_events, results = await asyncio.gather(live_run(), hammer())
 
         assert [result for result in results if isinstance(result, BaseException)] == []
-        assert len(await thread_ids(conn) & {f"T{n:03d}" for n in range(300)}) == 300
+        assert await scalar(conn, "SELECT COUNT(*) FROM sessions") == 300
         assert isinstance(run_events[-1], RunEnd)
         # Both writers really were in the same file: the checkpointer's rows for this thread are
-        # readable from Layer 3's own connection.
+        # readable from Layer 3's own connection. ("T-live" is the checkpointer's own thread id,
+        # LangGraph's key — unrelated to and untouched by Layer 3's own `sessions` table.)
         checkpoints = await scalar(
             conn, "SELECT COUNT(*) FROM checkpoints WHERE thread_id = ?", "T-live"
         )
@@ -328,11 +351,11 @@ async def test_a_write_is_durable_the_moment_its_statement_returns_st2(kb: Path,
     is this: durability does not depend on a later call that a raising handler might never make.
     """
     async with opened(kb, db) as runtime, store(runtime) as (writer, _):
-        await writer.execute(INSERT_ROW, ("T-uncommitted", COOKING))
+        await writer.execute(INSERT_ROW, ("T-uncommitted", COOKING, "t-uncommitted"))
         # Deliberately no `writer.commit()` anywhere in this test.
         reader = await open_connection(runtime.db_path)
         try:
-            assert "T-uncommitted" in await thread_ids(reader)
+            assert "T-uncommitted" in await session_ids(reader)
         finally:
             await reader.close()
 
@@ -347,7 +370,7 @@ async def test_a_failing_coroutine_cannot_undo_another_coroutines_write_st2_st9(
     rather than of the coroutine — so one handler's ``rollback()`` in an ``except`` block discards
     every other coroutine's pending statement, and one handler's ``commit()`` commits them. Measured
     the other way round: six coroutines, one raising before its own commit, six rows persisted where
-    five were expected. ST-9 needs each thread write to be independently idempotent and safe to
+    five were expected. ST-9 needs each session write to be independently idempotent and safe to
     repeat after a crash, and neither is true if the outcome depends on what an unrelated coroutine
     did between the statement and the commit. The first half of this test shows the damage; the
     second shows the real connection is immune to it.
@@ -357,14 +380,14 @@ async def test_a_failing_coroutine_cannot_undo_another_coroutines_write_st2_st9(
 
     async def interleaved(connection: aiosqlite.Connection) -> None:
         async def survivor() -> None:
-            await connection.execute(INSERT_ROW, ("T-survivor", COOKING))
+            await connection.execute(INSERT_ROW, ("T-survivor", COOKING, "t-survivor"))
             inserted.set()
             await failed.wait()
             await connection.commit()
 
         async def casualty() -> None:
             await inserted.wait()
-            await connection.execute(INSERT_ROW, ("T-casualty", COOKING))
+            await connection.execute(INSERT_ROW, ("T-casualty", COOKING, "t-casualty"))
             await connection.rollback()  # an ordinary `except:` branch
             failed.set()
 
@@ -377,12 +400,12 @@ async def test_a_failing_coroutine_cannot_undo_another_coroutines_write_st2_st9(
         finally:
             await deferred.close()
         # The casualty's rollback took the survivor's completed write with it.
-        assert "T-survivor" not in await thread_ids(real)
+        assert "T-survivor" not in await session_ids(real)
 
         inserted.clear()
         failed.clear()
         await interleaved(real)
-        assert "T-survivor" in await thread_ids(real)
+        assert "T-survivor" in await session_ids(real)
 
 
 # --------------------------------------------------------------------------------------
@@ -419,14 +442,14 @@ async def test_a_transaction_held_across_an_await_locks_out_a_concurrent_writer_
         async def concurrent_writer() -> None:
             await opened_txn.wait()
             with pytest.raises(sqlite3.OperationalError, match="database is locked"):
-                await other.execute(INSERT_ROW, ("T-blocked", COOKING))
+                await other.execute(INSERT_ROW, ("T-blocked", COOKING, "t-blocked"))
             may_commit.set()
 
         try:
             await asyncio.gather(holds_across_an_await(), concurrent_writer())
             # With no transaction held, the identical statement lands immediately.
-            await other.execute(INSERT_ROW, ("T-blocked", COOKING))
-            assert "T-blocked" in await thread_ids(holder)
+            await other.execute(INSERT_ROW, ("T-blocked", COOKING, "t-blocked"))
+            assert "T-blocked" in await session_ids(holder)
         finally:
             await other.close()
 
@@ -436,7 +459,7 @@ def test_no_layer_3_statement_opens_a_transaction_st3() -> None:
 
     This is the structural half of the rule, and it is the half that holds. The runtime demonstration
     above proves what a held transaction does; only a check over the source proves that no future
-    handler — a batched delete, a "transactional" thread rename — quietly reintroduces one. Note the
+    handler — a batched delete, a "transactional" session rename — quietly reintroduces one. Note the
     asymmetry with Layer 2's scan queue, which *does* use ``BEGIN IMMEDIATE``: it runs on a
     synchronous connection in a worker thread with no await between the ``BEGIN`` and the ``COMMIT``,
     which is the only shape where it is safe.
@@ -467,92 +490,20 @@ async def test_no_writer_of_this_file_claims_user_version_st8(kb: Path, db: Path
     The checkpointer, the langgraph store, Layer 2's scan queue and Layer 3 all write this file. Any
     one of them claiming ``user_version`` for its own schema would silently overwrite the others'
     idea of their version — and the symptom arrives later, as a migration that runs twice or not at
-    all. Layer 3 keeps its version in ``pkb_service_migrations``, mirroring the store's
-    ``store_migrations`` precedent, and this asserts the pragma is still untouched after a full open,
-    a service setup, a live run and a repeat setup.
+    all. Layer 3 keeps its version in ``pkb_session_migrations`` (mirroring the store's
+    ``store_migrations`` precedent and ``threads.py``'s own ``pkb_service_migrations``, before Task
+    10 deleted that module), and this asserts the pragma is still untouched after a full open, a
+    service setup, a live run and a repeat setup.
     """
-    async with opened(kb, db, scripted(says("done"))) as runtime, store(runtime) as (conn, threads):
+    async with (
+        opened(kb, db, scripted(says("done"))) as runtime,
+        store(runtime) as (conn, sessions),
+    ):
         assert await scalar(conn, "PRAGMA user_version") == 0
 
         [event async for event in runtime.run(COOKING, "T-version", "hello")]
-        await threads.setup()  # a second build over an existing file: additive, never a rewrite
+        await sessions.setup()  # a second build over an existing file: additive, never a rewrite
 
         assert await scalar(conn, "PRAGMA user_version") == 0
         cursor = await conn.execute(f"SELECT version FROM {MIGRATIONS_TABLE}")
         assert [row[0] for row in await cursor.fetchall()] == [1]
-
-
-# --------------------------------------------------------------------------------------
-# ST-14 · a proposal outlives the process that recorded it
-# --------------------------------------------------------------------------------------
-
-
-def proposal(proposal_id: str) -> PendingProposal:
-    return PendingProposal(
-        proposal_id=proposal_id,
-        agent_id=COOKING,
-        thread_id="T-mcp",
-        action=ActionView(
-            tool="write_file",
-            args={"file_path": "Cooking/notes/brine.md", "content": "# Brine\n"},
-            description="+ # Brine",
-            allowed_decisions=("approve", "reject"),
-            reason="breadth-approval",
-        ),
-        created_at=datetime(2026, 8, 8, 9, 0, tzinfo=UTC),
-    )
-
-
-@pytest.mark.asyncio
-@pytest.mark.superseded
-async def test_a_proposal_survives_closing_and_reopening_the_service_st14(
-    kb: Path, db: Path
-) -> None:
-    """``PkbRuntime`` keeps proposals in a list that dies with the process. That is the whole bug.
-
-    A propose-only run — every MCP call, every project agent — is told its write was *proposed*, and
-    the human is promised they will see it. Without this table one restart makes it gone, and nothing
-    anywhere records that it evaporated: the caller has an id for a proposal that no longer exists
-    and no error to show for it. So the daemon's sink writes here (AP-15) and ``list_proposals``
-    reads back out of the same file, across processes.
-
-    Superseded (Task 6 rebuilds this): ``ProposalStore`` is deleted outright — the operator's
-    instruction is the approval, so nothing is ever proposed to survive a restart.
-    """
-    async with open_service(kb, db, config=config()) as service:
-        assert isinstance(service, RuntimeService)
-        await service.proposals_store.record(proposal("p-1"))
-        assert [p.proposal_id for p in await service.list_proposals()] == ["p-1"]
-
-    async with open_service(kb, db, config=config()) as reopened:
-        listed = await reopened.list_proposals()
-        assert [p.proposal_id for p in listed] == ["p-1"]
-        # The action survives whole, not just its id: `description` holds the server-rendered diff,
-        # which is what lets a client show the proposal months later against a changed tree.
-        assert listed[0].action.description == "+ # Brine"
-        assert listed[0].action.args["file_path"] == "Cooking/notes/brine.md"
-        assert listed[0].action.allowed_decisions == ("approve", "reject")
-        assert listed[0].created_at == datetime(2026, 8, 8, 9, 0, tzinfo=UTC)
-
-
-@pytest.mark.asyncio
-@pytest.mark.superseded
-async def test_recording_the_same_proposal_twice_leaves_one_row_st14(kb: Path, db: Path) -> None:
-    """The sink is fire-and-forget, so it can be called again — a retry must not double the queue.
-
-    ``RuntimeConfig.proposal_sink`` is synchronous and the daemon schedules the write as a task, so
-    nothing upstream can tell whether a proposal was already recorded. ``INSERT OR IGNORE`` is what
-    keeps the human's queue a set of distinct proposals rather than a count of delivery attempts.
-
-    Superseded (Task 6 rebuilds this): same as the sibling test above — ``ProposalStore`` is gone.
-    Imported locally rather than at module scope (dead module `pkb.service.proposals`) so the rest
-    of this file — none of it proposal-shaped — keeps collecting.
-    """
-    from pkb.service.proposals import ProposalStore
-
-    async with opened(kb, db) as runtime, store(runtime) as (connection, _):
-        proposals = ProposalStore(connection)
-        await proposals.setup()
-        await proposals.record(proposal("p-dup"))
-        await proposals.record(proposal("p-dup"))
-        assert [p.proposal_id for p in await proposals.list_proposals()] == ["p-dup"]

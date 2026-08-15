@@ -681,6 +681,12 @@ def test_the_parser_keeps_arguments_as_opaque_strings_cl19() -> None:
     stringified list, or turned ``'False'`` into ``False``, would be guessing — and the guess is
     sent straight back as an edit's complete arg map (CL-14), into a tool call the human already
     approved.
+
+    Superseded (Phase 5 rebuilds this) — same section, same reason as
+    ``test_the_interrupt_frame_and_the_thread_detail_parse_identically_cl19`` above: the whole
+    "§ one parser for both routes an approval reaches a client by (CL-19)" section shares that
+    test's citation; this docstring repeats it (Task 10, fix round 1) so a per-test sweep sees it
+    without reading backward in the file.
     """
     request = decode_request(
         {
@@ -715,6 +721,9 @@ def test_a_decision_outside_the_literal_is_dropped_cl19() -> None:
     things a human may click. An unrecognised member becomes a control that the server refuses with
     ``400 invalid_decision`` — a dead button on an approval, which is the one screen where a control
     that does nothing teaches the human to distrust the UI.
+
+    Superseded (Phase 5 rebuilds this) — same section, same reason and same repeated-citation note
+    as its sibling immediately above (Task 10, fix round 1).
     """
     request = decode_request(
         {

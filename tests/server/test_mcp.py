@@ -61,7 +61,6 @@ from pkb.contracts import (
     ThreadBusyError,
     UnknownAgentError,
     UnknownThreadError,
-    expert_thread_id,
 )
 from pkb.core.models import KbSnapshot
 from pkb.core.scan import scan
@@ -692,32 +691,6 @@ async def test_exactly_four_tools_and_no_fifth_mc5(empty_kb: KbSnapshot) -> None
 
 
 @pytest.mark.asyncio
-@pytest.mark.superseded
-async def test_two_static_resources_and_one_template_mc6(empty_kb: KbSnapshot) -> None:
-    """A template is invisible to a client that only calls ``list_resources()``.
-
-    The MCP protocol keeps concrete resources and URI templates in two different listings, and
-    ``pkb://proposals/{proposal_id}`` lives only in the second. That split is the gap this rule
-    exists to close: RG-9 forbids fuzzy-matching an agent id, so a caller that cannot *enumerate*
-    can only guess, and a caller that never learns a proposal's URI shape cannot follow README
-    Part 4's feedback loop at all. Both listings are asserted here precisely because checking one
-    would leave the other free to disappear.
-
-    Superseded (Task 6 rebuilds this): both pinned resources are the ``pkb://proposals`` family,
-    deleted with the rest of the parked-proposal machinery.
-    """
-    app = build_app(StubService(), snapshot=empty_kb)
-    async with lifespan_running(app), mcp_session(app) as session:
-        resources = await session.list_resources()
-        templates = await session.list_resource_templates()
-
-    assert [str(r.uri) for r in resources.resources] == ["pkb://agents", "pkb://proposals"]
-    assert [t.uri_template for t in templates.resource_templates] == [
-        "pkb://proposals/{proposal_id}"
-    ]
-
-
-@pytest.mark.asyncio
 async def test_the_agents_resource_publishes_the_ids_the_tools_accept_mc6(
     connect: Connect,
 ) -> None:
@@ -783,48 +756,6 @@ def test_a_transport_pulls_no_harness_and_never_curls_the_daemon_mc7(source: Pat
 # --------------------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-@pytest.mark.superseded
-async def test_every_run_is_propose_only_mc8(connect: Connect) -> None:
-    """The approval mode belongs to the channel, and behind ``/mcp`` there is no human.
-
-    Interactive mode parks a run on an ``interrupt`` and waits for a decision. There is nobody on
-    this call path to make one, so an interactive MCP write that gated would hang until the deadline
-    and then be cancelled — a lost turn that looks like a timeout. The contract is stronger than
-    "usually propose_only": MCP must see **zero** interrupt events, which is only true if no path
-    can pass the other mode. No tool exposes it as an argument, either.
-
-    Superseded (Task 6 rebuilds this): the whole "§ The channel's mode (MC-8)" section — with no
-    gate anywhere, there is no second mode for ``propose_only`` to be distinguished from.
-    """
-    service = ScriptedService(events=list(FANOUT))
-    async with connect(service) as session:
-        await call(session, "pkb_ask", question="how long?")
-        assert service.modes == ["propose_only"]
-
-        await call(session, "pkb_ingest", content="Preheat for twelve minutes.")
-        assert service.modes == ["propose_only", "propose_only"]
-
-        listing = await session.list_tools()
-        for tool in listing.tools:
-            assert "approval_mode" not in tool.input_schema.get("properties", {})
-
-
-@pytest.mark.superseded
-def test_the_word_interactive_is_in_no_executable_string_mc8() -> None:
-    """The grep MC-8 asks for, aimed at code rather than at prose.
-
-    A literal ``grep interactive src/pkb/server/mcp.py`` matches the module docstring that explains
-    why the word never appears in code, so the rule's own check would fail on a correct module. What
-    the rule means is that no *executed* string in the adapter is the other approval mode — because
-    the moment one is, a gated MCP write parks on an interrupt nobody will ever answer.
-    """
-    strings = code_strings(MCP_SOURCE)
-
-    assert not [text for text in strings if "interactive" in text.lower()]
-    assert "propose_only" in strings
-
-
 # --------------------------------------------------------------------------------------
 # § The reply (MC-9, MC-10)
 # --------------------------------------------------------------------------------------
@@ -868,39 +799,6 @@ def test_layer_three_constructs_no_model_client_mc9() -> None:
         roots = _roots(source)
         assert not roots & MODEL_CLIENT_ROOTS, source
         assert not roots & HARNESS_ROOTS, source
-
-
-@pytest.mark.asyncio
-@pytest.mark.superseded
-async def test_experts_are_assembled_from_the_event_stream_mc10(connect: Connect) -> None:
-    """The roster, the statuses, the per-expert text and the thread ids all come from events.
-
-    Parsing ``RunEnd.final_text`` would work — and would quietly make ``merge_reply``'s rendering
-    format a wire protocol, so LB-18's golden test would stop pinning a human-readable answer and
-    start pinning a parser's input. The events already carry everything: ``SubagentStart`` the
-    roster, ``SubagentEnd`` the status, each expert's own ``MessageComplete`` its text, and SS-10's
-    derivation the thread id — which is what makes "continue with the Grilling expert" a real link
-    rather than a suggestion.
-
-    Superseded (Task 3/7 rebuild this): mixed — assembling the roster/status/text from events
-    survives, but the expected per-expert ids use SS-10's derived-thread scheme
-    (``expert_thread_id``), which is retired along with the parent/derived split.
-    """
-    service = ScriptedService(events=list(FANOUT))
-    async with connect(service) as session:
-        body = outcome(await call(session, "pkb_ask", question="how long?"))
-        thread_id = body["thread_id"]
-
-        assert [e["agent_id"] for e in body["experts"]] == [COOKING, GRILLING]
-        assert [e["thread_id"] for e in body["experts"]] == [
-            expert_thread_id(thread_id, COOKING),
-            expert_thread_id(thread_id, GRILLING),
-        ]
-        assert [e["status"] for e in body["experts"]] == ["answered", "declined"]
-        assert [e["text"] for e in body["experts"]] == [
-            "Fifteen minutes, lid closed.",
-            "Ten, on charcoal.",
-        ]
 
 
 @pytest.mark.asyncio
@@ -956,143 +854,6 @@ def test_nothing_in_layer_three_parses_the_merged_reply_mc10() -> None:
 # --------------------------------------------------------------------------------------
 # § Threads (MC-11 … MC-13)
 # --------------------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-@pytest.mark.superseded
-async def test_an_omitted_thread_id_creates_a_real_mcp_thread_and_returns_it_mc11(
-    connect: Connect,
-) -> None:
-    """Every MCP call runs on a real, durable thread — never on a scratch context.
-
-    D3's promise is that a conversation is addressable from any channel, so the id has to come back
-    or the caller's next question starts from nothing. And SV-10 says callers never mint ids: an id
-    minted by an external agent is one the daemon cannot guarantee is unique, unused, or not already
-    someone else's conversation.
-
-    Superseded (Task 3/5 rebuild this): the whole "§ Threads (MC-11 … MC-13)" section — MCP's
-    caller-durability principle survives against a session, but ``origin_channel`` does not.
-    """
-    service = ScriptedService(events=list(FANOUT))
-    async with connect(service) as session:
-        body = outcome(await call(session, "pkb_ask", question="how long?"))
-
-        assert body["thread_id"] in service.rows
-        assert service.rows[body["thread_id"]].origin_channel == "mcp"
-
-
-@pytest.mark.asyncio
-@pytest.mark.superseded
-async def test_the_returned_thread_id_continues_the_same_conversation_mc11(
-    connect: Connect,
-) -> None:
-    """A caller that passes the id back gets history; the adapter must not quietly start over.
-
-    The failure this prevents is subtle and expensive: a second ``create_thread`` would answer the
-    follow-up with no memory of the first turn, and the caller — which *did* pass the id — would
-    read a confident answer to a question it thought had context.
-    """
-    service = ScriptedService(events=list(FANOUT))
-    async with connect(service) as session:
-        first = outcome(await call(session, "pkb_ask", question="how long?"))
-        second = outcome(
-            await call(
-                session, "pkb_ask", question="and on charcoal?", thread_id=first["thread_id"]
-            )
-        )
-
-        assert second["thread_id"] == first["thread_id"]
-        assert [c for c in service.calls if c[0] == "create_thread"] == [
-            ("create_thread", (LIBRARIAN, "mcp"))
-        ]
-        assert [c[1][0] for c in service.calls if c[0] == "start_run"] == [
-            first["thread_id"],
-            first["thread_id"],
-        ]
-
-
-@pytest.mark.asyncio
-@pytest.mark.superseded
-async def test_an_unknown_thread_id_errors_rather_than_being_created_mc11(
-    connect: Connect,
-) -> None:
-    """A supplied id must already exist. Creating it on demand would forge a conversation.
-
-    "Continue thread X" and "start a thread and call it X" are different requests, and only one of
-    them is something an external caller may ask for (SV-10). Silently upgrading the first into the
-    second also destroys the diagnostic: the caller sees an empty history and blames the knowledge
-    base rather than its own stale id.
-    """
-    service = ScriptedService(events=list(FANOUT), strict_threads=True)
-    async with connect(service) as session:
-        body = outcome(
-            await call(session, "pkb_ask", question="how long?", thread_id="no-such-thread")
-        )
-
-        assert body["code"] == "unknown_thread"
-        assert not [c for c in service.calls if c[0] == "create_thread"]
-        assert service.rows == {}
-
-
-@pytest.mark.parametrize(
-    ("thread_id", "accepted"),
-    [
-        pytest.param(f"t{'::'}{COOKING}", False, id="derived-expert-thread"),
-        pytest.param(f"scan:{COOKING}:abc", False, id="maintenance-scan-thread"),
-        pytest.param("2f0d4b6e-2f4b-4a1e-9c1a-6f7a1d2b3c4d", True, id="a-minted-uuid"),
-    ],
-)
-@pytest.mark.asyncio
-@pytest.mark.superseded
-async def test_derived_and_maintenance_thread_ids_are_refused_mc12(
-    connect: Connect, thread_id: str, accepted: bool
-) -> None:
-    """Two id shapes are functions of something the daemon already holds, and are not addressable.
-
-    ``<parent>::<agent-id>`` is the thread the Librarian derives when it routes; ``scan:<agent>:<uuid>``
-    is machine bookkeeping for a conflict scan. Accepting either from outside would let an external
-    agent write into a human's conversation with an expert, or into a maintenance run, neither of
-    which it owns — and both of which the human would later read as their own history. The check is
-    on *shape*, before any service call, so nothing exists to clean up afterwards.
-
-    Superseded (Task 3/7 rebuild this): both refused shapes are functions of the retired thread-id
-    algebra (SV-9's derived and scan namespaces); the accepted case exists only to contrast them, so
-    the whole function is marked rather than one arm of a three-way comparison.
-    """
-    service = ScriptedService(events=list(FANOUT))
-    async with connect(service) as session:
-        result = await call(session, "pkb_ask", question="how long?", thread_id=thread_id)
-        body = outcome(result)
-
-        if accepted:
-            assert result.is_error is False
-            assert body["status"] == "answered"
-        else:
-            assert result.is_error is True
-            assert body["code"] == "invalid_argument"
-            assert not service.calls, "a refused shape must not reach the service at all"
-
-
-@pytest.mark.asyncio
-@pytest.mark.superseded
-async def test_an_mcp_thread_is_listed_and_labelled_not_hidden_mc13(connect: Connect) -> None:
-    """A proposal the human must review is meaningless without the conversation that produced it.
-
-    Hiding robot threads is how a knowledge base fills with writes nobody can trace: the human sees
-    "approve this summary rewrite?" with no way to ask *why*. So MCP threads are listed like any
-    other and carry ``origin_channel="mcp"`` — a label for provenance, never an authorization check
-    (RO-22).
-    """
-    service = ScriptedService(
-        events=list(FANOUT), gated=("Cooking/notes/summary.md", "breadth-approval")
-    )
-    async with connect(service) as session:
-        body = outcome(await call(session, "pkb_ingest", content="Preheat for twelve minutes."))
-        threads = await service.list_threads()
-
-        assert [t.thread_id for t in threads] == [body["thread_id"]]
-        assert [t.origin_channel for t in threads] == ["mcp"]
-        assert [p.thread_id for p in service.proposals] == [body["thread_id"]]
 
 
 # --------------------------------------------------------------------------------------
@@ -1303,34 +1064,6 @@ async def test_ingest_always_enters_at_the_librarian_with_hints_as_context_mc17(
 
 
 @pytest.mark.asyncio
-@pytest.mark.superseded
-async def test_the_result_names_what_became_a_proposal_mc18(connect: Connect) -> None:
-    """Propose-only is not read-only, and the difference has to be visible in the result.
-
-    The gate table is the same for every channel: a plain note lands unattended, a breadth summary
-    becomes a proposal. Conflating the two is the specific failure this rule prevents — an external
-    agent believes a summary update landed, reports success upstream, and the human's distilled
-    rules never changed. The proposal is reported with the reason the gate fired and the path, which
-    is what makes it actionable rather than a count.
-    """
-    service = ScriptedService(
-        events=list(FANOUT), gated=("Cooking/notes/summary.md", "breadth-approval")
-    )
-    async with connect(service) as session:
-        body = outcome(await call(session, "pkb_ingest", content="Preheat for twelve minutes."))
-
-        assert body["status"] == "answered"
-        assert body["proposals"] == [
-            {
-                "proposal_id": "proposal-1",
-                "tool": "write_file",
-                "path": "Cooking/notes/summary.md",
-                "reason": "breadth-approval",
-            }
-        ]
-
-
-@pytest.mark.asyncio
 async def test_an_expert_menu_is_an_ordinary_success_the_caller_may_answer_mc19(
     connect: Connect,
 ) -> None:
@@ -1406,38 +1139,6 @@ ESCALATING_CALLS = [
 ]
 
 
-@pytest.mark.superseded
-@pytest.mark.parametrize(("tool", "arguments"), ESCALATING_CALLS)
-@pytest.mark.asyncio
-async def test_an_escalation_is_a_success_with_a_discriminator_mc20(
-    connect: Connect, reviewed_kb: KbSnapshot, tool: str, arguments: dict[str, Any]
-) -> None:
-    """Contested material stops all four tools, and stopping is not an error.
-
-    Not an error, because a well-behaved agent retries errors and a retried escalation is an
-    escalation ignored — the caller would keep asking until the deadline and then act on whichever
-    answer it got. Not prose either, because the caller is a program that has to *stop*: the
-    discriminator and the ``review_note`` are what tell it which file the human is still deciding
-    about. The trigger is computed from the tag on disk intersected with the participating topics,
-    never from what the model said it read, so it cannot be talked out of firing.
-    """
-    service = ScriptedService(
-        events=[
-            SubagentStart(run_id="run-1", agent_id=COOKING),
-            RunEnd(run_id="run-1", final_text=""),
-        ]
-    )
-    async with connect(service, snapshot=reviewed_kb) as session:
-        result = await call(session, tool, **arguments)
-        body = outcome(result)
-
-        assert result.is_error is False
-        assert body["status"] == "escalation"
-        assert [e["path"] for e in body["escalation"]] == [CONFLICT_NOTE]
-        assert body["escalation"][0]["review_note"] == REVIEW_NOTE
-        assert body["escalation"][0]["agent_id"] == COOKING
-
-
 @pytest.mark.asyncio
 async def test_the_escalation_self_clears_when_the_human_resolves_the_tag_mc20(
     connect: Connect, resolved_kb: KbSnapshot
@@ -1485,38 +1186,6 @@ async def test_a_sibling_topic_is_unaffected_by_the_conflict_mc20(
         assert pack["status"] == "ok"
 
 
-@pytest.mark.asyncio
-@pytest.mark.superseded
-async def test_mcp_never_resolves_a_conflict_itself_mc21(
-    connect: Connect, reviewed_kb: KbSnapshot
-) -> None:
-    """Clearing the review flag is gated, so from here it can only ever become a proposal.
-
-    The asymmetry is deliberate and has to survive into the transport: *adding*
-    ``status.conflict-review`` is ungated so a background scan is never blocked on a human, while
-    *clearing* it is gated so no agent can declare a disagreement settled. On a propose-only call
-    that means a recorded proposal, nothing changed on disk, and the tag still firing — which the
-    next call proves by escalating again.
-    """
-    service = ScriptedService(
-        events=[
-            SubagentStart(run_id="run-1", agent_id=COOKING),
-            RunEnd(run_id="run-1", final_text=""),
-        ],
-        gated=(CONFLICT_NOTE, "conflict-resolution"),
-    )
-    async with connect(service, snapshot=reviewed_kb) as session:
-        await call(session, "pkb_ask", question="is the preheat conflict settled?")
-        listed = await session.read_resource("pkb://proposals")
-        payload = json.loads(listed.contents[0].text)  # type: ignore[union-attr]
-
-        assert [p["reason"] for p in payload["proposals"]] == ["conflict-resolution"]
-        assert [p["args"]["file_path"] for p in payload["proposals"]] == [CONFLICT_NOTE]
-
-        again = outcome(await call(session, "pkb_ask", question="and now?"))
-        assert again["status"] == "escalation", "nothing was resolved, so the tag still fires"
-
-
 # --------------------------------------------------------------------------------------
 # § Shape (MC-22)
 # --------------------------------------------------------------------------------------
@@ -1533,58 +1202,3 @@ def assert_primitives(value: object, where: str = "$") -> None:
             assert_primitives(item, f"{where}[{index}]")
     else:
         assert value is None or isinstance(value, str | int | float | bool), f"{where}: {value!r}"
-
-
-@pytest.mark.asyncio
-@pytest.mark.superseded
-async def test_every_result_is_json_primitives_and_carries_no_harness_object_mc22(
-    connect: Connect, reviewed_kb: KbSnapshot
-) -> None:
-    """All four tools, all four outcome shapes, over a JSON boundary that admits nothing else.
-
-    I2's whole promise is that a LangChain message, an ``Interrupt``, a ``Command`` or a
-    ``CompiledStateGraph`` never reaches a transport. That holds today because ``AgentEvent`` and
-    ``pkb.contracts`` are already primitives — but packs, proposals and escalations are new types
-    added at this layer, and a stray dataclass or ``Path`` in one of them serializes as ``repr`` at
-    best and raises mid-response at worst, after the 200 has been committed.
-
-    Superseded (Task 3/6/7 rebuild this): two of the six exercised outcomes are retired-design
-    vehicles — a ``gated`` fixture producing a ``proposals`` field, and a derived-thread-id call
-    producing ``"error"`` — folded into one combined status list this test can't be split without
-    touching its body. The JSON-primitive-safety principle itself is permanent and needs a
-    session-shaped successor.
-    """
-    service = ScriptedService(
-        events=list(FANOUT), gated=("Cooking/notes/summary.md", "breadth-approval")
-    )
-    escalating = ScriptedService(
-        events=[
-            SubagentStart(run_id="run-1", agent_id=COOKING),
-            RunEnd(run_id="run-1", final_text=""),
-        ]
-    )
-    async with (
-        connect(service) as session,
-        connect(escalating, snapshot=reviewed_kb) as escalating_session,
-    ):
-        results = [
-            await call(session, "pkb_ask", question="how long?"),
-            await call(session, "pkb_ingest", content="Preheat for twelve minutes."),
-            await call(session, "pkb_research_pack", query="preheat", topics=[COOKING]),
-            await call(session, "pkb_implementation_pack", topic=COOKING),
-            await call(escalating_session, "pkb_ask", question="how long?"),
-            await call(session, "pkb_ask", question="how long?", thread_id=f"t{'::'}{COOKING}"),
-        ]
-
-        assert [outcome(r)["status"] for r in results] == [
-            "answered",
-            "answered",
-            "ok",
-            "ok",
-            "escalation",
-            "error",
-        ]
-        for result in results:
-            body = result.structured_content
-            assert_primitives(body)
-            assert json.loads(json.dumps(body)) == body

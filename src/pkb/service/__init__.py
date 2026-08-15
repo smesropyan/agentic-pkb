@@ -8,15 +8,23 @@ without the harness, and a stub is what lets the whole server suite assert thing
 could never assert deterministically — that a fan-out interleaves, that a busy thread 409s in
 milliseconds while the first event is five seconds away.
 
-**Runs are addressed by thread, never by agent** (SV-6). ``start_run(thread_id, …)`` takes no
-``agent_id``; the service resolves it, from the id's own shape or from the ``threads`` row.
-
 **No interrupt-resume surface** (S-38, S-39; Task 6 of
 ``docs/superpowers/plans/2026-08-14-phase2-sessions.md``). There is no ``resume`` on this Protocol
 and no ``pending_approval`` anywhere below it: no graph in :mod:`pkb.agents` composes ``interrupt_on``
 any longer, so nothing a run does ever parks on a human decision, and there is nothing left to
 answer. "The operator's instruction is the approval" — a write lands during the turn it was
 instructed in, full stop.
+
+**No thread-keyed run surface either** (Task 10 of the same plan). ``create_thread``, ``list_threads``,
+``get_thread``, ``set_title``, ``delete_thread``, the thread-keyed ``start_run`` and the thread-keyed
+``attach`` are gone: sessions are the one durable, named thing a run is addressed by now (DESIGN.md
+§2), and their service-side backing (``pkb.service.threads.ThreadStore``) is deleted whole.
+:class:`Thread` and :class:`ThreadDetail` themselves **stay** — not because anything in
+:class:`PkbService` still returns one, but because ``tests/tui`` (Phase 5's, per
+``CLAUDE.md``'s ruling and the plan's own "tests/tui... marks stay wholesale") imports and
+constructs them directly, and a stub still returns them for exactly those fixtures. Deleting the
+dataclasses would force touching every one of those call sites for a shape Phase 5 redraws anyway —
+the same trade-off ``tests/server/stub.py``'s own compatibility shim already documents.
 
 **The service adds no behaviour to a run** (SV-5). It does not retry, does not reorder events, does
 not synthesize an :data:`~pkb.contracts.AgentEvent` the runtime did not emit, and does not swallow
@@ -26,18 +34,20 @@ Layer 3 cites those rules; it never contains a second implementation of one.
 The package layout, and why it is a package rather than a module (decision C):
 
 * ``__init__`` — this file: the Protocol and the Layer-3 dataclasses, harness-free.
-* ``threads.py`` — the ``threads`` table on Layer 3's own ``aiosqlite`` connection. Superseded by
-  ``sessions.py`` (``DESIGN.md`` §2); kept until Task 10 stops needing its methods and its table.
 * ``sessions.py`` — the ``sessions`` table: one durable, named state machine per `S-1 … S-39`
   (``docs/superpowers/specs/2026-08-14-sessions-S-rules.md``).
 * ``session_file.py`` — the one write surface for ``sessions/**`` (S-11), harness-free.
 * ``runs.py`` — the run supervisor and the per-run hub: **the daemon owns runs, the request does
   not** (decision A).
-* ``runtime.py`` — the one module permitted to import ``pkb.agents``.
+* ``runtime.py`` — the one module permitted to import ``pkb.agents``; also where the SQLite
+  connection discipline (``open_connection``, ``BUSY_TIMEOUT_MS``) and ``mint_run_id`` live now
+  that ``sessions.py`` is Layer 3's only table (Task 10).
 
-``proposals.py`` — ``pkb_proposals``, a durable home for a write an external agent proposed and could
-not approve — is **deleted** (Task 6). It served ``propose_only`` mode's auto-rejection, and there is
-nothing left to auto-reject once no tool call ever interrupts.
+``threads.py`` — the ``threads`` table ``sessions.py`` superseded (``DESIGN.md`` §2) — is **deleted**
+(Task 10), along with the thread-keyed run surface built on it. ``proposals.py`` — ``pkb_proposals``,
+a durable home for a write an external agent proposed and could not approve — is **deleted** (Task
+6). It served ``propose_only`` mode's auto-rejection, and there is nothing left to auto-reject once
+no tool call ever interrupts.
 
 Something has to call ``PkbRuntime.open``. Naming exactly one module keeps I2 structural instead of
 exempting a whole package, so a later addition to this package cannot inherit the exemption silently
@@ -78,7 +88,7 @@ __all__ = [
 
 @dataclass(frozen=True, slots=True)
 class Thread:
-    """One conversation, as every channel sees it.
+    """One conversation, as every channel saw it before the sessions rebuild.
 
     Seven stored columns (ST-5) and two **computed** fields. ``kind`` and ``parent_thread_id`` are
     pure functions of ``thread_id`` (LB-14), so storing them would be a second answer to a question
@@ -86,6 +96,13 @@ class Thread:
     client-side derivation because under RO-7's per-expert grouping a routed thread sits in the same
     list as the human's own conversations, and telling them apart must not require string-sniffing
     in a UI (ST-6).
+
+    **Kept past Task 10** (`CLAUDE.md`, "the ruling") though :class:`PkbService` names it nowhere any
+    more: ``tests/tui`` — Phase 5's, and the plan's own "tests/tui... marks stay wholesale" — imports
+    and constructs this class directly, and ``tests/server/stub.py``'s compatibility shim returns one
+    for exactly those fixtures. Nothing in production code (``pkb.service``, ``pkb.server``,
+    ``pkb.tui``) constructs one any longer; ``pkb.service.threads.ThreadStore``, the one class that
+    read and wrote the ``threads`` table this dataclass mirrored, is deleted whole.
     """
 
     thread_id: str
@@ -107,8 +124,8 @@ class Thread:
     Before the sessions rebuild this was an index reconciled against the checkpointer at startup
     (AP-5) and repaired on read (RO-9) — never the authority, because the checkpoint decided whether
     an approval was pending. No graph in :mod:`pkb.agents` composes ``interrupt_on`` any longer, so
-    nothing ever parks and nothing ever sets this column; it survives on the row only until Task 10
-    deletes ``threads.py`` outright.
+    nothing ever parks and nothing ever sets this column; it stays on the dataclass, always ``None``,
+    for the same reason the rest of :class:`Thread` does (see that class's own docstring).
     """
 
     @property
@@ -131,9 +148,9 @@ class ThreadDetail:
     ``pending`` is always ``None`` (S-38, S-39; Task 6): there is no interrupt-resume surface left to
     read it from, live or otherwise. The field stays on the dataclass rather than being dropped
     outright because every consumer already reads it as "nothing to answer" when it is ``None``, and
-    an always-``None`` field says that truthfully; it is retired along with the rest of ``Thread``
-    at Task 10. ``children`` are the threads this turn routed to, carried for **provenance** — their
-    primary home is their own expert's list (RO-7).
+    an always-``None`` field says that truthfully; it stays alongside the rest of ``Thread`` past
+    Task 10 for the same reason (see that class's own docstring). ``children`` are the threads this
+    turn routed to, carried for **provenance** — their primary home is their own expert's list (RO-7).
     """
 
     thread: Thread
@@ -185,56 +202,12 @@ class PkbService(Protocol):
         """
         ...
 
-    # -- threads -------------------------------------------------------------------
-
-    async def create_thread(
-        self,
-        agent_id: str,
-        *,
-        title: str | None = None,
-        origin_channel: OriginChannel = "http",
-    ) -> Thread:
-        """Mint a thread for an agent, validating the agent **before** inserting the row.
-
-        Takes no id parameter: **Layer 3 mints every user thread id, and only Layer 3** (SV-10) — a
-        bare ``uuid4``, never client-supplied, never derived from a title, chat id or MCP argument.
-        Layer 2 explicitly refuses to invent one (RT-36), so if the transport does not mint it
-        nobody does. A client-supplied ``title`` wins permanently (TT-4).
-        """
-        ...
-
-    async def list_threads(self, agent_id: str | None = None) -> Sequence[Thread]:
-        """Threads, grouped per expert, most-in-need-of-attention first (RO-6, RO-7).
-
-        ``agent_id`` filters by **exact match**, never prefix: ``topic/cooking`` must not return
-        ``topic/cooking/grilling``'s threads. A routed thread is listed under the expert that *ran*
-        it, because "what have I been doing with Cooking" is the question a human actually asks.
-        ``scan:`` threads never appear anywhere (RT-58) and are the only exclusion.
-
-        Ordered ``pending_interrupt_id IS NOT NULL DESC, updated_at DESC``: a list sorted by
-        creation date buries the very thread the human came back to answer (arch §8).
-        """
-        ...
-
-    async def get_thread(self, thread_id: str) -> ThreadDetail:
-        """One conversation and its history (SV-14). ``pending`` is always ``None`` (Task 6)."""
-        ...
-
-    async def set_title(self, thread_id: str, title: str) -> Thread:
-        """Rename a thread. A human-set title wins permanently and is never overwritten (SV-27)."""
-        ...
-
-    async def delete_thread(self, thread_id: str) -> None:
-        """Erase a conversation and everything the Librarian routed out of it (SV-24, RT-48).
-
-        The checkpoint cascade first, then the row cascade, in that order — otherwise the table
-        keeps rows pointing at erased checkpoints and the list offers conversations that open empty.
-        Deleting a *derived* thread reaches neither sideways to siblings nor upwards to the parent,
-        matching the runtime's own asymmetry.
-        """
-        ...
-
     # -- sessions --------------------------------------------------------------------
+    # No thread-keyed surface any more (Task 10): `create_thread`, `list_threads`, `get_thread`,
+    # `set_title` and `delete_thread` are gone along with `pkb.service.threads.ThreadStore`, their
+    # one implementation. Sessions are the one durable, named thing a run is addressed by (DESIGN.md
+    # §2); `Thread`/`ThreadDetail` themselves stay defined below only for `tests/tui`'s sake — see
+    # their own docstrings.
     # DESIGN.md §2; `docs/superpowers/specs/2026-08-14-sessions-S-rules.md` (S-1 … S-39). The API
     # is the one way in (S-13): every session-affecting operation below is what a route calls, and
     # a route calls nothing else to reach a session.
@@ -323,29 +296,12 @@ class PkbService(Protocol):
         ...
 
     # -- runs ----------------------------------------------------------------------
-
-    async def start_run(
-        self, thread_id: str, message: str, *, run_id: str | None = None
-    ) -> RunSubscription:
-        """Begin a turn and return a live subscription to it.
-
-        The refusals — ``ThreadBusyError``, ``UnknownAgentError`` — are raised **here**, before the
-        caller commits a response (AP-10). The alternative is a 200 that later has to carry a 409,
-        and headers cannot wait a whole model call.
-
-        Carries no ``approval_mode`` (Task 6): see :meth:`start_session_run`'s docstring for why the
-        parameter is gone rather than defaulted.
-        """
-        ...
-
-    async def attach(self, thread_id: str) -> RunSubscription | None:
-        """Subscribe to whatever is already running on this thread, or ``None`` when idle (RO-17).
-
-        No side effects and no second run: this is how a reconnecting client rejoins, replaying the
-        hub from ``seq 0`` so it starts at the beginning of the run in flight rather than
-        mid-sentence (AP-9).
-        """
-        ...
+    # No thread-keyed `start_run`/`attach` either (Task 10): `start_session_run`/`attach_session`
+    # above are the one way to begin or rejoin a turn now. The refusals both raise — `ThreadBusyError`
+    # (still that name; `pkb.agents.runtime` raises it on a busy checkpoint regardless of what keys
+    # it, thread or session), `UnknownAgentError` — are still raised **before** the caller commits a
+    # response (AP-10); the alternative is a 200 that later has to carry a 409, and headers cannot
+    # wait a whole model call.
 
     async def cancel(self, run_id: str) -> None:
         """Cancel a run and everything it fanned out to. An unknown id is a no-op (SV-19, RT-46)."""
@@ -362,11 +318,12 @@ class PkbService(Protocol):
         ...
 
     async def thread_counts(self) -> tuple[int, int]:
-        """``(total, pending_approvals)`` for ``/health`` — two indexed counts, no walk (AP-19).
+        """``(total, pending_approvals)`` for ``/health`` (AP-19).
 
-        ``pending_approvals`` is always ``0`` (Task 6): the column it counts is never set (see
-        :attr:`Thread.pending_interrupt_id`). Kept as a pair rather than narrowed to ``total`` alone
-        because ``Thread`` itself — and the column — survive on the row until Task 10.
+        ``pending_approvals`` is always ``0`` (Task 6): no graph composes ``interrupt_on`` any
+        longer, so nothing is ever pending. ``total`` counts sessions since Task 10 — the ``threads``
+        table this method once counted is deleted along with ``pkb.service.threads`` — kept as a pair
+        rather than narrowed to ``total`` alone because ``/health``'s wire shape is unchanged.
         """
         ...
 

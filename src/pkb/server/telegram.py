@@ -1842,8 +1842,14 @@ class TelegramAdapter:
         if roster:
             await self._queue(channel, "Asked: " + ", ".join(dict.fromkeys(roster)), agent_id)
         if terminal is None:
-            # TG-51: outcome unknown. Never success, never failure, and never a re-start.
-            await self.service.get_thread(subscription.handle.thread_id)
+            # TG-51: outcome unknown. Never success, never failure, and never a re-start. One
+            # re-sync read against the session the run belonged to — mirrors DC-14's identical rule
+            # on the TUI's own client (`pkb.tui.client`'s module docstring: "the client re-syncs
+            # with GET /sessions/{id}"). Repointed from `get_thread` at Task 10: `subscription.
+            # handle.thread_id` has held a session id since Task 7 (`_launch_session` mints the
+            # handle from `session_id`), so this was reading a row the old `threads` table never
+            # had — dead code protected only by tests that never drove it through a real service.
+            await self.service.get_session(subscription.handle.thread_id)
             await self._queue(channel, _UNKNOWN, agent_id)
             return
         status = terminal_status(terminal, interrupted=interrupted)
