@@ -20,7 +20,6 @@ from __future__ import annotations
 import ast
 import contextlib
 from collections.abc import AsyncIterator, Iterator, Sequence
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -28,12 +27,10 @@ import pytest
 from starlette.testclient import TestClient
 
 from pkb.contracts import (
-    ActionView,
     ApprovalPendingError,
     Decision,
     InvalidDecisionError,
     MessageComplete,
-    PendingProposal,
     PkbAgentError,
     RunEnd,
     RunHandle,
@@ -69,28 +66,6 @@ SCRIPT = (
 # --------------------------------------------------------------------------------------
 # The pinned surface (RO-1)
 # --------------------------------------------------------------------------------------
-
-PKB_PATHS = frozenset(
-    {
-        # arch §6's eight
-        "/agents",
-        "/agents/{agent_id:path}/threads",
-        "/threads",
-        "/threads/{thread_id:path}",
-        "/threads/{thread_id:path}/runs",
-        "/threads/{thread_id:path}/interrupt",
-        "/health",
-        # the five declared additions (RO-17, RO-19, RO-18, RO-19, RO-19)
-        "/threads/{thread_id:path}/events",
-        "/runs/{run_id}",
-        "/proposals",
-        "/proposals/{proposal_id}",
-        # and the MCP mount (MC-2)
-        "/mcp",
-    }
-)
-"""Every path this project agreed to serve. ``PATCH``, ``GET`` and ``DELETE`` share the bare thread
-path, which is why this is a **set** of thirteen against a list of sixteen route objects."""
 
 FASTAPI_DOCS = frozenset({"/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"})
 """FastAPI's own documentation endpoints. Named rather than filtered by prefix so that turning them
@@ -182,22 +157,6 @@ class AttachedService(StubService):
 
         handle = RunHandle(run_id=self.run_id, agent_id=LIBRARIAN, thread_id=thread_id)
         return RunSubscription(handle=handle, events=stream(), close=None)
-
-
-def proposal(proposal_id: str) -> PendingProposal:
-    return PendingProposal(
-        proposal_id=proposal_id,
-        agent_id=COOKING,
-        thread_id=THREAD,
-        action=ActionView(
-            tool="write_file",
-            args={"file_path": "kb/topics/Cooking/notes/steak.md"},
-            description="+ Sear it hot.",
-            allowed_decisions=("approve", "reject"),
-            reason="breadth-approval",
-        ),
-        created_at=datetime(2026, 8, 8, 9, 0, tzinfo=UTC),
-    )
 
 
 # --------------------------------------------------------------------------------------

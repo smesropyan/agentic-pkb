@@ -97,6 +97,22 @@ hypothetical `pkb/server/session_file.py`) stays caught.
 | S-17 | "`/close` brings every attached channel away from the session, and the analysis of that session runs later in a session the operator establishes to the Learning agent... That analysis session attaches in the **learning channel**, a standing surface bound to no topic and no objective, so the housekeeping never interrupts a topic conversation" (§2.5, quoted). | error | `close(session_id)` detaches every channel bound to it (`channels(session_id)` returns empty afterward); ordinary channels are retitled to the one session they currently hold (S-16 — the channel's title tracks `Session.name`), but the learning channel is exempt from that retitle: per "[the learning channel's sessions run one after another and] each one names the closed session it came from and the topic that owns it, because the channel says neither" (§7.7, quoted), its own title is never rewritten to match any one attached analysis session — the channel-attachment registry (Task 7) marks it retitle-exempt, and each analysis session names its own subject in-band instead. |
 | S-18 | Boundary. The deep Telegram/TUI UX — pickers, topic-creation flows, exactly how a channel visually offers its "still open" list, how a retitle renders — is Phase 5's polish (`docs/superpowers/plans/2026-08-14-phase2-sessions.md`, Task 7's note: "deep Telegram UX... stays as-is where it can... Phase 5 rebuilds polish"). | — | Asserts nothing here. S-14 and S-16 fix the API-level contract those clients must call; how a client renders it is out of this file's scope. |
 
+**Amended 2026-08-14 (Fix round 2, finding 4).** S-17's Test-assertion cell above names a mechanism
+this phase never built: "the channel-attachment registry (Task 7) marks it retitle-exempt." Task 7
+built exactly three channel methods (`attach`/`detach`/`channels`, `pkb.service.sessions.SessionStore`)
+and `RuntimeService.rename_session`'s ordinary per-channel retitle fan-out (S-16) — no per-channel
+flag, exemption, or learning-channel type exists anywhere in that surface, so the sentence overstated
+what shipped. Narrowed to what did: `close(session_id)` detaches every channel bound to it
+(`channels(session_id)` returns empty afterward), and nothing in this phase retitles a channel a
+`/close` call did not itself touch — there is no code path today that *could* wrongly retitle the
+learning channel, only because nothing yet attaches one. The learning channel itself — a standing
+surface bound to no topic and no objective, holding a rotating set of analysis sessions rather than
+being renamed to track any single one of them — is unbuilt: no code mints, recognizes, or attaches
+one anywhere in `pkb.service`/`pkb.server` today. The retitle-exempt primitive this row originally
+promised belongs to Phase 4, which mints the Learning agent that is the first thing ever attached to
+a learning channel, or to Phase 5, which renders one client-side — tracked here by name so a Phase
+4/5 reader finds the gap recorded rather than rediscovering that Task 7 never built it.
+
 ### 2.6 Three commands act on the session itself
 
 | ID | Rule | Sev | Test assertion |

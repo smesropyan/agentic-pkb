@@ -10,6 +10,7 @@ under test, per ``CLAUDE.md``'s "rule ids are the contract."
 from __future__ import annotations
 
 import dataclasses
+import inspect
 import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -61,8 +62,11 @@ def table_columns(db_path: Path, table: str) -> list[tuple[str, str, int, int]]:
 
 
 # --------------------------------------------------------------------------------------
-# § creation — S-1, S-2, S-5
+# § creation — S-1, S-5
 # --------------------------------------------------------------------------------------
+# S-2 is not this store's to test (fix round 2, finding 2): its capture/lesson distinction lives
+# entirely in SessionFileWriter, which this module's own docstring says it never touches. S-2's
+# dedicated tests are in tests/service/test_session_file.py instead.
 
 
 @pytest.mark.asyncio
@@ -164,6 +168,40 @@ async def test_minted_session_ids_are_unique() -> None:
 
 
 # --------------------------------------------------------------------------------------
+# § no session kind, and no fork or copy — S-3, S-12
+# --------------------------------------------------------------------------------------
+# Fix round 2, finding 2: S-3 and S-12 (both error severity) were cited by no test anywhere in the
+# tree. Both are structural-absence checks in the S-33 pattern
+# (tests/service/test_session_file.py): a rule this file enforces by *not building a mechanism*
+# is pinned by asserting the mechanism stays unbuilt, so a later addition has to move this line on
+# purpose rather than drift the property in silently.
+
+
+def test_session_carries_no_kind_or_type_field_s3() -> None:
+    """ "The PKB holds one shape for all of them... a session that searches nothing is an ordinary
+    session" (S-3, quoted). ``Session`` exposes no field that could distinguish a "search session"
+    from any other — every session is the identical row shape regardless of what it does."""
+    field_names = {field.name for field in dataclasses.fields(Session)}
+    assert "kind" not in field_names
+    assert "type" not in field_names
+
+
+def test_session_store_names_no_fork_copy_or_merge_method_s12() -> None:
+    """ "Nothing copies one session's file into another" (S-12, quoted) — the store half of the
+    same guard ``test_session_file_writer_names_no_fork_copy_or_merge_method_s12`` pins for the
+    writer (``tests/service/test_session_file.py``): no method on ``SessionStore`` forks, copies,
+    or merges one session's row into another."""
+    public_methods = [
+        name
+        for name, _ in inspect.getmembers(SessionStore, inspect.isfunction)
+        if not name.startswith("_")
+    ]
+    for banned in ("fork", "copy", "merge", "clone"):
+        offenders = [name for name in public_methods if banned in name]
+        assert offenders == [], offenders
+
+
+# --------------------------------------------------------------------------------------
 # § the state machine — S-20, S-22, S-24 (P3)
 # --------------------------------------------------------------------------------------
 
@@ -257,8 +295,15 @@ async def test_state_transitions_on_an_unknown_session_raise_unknown_session(
 
 
 # --------------------------------------------------------------------------------------
-# § rename — S-16, S-19
+# § rename — S-16
 # --------------------------------------------------------------------------------------
+# S-19 is not this store's to test either (fix round 2, finding 2, mirrors S-2's note above): this
+# module's own docstring records that the Learning agent has no registry entry a bare SessionStore
+# can check, so "no file to rename" is refused one layer up, in RuntimeService.rename_session
+# (S-19, S-26). Its dedicated test — over a real POST /sessions/{id}/name, asserting status, code
+# and detail all carry the reason — is
+# tests/server/test_session_routes.py::test_a_rename_on_a_learning_agent_session_is_409_and_says_why_s19
+# (fix round 2, finding 1's own new test).
 
 
 @pytest.mark.asyncio

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
@@ -39,14 +40,19 @@ from pkb.contracts import (
 )
 from pkb.core.errors import has_errors
 from pkb.core.validation import validate_content
+from pkb.server import routes
 from pkb.server.app import create_app
 from pkb.server.errors import (
     ILLEGAL_SESSION_TRANSITION_CODE,
+    SESSION_FILE_EXISTS_CODE,
+    SESSION_FILE_MISSING_CODE,
+    SESSION_FILE_NO_OWN_FILE_CODE,
     SESSION_NAME_TAKEN_CODE,
     UNKNOWN_SESSION_CODE,
 )
 from pkb.server.routes import route_paths
 from pkb.service.runtime import RuntimeService
+from pkb.service.session_file import SessionFileWriter
 from pkb.service.sessions import IllegalSessionTransitionError, SessionNameTakenError
 from tests.server.stub import (
     AGENTS,
@@ -134,6 +140,37 @@ def test_the_served_paths_are_exactly_the_session_pinned_set_ro1(service: StubSe
     served = set(route_paths(app))
 
     assert served == SESSION_PATHS | FASTAPI_DOCS
+
+
+def test_only_create_session_reads_objective_from_a_request_body_s3() -> None:
+    """Fix round 2, finding 2: S-3 (error severity) was cited by no test anywhere in the tree.
+    "The PKB holds one shape for all of them... a session that searches nothing is an ordinary
+    session" (S-3, quoted) — a later search joins the file already opened, and a new objective is
+    only ever expressible as a fresh session. ``routes.py`` reads ``"objective"`` from a request
+    body exactly once, inside ``create_session``: no other route in :data:`SESSION_PATHS` — not
+    ``/name``, ``/close``, ``/end`` nor ``/runs`` — accepts one, so there is no route through which
+    a second objective could land on an existing ``session_id``."""
+    source = inspect.getsource(routes)
+    assert source.count('.get("objective")') == 1
+
+
+def test_no_client_module_constructs_the_store_or_the_writer_directly_s13() -> None:
+    """Fix round 2, finding 2: S-13 (error severity) was cited by no test anywhere in the tree.
+    "There is one way in, the API: the dedicated TUI and the Telegram chat are two clients of it"
+    (S-13, quoted). A structural-absence guard in the S-33 pattern
+    (``tests/service/test_session_file.py``): neither the TUI's own modules nor the in-daemon
+    Telegram adapter constructs ``SessionStore`` or ``SessionFileWriter`` directly — every one of
+    them reaches a session through ``pkb.service``/``pkb.server``'s own routes and service methods,
+    over HTTP for the TUI (``pkb.tui.client`` imports ``httpx2``, never ``pkb.service.sessions``)
+    and in-process through ``PkbService`` for the daemon-hosted Telegram bot.
+    """
+    from pkb.server import telegram
+    from pkb.tui import app, client, modal, state
+
+    for module in (app, client, modal, state, telegram):
+        source = inspect.getsource(module)
+        assert "SessionStore(" not in source, module.__name__
+        assert "SessionFileWriter(" not in source, module.__name__
 
 
 # --------------------------------------------------------------------------------------
@@ -254,8 +291,31 @@ def test_state_closed_is_the_learning_queue_ordered_by_closed_at_s25(
 
 
 # --------------------------------------------------------------------------------------
-# § /name (S-16)
+# § /name (S-16, S-19)
 # --------------------------------------------------------------------------------------
+
+
+def test_a_rename_on_a_learning_agent_session_is_409_and_says_why_s19() -> None:
+    """Fix round 2, finding 1: "An analysis session opens no file of its own... so `/name` there
+    is refused and says why: there is no file to rename" (S-19, quoted). ``SessionFileNoOwnFileError``
+    carried no row in ``server/errors.py``'s below-seam table, so ``status_and_code`` fell through
+    to ``(500, "internal")`` and ``problem_body`` replaced the reason with "an unexpected error
+    occurred" — the "says why" half of S-19 never reached the wire. Watched this fail first
+    (500/"internal") before the fix.
+    """
+    service = StubService()
+    with client_for(service) as client:
+        session = client.post(
+            f"/agents/{LEARNING}/sessions", json={"objective": "review it"}
+        ).json()["session"]
+
+        response = client.post(f"/sessions/{session['session_id']}/name", json={"name": "new"})
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["code"] == SESSION_FILE_NO_OWN_FILE_CODE
+    assert "no file of its own" in body["detail"]
+    assert "nothing to rename" in body["detail"]
 
 
 def test_name_renames_the_session(service: StubService, client: TestClient) -> None:
@@ -630,6 +690,59 @@ def test_a_librarian_session_creates_its_file_cleanly_with_zero_experts_p5(tmp_p
     assert not has_errors(findings), findings
 
 
+def test_a_rename_colliding_with_an_untracked_file_is_409_and_says_why(tmp_path: Path) -> None:
+    """Fix round 3 (reviewer): ``SessionFileExistsError`` had zero covering test anywhere — the
+    reviewer removed its row from ``_BELOW_SEAM_CODES``/``ERROR_STATUS`` and the whole suite stayed
+    green. Provoked for real, mirroring the S-19 test's own shape but with a genuine collision
+    rather than a service double: an **untracked** file (nothing any session's row names, so
+    ``SessionStore.rename``'s own name-uniqueness check — ``SessionNameTakenError``, already
+    covered by ``test_a_rename_collision_is_409_session_name_taken_s16`` — never fires) sits at
+    the exact path the rename's slug would move the session's file to.
+    ``SessionFileWriter.rename``'s own ``if new_full.exists(): raise SessionFileExistsError`` is
+    what actually fires.
+    """
+    with real_client(tmp_path) as client:
+        session = client.post(
+            f"/agents/{COOKING}/sessions", json={"objective": "sear a steak"}
+        ).json()["session"]
+        (tmp_path / "sessions" / "collision.md").write_text(
+            "stray file, untracked by any session\n", encoding="utf-8"
+        )
+
+        response = client.post(
+            f"/sessions/{session['session_id']}/name", json={"name": "collision"}
+        )
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["code"] == SESSION_FILE_EXISTS_CODE
+    assert "already exists" in body["detail"]
+
+
+def test_a_rename_when_the_file_is_missing_is_404_and_says_why(tmp_path: Path) -> None:
+    """Fix round 3 (reviewer): ``SessionFileMissingError`` had zero covering test anywhere — the
+    reviewer removed its row and the suite stayed green. Provoked for real: the file is deleted out
+    from under a live session — a contrived, out-of-band deletion (design leaves no legitimate path
+    to this; "nothing deletes it", ``CLAUDE.md``) — and then ``/name`` is the one route-reachable
+    call left that still *raises* rather than swallows: ``SessionFileWriter.rename`` reads the old
+    path via the module's own ``_read`` before it does anything else, unwrapped, while ``/close``
+    and ``/end``'s marker writes were both made best-effort by fix round 2, finding 3 and would
+    only log this, not surface it.
+    """
+    with real_client(tmp_path) as client:
+        session = client.post(
+            f"/agents/{COOKING}/sessions", json={"objective": "sear a steak"}
+        ).json()["session"]
+        (tmp_path / session["file_path"]).unlink()
+
+        response = client.post(f"/sessions/{session['session_id']}/name", json={"name": "new name"})
+
+    assert response.status_code == 404
+    body = response.json()
+    assert body["code"] == SESSION_FILE_MISSING_CODE
+    assert "could not be read" in body["detail"]
+
+
 @pytest.mark.asyncio
 async def test_rename_retitles_every_attached_channel_s16(tmp_path: Path) -> None:
     """S-16: "Every channel attached to the session is retitled in the same move" — proven through
@@ -657,6 +770,58 @@ async def test_rename_retitles_every_attached_channel_s16(tmp_path: Path) -> Non
         ("telegram:1:0", "sear-timing"),
         ("tui:client-a", "sear-timing"),
     }
+
+
+@pytest.mark.asyncio
+async def test_rename_regenerates_the_indexes_and_the_registry_s16(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix round 2, finding 5: DESIGN.md (~line 691), quoted — "A rename is a file the turn
+    renamed, and Tier 1 regenerates the indexes and the registry over it and flags a link left
+    pointing at the old path." ``rename_session`` never called ``RuntimeService.regenerate()``,
+    which had zero production callers before this fix.
+
+    Grounded first, rather than wired speculatively: ``pkb.core.scan``'s walk records every file
+    under ``sessions/`` like any other (nothing excludes ``FileRole.SESSION`` from the walk),
+    ``pkb.core.analysis.find_broken_links`` treats every non-derived markdown file as a link
+    source and target — a session file included — and ``generate_root_tags`` aggregates every
+    file's tags into ``tags.md``. Tier-1 regeneration genuinely reaches a session file, so this
+    wires the real call into ``rename_session``'s own fan-out, best-effort and logged like the
+    retitle fan-out beside it, rather than adding a no-op or a boundary row that ships the gap.
+    """
+    calls: list[str] = []
+
+    async def spy(self: RuntimeService) -> None:
+        calls.append("regenerate")
+
+    monkeypatch.setattr(RuntimeService, "regenerate", spy)
+
+    async with _real_service(tmp_path) as service:
+        session = await service.create_session(COOKING, objective="sear a steak")
+
+        renamed = await service.rename_session(session.session_id, "Sear Timing")
+
+    assert renamed.name == "sear-timing"
+    assert calls == ["regenerate"]
+
+
+@pytest.mark.asyncio
+async def test_rename_commits_even_when_regeneration_fails(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The fan-out is best-effort (fix round 2, finding 5): ``FakeRuntime.regenerate`` (this
+    module's own test double) raises ``NotImplementedError`` exactly like every other fake runtime
+    in this suite that predates this fix — the rename must still commit, over a real store and a
+    real file move, with only the regeneration failure logged."""
+    async with _real_service(tmp_path) as service:
+        session = await service.create_session(COOKING, objective="sear a steak")
+
+        with caplog.at_level("WARNING", logger="pkb.service.runtime"):
+            renamed = await service.rename_session(session.session_id, "Sear Timing")
+
+    assert renamed.name == "sear-timing"
+    assert (tmp_path / renamed.file_path).exists()
+    assert "could not regenerate" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -695,6 +860,87 @@ async def test_close_detaches_every_channel_through_the_real_store_s17(tmp_path:
         await service.close_session(session.session_id)
 
         assert await service.session_channels(session.session_id) == []
+
+
+@pytest.mark.asyncio
+async def test_detaching_every_channel_leaves_the_session_and_its_file_untouched_s4(
+    tmp_path: Path,
+) -> None:
+    """Fix round 2, finding 2: S-4 (error severity) was cited by no test anywhere in the tree — only
+    by a section-header comment in ``tests/service/test_sessions.py``. "A session holds its name
+    itself and exists whether or not anything is looking at it, because it is a file in the root
+    `sessions/` folder while a channel is a surface that can go away" (S-4, quoted). Driven over the
+    real store and a real file: detaching the one channel a session ever had touches neither."""
+    async with _real_service(tmp_path) as service:
+        session = await service.create_session(COOKING, objective="sear a steak")
+        await service.attach_channel(session.session_id, "telegram:1:0")
+        before_text = (tmp_path / session.file_path).read_text(encoding="utf-8")
+
+        await service.detach_channel(session.session_id, "telegram:1:0")
+
+        after = await service.get_session(session.session_id)
+        assert after.name == session.name
+        assert after.file_path == session.file_path
+        assert await service.session_channels(session.session_id) == []
+        assert (tmp_path / session.file_path).read_text(encoding="utf-8") == before_text
+
+
+@pytest.mark.asyncio
+async def test_close_still_detaches_and_returns_closed_when_the_marker_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Fix round 2, finding 3: the crash seam. Before this fix, ``close_session`` wrote the store
+    transition, then the file's ``## Closed`` marker, then detached every channel, in that order —
+    a raised exception at the marker write skipped the detach loop entirely, leaving
+    ``state='closed'`` (S-20's own queue-entry, already committed) with every channel STUCK
+    attached (an S-17 violation) and no retry available, because the store refuses a second close
+    on an already-``closed`` session. This drives that exact failure and asserts the detach (S-17's
+    externally observable contract, and what Phase 4's queue worker relies on) still happens, the
+    call still returns ``state='closed'``, and only the marker failure is logged.
+    """
+
+    def boom(self: SessionFileWriter, session: Any) -> None:
+        raise OSError("simulated disk failure")
+
+    monkeypatch.setattr(SessionFileWriter, "mark_closed", boom)
+
+    async with _real_service(tmp_path) as service:
+        session = await service.create_session(COOKING, objective="sear a steak")
+        await service.attach_channel(session.session_id, "telegram:1:0")
+
+        with caplog.at_level("WARNING", logger="pkb.service.runtime"):
+            closed = await service.close_session(session.session_id)
+
+        assert closed.state == "closed"
+        assert await service.session_channels(session.session_id) == []
+    assert "could not append the closed marker" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_end_still_seals_and_returns_ended_when_the_marker_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Fix round 2, finding 3: the same crash seam, grounded for ``end_session``. ``end()`` has no
+    retry either — the store refuses a second ``end`` on an already-``ended`` session (S-22) — so a
+    raised ``mark_ended`` must not leave the caller with a 500 for a session the store already
+    sealed; it logs and returns ``state='ended'`` regardless, consistent with P3: the store is the
+    single source of truth for sealed-ness, the file's marker its human-readable echo.
+    """
+
+    def boom(self: SessionFileWriter, session: Any) -> None:
+        raise OSError("simulated disk failure")
+
+    monkeypatch.setattr(SessionFileWriter, "mark_ended", boom)
+
+    async with _real_service(tmp_path) as service:
+        session = await service.create_session(COOKING, objective="sear a steak")
+        await service.close_session(session.session_id)
+
+        with caplog.at_level("WARNING", logger="pkb.service.runtime"):
+            ended = await service.end_session(session.session_id)
+
+        assert ended.state == "ended"
+    assert "could not append the ended marker" in caplog.text
 
 
 def test_an_unknown_agent_never_reaches_the_store_or_the_disk_s9(tmp_path: Path) -> None:

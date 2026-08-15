@@ -333,3 +333,42 @@ assumed clean — Phase 1's own final review is the reason this step is not left
   (`tests/service`+`tests/server` only), so a KEEP verdict there is a scope boundary, not a claim
   the tests are still meaningful. Full per-test verdicts and the item-level count arithmetic are in
   the amended commit's own body.
+- [x] **Fix round 2** (post-review, six cross-task findings closed in one commit): fix round 1's
+  own "28 of 29 error-severity rules already had a citing test" claim above was corrected by a
+  second, finer-grained pass, because "had a citing test" turned out to mean two different things
+  it never distinguished — a rule with a *dedicated* test whose assertion is that rule's own claim,
+  and a rule that merely rode a section-header comment (`# § creation — S-1, S-2, S-5`) over tests
+  that assert a *different* rule in the same group. Re-walked all 29 error-severity rows against
+  every test function's own docstring/body, not just a grep for the rule id anywhere in the file:
+  **S-3, S-12, S-13 had zero citation anywhere** (not even a header comment) — genuinely
+  uncovered, not 28/29's implied one gap; **S-2, S-4, S-19 rode a section-header comment only**,
+  with no test individually asserting their own claim (`S-11`, `S-38`, `S-39` were checked against
+  the same bar and kept: each is cited inside a real test's own docstring, backed by a mechanized
+  assertion — `test_no_layer3_module_writes_under_the_kb_root_sv22` for S-11,
+  `test_the_real_service_runs_against_a_fake_runtime_with_the_harness_banned_sv4` for S-38/S-39 —
+  so those three stay counted as covered). Closed: six new/tightened tests for the three
+  zero-coverage rules
+  (`test_session_carries_no_kind_or_type_field_s3`, `test_only_create_session_reads_objective_from_a_request_body_s3`,
+  `test_session_store_names_no_fork_copy_or_merge_method_s12`,
+  `test_session_file_writer_names_no_fork_copy_or_merge_method_s12`,
+  `test_a_second_session_on_the_same_objective_starts_with_no_trace_of_the_first_s12`,
+  `test_no_client_module_constructs_the_store_or_the_writer_directly_s13`) plus five for the three
+  weak ones (`test_append_record_needs_no_close_or_end_to_have_run_first_s2`,
+  `test_write_synthesis_is_the_only_lesson_shaped_writer_method_s2`,
+  `test_detaching_every_channel_leaves_the_session_and_its_file_untouched_s4`, and S-19's own new
+  HTTP-level test, `test_a_rename_on_a_learning_agent_session_is_409_and_says_why_s19`, which
+  round 2's finding 1 also needed for an unrelated 500-status bug — the stale S-2/S-19 citations in
+  `tests/service/test_sessions.py`'s section headers were dropped in the same commit, since that
+  module's own docstring says it never touches `SessionFileWriter`, where S-2's and S-19's actual
+  write surfaces live). **Corrected final count: 23 of 29 error-severity rules had solid, dedicated
+  coverage already; 3 were weak and are now tightened; 3 were genuinely uncovered and are now
+  covered — 29 of 29.** Two more findings from the same review, unrelated to citation counting: a
+  crash-seam fix in `RuntimeService.close_session`/`end_session` (a raised marker-write exception
+  used to skip `close_session`'s channel detach entirely, an S-17 violation with no retry — now
+  best-effort and ordered channel-detach-before-marker-write) and wiring
+  `RuntimeService.regenerate()` into `rename_session` (DESIGN.md's "Tier 1 regenerates the indexes
+  and the registry" over a renamed file — genuinely reachable, grounded against
+  `pkb.core.scan`/`pkb.core.analysis`, and had zero production callers before this fix). `make
+  check`: **1818 passed, 257 deselected** (2075 collected), against fix round 1's 1804/257
+  (2061 collected) — +14 tests, all from this round. Full per-finding detail is in the commit's own
+  message body.

@@ -355,6 +355,21 @@ class RuntimeService:
         touched, so a Learning-agent session's row-level ``name`` cannot drift out of step with a
         file that was never there to rename.
 
+        Right after the file's own move comes a second best-effort step: **Tier-1 regeneration**
+        (fix round 2, finding 5). DESIGN.md, quoted: "A rename is a file the turn renamed, and
+        Tier 1 regenerates the indexes and the registry over it and flags a link left pointing at
+        the old path." A session file is an ordinary knowledge file to the mechanical tier
+        (``pkb.core.scan``'s walk records ``sessions/**`` like any other directory,
+        ``pkb.core.analysis.find_broken_links`` treats every non-derived markdown file as a link
+        source and target, and ``generate_root_tags`` folds every file's tags into the registry),
+        so a rename genuinely can leave ``tags.md`` and a topic's own ``index.md`` stale and a link
+        elsewhere unflagged until the next regeneration — this call is what keeps that window
+        short rather than open until some unrelated write happens to trigger one.
+        :meth:`regenerate` had zero production callers before this fix. Wrapped and logged rather
+        than raised, the same reasoning as the retitle fan-out below: the rename itself already
+        committed at the store and the file, and a stale index is a staleness the *next*
+        regeneration (or a future rename/write) still repairs, never data loss.
+
         The last step is S-16's retitle fan-out: every channel :meth:`session_channels` reports for
         this session gets :attr:`notifier`'s ``retitle`` call, in the channels' own deterministic
         order (:meth:`~pkb.service.sessions.SessionStore.channels`). Best-effort and *after* the
@@ -372,6 +387,17 @@ class RuntimeService:
         old_path = before.file_path
         after = await self._sessions.rename(session_id, name)
         self._session_files.rename(after, old_path)
+        try:
+            await self.regenerate()
+        except Exception:
+            _log.warning(
+                "could not regenerate the indexes and the registry after renaming session %r; "
+                "a link elsewhere still pointing at the old path (%r) will not be flagged until "
+                "the next regeneration",
+                session_id,
+                old_path,
+                exc_info=True,
+            )
         if self.notifier is not None:
             for channel_ref in await self._sessions.channels(session_id):
                 try:
@@ -386,8 +412,24 @@ class RuntimeService:
         return after
 
     async def close_session(self, session_id: str) -> Session:
-        """``/close`` (S-17, S-20, S-21): store transition, the file's own marker entry, then every
-        attached channel let go (S-17: "brings every attached channel away from the session").
+        """``/close`` (S-17, S-20, S-21): store transition, every attached channel let go, then the
+        file's own marker entry, best-effort (S-17: "brings every attached channel away from the
+        session").
+
+        **Order and its observable state, mirroring :meth:`create_session`'s own paragraph.** The
+        store transition lands first — it alone is what enters the session into the learning queue
+        (S-20, S-25/P4) — and the channel detach runs *before* the marker write now, not after
+        (fix round 2, finding 3). S-17's detach is the externally observable contract a caller, and
+        Phase 4's queue worker, can rely on; the ``## Closed`` marker is a human-readable echo of a
+        state the store already holds authoritatively, the same split P3/S-24 draws for the seal.
+        Putting detach first means a raised ``SessionFileError`` — an ``OSError`` under the marker
+        write, most likely — can no longer strand the channels attached the way it once did, when
+        the marker write ran first and a crash there skipped the detach loop entirely, leaving
+        ``state='closed'`` with every channel stuck. The marker write is additionally wrapped and
+        best-effort: ``close()`` has no retry (the store refuses a second close on an
+        already-``closed`` session), so raising here would leave the caller with no way to ask
+        again for a marker that just failed to write, over a call that already committed
+        everything else S-20 promises.
 
         The detach loop reads :meth:`session_channels` and calls
         :meth:`~pkb.service.sessions.SessionStore.detach` per ref rather than a single bulk
@@ -401,10 +443,19 @@ class RuntimeService:
         :meth:`create_session` skips file creation.
         """
         session = await self._sessions.close(session_id)
-        if session.agent_id != LEARNING_AGENT_ID:
-            self._session_files.mark_closed(session)
         for channel_ref in await self._sessions.channels(session_id):
             await self._sessions.detach(session_id, channel_ref)
+        if session.agent_id != LEARNING_AGENT_ID:
+            try:
+                self._session_files.mark_closed(session)
+            except Exception:
+                _log.warning(
+                    "could not append the closed marker to session %r's file; the store's own "
+                    "state='closed' and the channel detach (S-17) already committed and are "
+                    "unaffected",
+                    session_id,
+                    exc_info=True,
+                )
         return session
 
     async def attach_channel(self, session_id: str, channel_ref: str) -> None:
@@ -426,15 +477,32 @@ class RuntimeService:
         return await self._sessions.channels(session_id)
 
     async def end_session(self, session_id: str) -> Session:
-        """``/end`` (S-22): legal only from ``closed``; seals the file (S-24/P3).
+        """``/end`` (S-22): legal only from ``closed``; seals the file (S-24/P3), best-effort.
 
         The store's ``state`` is the single source of truth for sealed-ness (P3) — the file's own
         ``## Ended`` marker is a human-readable echo of it, not a second authority, which is why a
         Learning-agent session (no file) still ends cleanly with the marker step simply skipped.
+
+        **Best-effort, mirroring :meth:`close_session`'s identical seam (fix round 2, finding 3).**
+        ``end()`` has no retry either — a second ``end`` call on an already-``ended`` session is
+        refused (S-22: "end... twice [is refused]") — so a raised ``SessionFileError`` here (an
+        ``OSError`` under the marker write, most likely) would strand the session sealed in the
+        store forever with no ``## Ended`` marker and no way to ask again. The write is wrapped and
+        logged instead of raised: the store's own seal is what actually stops every later write
+        (P3, "checking the store, never... the file"), so a missing echo of it changes nothing
+        about what the seal enforces.
         """
         session = await self._sessions.end(session_id)
         if session.agent_id != LEARNING_AGENT_ID:
-            self._session_files.mark_ended(session)
+            try:
+                self._session_files.mark_ended(session)
+            except Exception:
+                _log.warning(
+                    "could not append the ended marker to session %r's file; the store's own "
+                    "state='ended' already sealed it and is unaffected",
+                    session_id,
+                    exc_info=True,
+                )
         return session
 
     async def start_session_run(self, session_id: str, message: str) -> RunSubscription:

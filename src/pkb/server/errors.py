@@ -32,7 +32,12 @@ from pkb.contracts import (
     code_for,
 )
 from pkb.packs import UnknownTopicError
-from pkb.service.session_file import SessionFileInvalidError
+from pkb.service.session_file import (
+    SessionFileExistsError,
+    SessionFileInvalidError,
+    SessionFileMissingError,
+    SessionFileNoOwnFileError,
+)
 from pkb.service.sessions import (
     IllegalSessionTransitionError,
     SessionNameTakenError,
@@ -46,6 +51,9 @@ __all__ = [
     "INTERNAL_CODE",
     "INVALID_SESSION_FILE_CODE",
     "PROBLEM_CONTENT_TYPE",
+    "SESSION_FILE_EXISTS_CODE",
+    "SESSION_FILE_MISSING_CODE",
+    "SESSION_FILE_NO_OWN_FILE_CODE",
     "SESSION_NAME_TAKEN_CODE",
     "UNKNOWN_SESSION_CODE",
     "problem_body",
@@ -59,7 +67,10 @@ UNKNOWN_SESSION_CODE: Final = "unknown_session"
 SESSION_NAME_TAKEN_CODE: Final = "session_name_taken"
 ILLEGAL_SESSION_TRANSITION_CODE: Final = "illegal_session_transition"
 INVALID_SESSION_FILE_CODE: Final = "invalid_session_file"
-"""The session layer's own wire codes (S-9, S-16, S-20, S-22, S-24/P3).
+SESSION_FILE_NO_OWN_FILE_CODE: Final = "session_file_no_own_file"
+SESSION_FILE_EXISTS_CODE: Final = "session_file_exists"
+SESSION_FILE_MISSING_CODE: Final = "session_file_missing"
+"""The session layer's own wire codes (S-9, S-16, S-19, S-20, S-22, S-24/P3, S-27).
 
 Mapped here rather than in :data:`pkb.contracts.ERROR_CODES`, the same way
 :data:`UnknownTopicError_CODE` already is: :mod:`pkb.service.sessions` and
@@ -67,8 +78,20 @@ Mapped here rather than in :data:`pkb.contracts.ERROR_CODES`, the same way
 ``pkb.service`` depends on ``pkb.contracts``, never the reverse), so their typed errors cannot be
 named from inside the seam's own table without inverting that dependency. Every unmapped
 :class:`~pkb.contracts.PkbAgentError` subclass is already a 500 by construction (:func:`code_for`'s
-own fallback), so these four rows are what keeps that from applying to the session errors instead
+own fallback), so these seven rows are what keeps that from applying to the session errors instead
 of their real status.
+
+**Fix round 2, finding 1.** ``SessionFileNoOwnFileError`` (S-19: "``/name`` there is refused and
+says why: there is no file to rename," refusing a Learning-agent session), ``SessionFileExistsError``
+(S-27: refused, at ``create`` or ``rename``, when the target path already names a file) and
+``SessionFileMissingError`` (a mutating call naming a session whose file is not on disk — a caller
+bug the design leaves no legitimate path to, per that class's own docstring) had no row here and
+fell through to ``(500, "internal")``: S-19's whole point — that the refusal *says why* — never
+reached the wire, replaced by ``problem_body``'s fixed internal-error string. ``SessionFileExistsError``
+and ``SessionFileNoOwnFileError`` are both a name/path collision or refusal a client can retry
+against differently, so both are ``409``, matching :data:`SESSION_NAME_TAKEN_CODE`'s own
+reasoning; ``SessionFileMissingError`` names a session id whose file is simply not there, so it is
+``404``, matching :data:`UNKNOWN_SESSION_CODE`.
 """
 
 ERROR_STATUS: Final[Mapping[str, int]] = MappingProxyType(
@@ -85,6 +108,9 @@ ERROR_STATUS: Final[Mapping[str, int]] = MappingProxyType(
         SESSION_NAME_TAKEN_CODE: 409,
         ILLEGAL_SESSION_TRANSITION_CODE: 409,
         INVALID_SESSION_FILE_CODE: 400,
+        SESSION_FILE_NO_OWN_FILE_CODE: 409,
+        SESSION_FILE_EXISTS_CODE: 409,
+        SESSION_FILE_MISSING_CODE: 404,
         INTERNAL_CODE: 500,
     }
 )
@@ -112,6 +138,9 @@ _TITLES: Final = MappingProxyType(
         SESSION_NAME_TAKEN_CODE: "Session name taken",
         ILLEGAL_SESSION_TRANSITION_CODE: "Illegal session transition",
         INVALID_SESSION_FILE_CODE: "Invalid session file",
+        SESSION_FILE_NO_OWN_FILE_CODE: "No file to rename",
+        SESSION_FILE_EXISTS_CODE: "Session file exists",
+        SESSION_FILE_MISSING_CODE: "Session file missing",
         INTERNAL_CODE: "Internal error",
     }
 )
@@ -125,6 +154,9 @@ _BELOW_SEAM_CODES: Final[tuple[tuple[type[BaseException], str], ...]] = (
     (SessionNameTakenError, SESSION_NAME_TAKEN_CODE),
     (IllegalSessionTransitionError, ILLEGAL_SESSION_TRANSITION_CODE),
     (SessionFileInvalidError, INVALID_SESSION_FILE_CODE),
+    (SessionFileNoOwnFileError, SESSION_FILE_NO_OWN_FILE_CODE),
+    (SessionFileExistsError, SESSION_FILE_EXISTS_CODE),
+    (SessionFileMissingError, SESSION_FILE_MISSING_CODE),
 )
 """Typed errors from below the seam, checked by ``isinstance`` before :func:`code_for`'s own table.
 

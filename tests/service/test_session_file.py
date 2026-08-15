@@ -250,8 +250,47 @@ def test_create_on_a_librarian_session_with_no_expert_creates_cleanly_p5(
 
 
 # --------------------------------------------------------------------------------------
-# § append_record — S-28
+# § append_record — S-2, S-28
 # --------------------------------------------------------------------------------------
+# Fix round 2, finding 2: S-2 was cited by no test of its own — only by a section-header comment in
+# tests/service/test_sessions.py, over a store that has no notion of a "capture" at all (that
+# module's docstring: this phase's own store never touches SessionFileWriter). S-2's actual write
+# surface is this module's, so its dedicated tests live here instead; the stale citation in that
+# other file's header is dropped in this same commit.
+
+
+def test_append_record_needs_no_close_or_end_to_have_run_first_s2(tmp_path: Path) -> None:
+    """ "A capture is one turn inside a session... the write lands in that turn rather than waiting
+    for `/close`" (S-2, quoted). ``append_record`` succeeds on a session still ``state='open'``,
+    with no prior ``close()``/``end()`` call anywhere in this test."""
+    root = kb(tmp_path)
+    session = make_session(state="open")
+    writer = SessionFileWriter(root)
+    writer.create(session)
+
+    writer.append_record(session, "### Turn\n\ncaptured mid-session, well before any /close")
+
+    assert "captured mid-session, well before any /close" in read(root, session.file_path)
+
+
+def test_write_synthesis_is_the_only_lesson_shaped_writer_method_s2() -> None:
+    """ "A lesson... waits for the analysis, however the operator phrases the instruction" (S-2,
+    quoted) — every other writer method is a capture (``append_record``) or bookkeeping
+    (``create``/``mark_closed``/``mark_ended``/``rename``/``add_expert_tag``), never a second route
+    that files a session's own conclusion. A structural-absence guard in the S-33 pattern: no
+    public method other than ``write_synthesis`` names itself after a synthesis, a lesson or a
+    conclusion."""
+    public_methods = [
+        name
+        for name, _ in inspect.getmembers(SessionFileWriter, inspect.isfunction)
+        if not name.startswith("_") and name != "write_synthesis"
+    ]
+    lesson_shaped = [
+        name
+        for name in public_methods
+        if "synthesis" in name or "lesson" in name or "distill" in name or "conclu" in name
+    ]
+    assert lesson_shaped == []
 
 
 def test_append_record_preserves_every_existing_byte_before_the_append_point_s28(
@@ -571,3 +610,50 @@ def test_a_rejected_candidate_named_in_the_record_touches_neither_directory_s33(
 
     assert not (root / ".inbox").exists()
     assert not (root / "references").exists()
+
+
+# --------------------------------------------------------------------------------------
+# § no session forks or copies another's file — S-12
+# --------------------------------------------------------------------------------------
+# Fix round 2, finding 2: S-12 (error severity) was cited by no test anywhere in the tree. Same
+# two-part shape as S-33's own gap above — one structural (the writer spells no fork/copy/merge
+# verb), one behavioural (a second session opened on the same objective starts with no trace of
+# the first, the way "a re-open on the Librarian" must).
+
+
+def test_session_file_writer_names_no_fork_copy_or_merge_method_s12() -> None:
+    """ "Nothing copies one session's file into another... a re-open on the Librarian is, at the
+    store/file layer, indistinguishable from any other fresh create()" (S-12, quoted/paraphrased).
+    A cheaper, permanent guard than re-deriving this by hand: if a future write path ever needs to
+    fork or copy a session's content, this is the line that has to move, on purpose."""
+    public_methods = [
+        name
+        for name, _ in inspect.getmembers(SessionFileWriter, inspect.isfunction)
+        if not name.startswith("_")
+    ]
+    for banned in ("fork", "copy", "merge", "clone"):
+        offenders = [name for name in public_methods if banned in name]
+        assert offenders == [], offenders
+
+
+def test_a_second_session_on_the_same_objective_starts_with_no_trace_of_the_first_s12(
+    tmp_path: Path,
+) -> None:
+    """ "A session that opened on one expert and turns out to cross topics re-opens on the
+    Librarian... the operator names the objective again and the new session opens its own file"
+    (S-12, quoted). Driven at the store/file layer S-12 itself is scoped to: two sessions sharing
+    an objective, the second's file carries nothing the first's own record holds — no shared text,
+    no reference to the first session's id."""
+    root = kb(tmp_path)
+    writer = SessionFileWriter(root)
+
+    first = make_session(session_id="session-first", name="grilling-temperatures")
+    writer.create(first)
+    writer.append_record(first, "### Turn\n\nan exchange only the first session ever had")
+
+    second = make_session(session_id="session-second", name="grilling-temperatures-2")
+    path = writer.create(second)
+
+    text = read(root, path)
+    assert "an exchange only the first session ever had" not in text
+    assert first.session_id not in text
